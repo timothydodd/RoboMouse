@@ -669,7 +669,7 @@ public sealed class RoboMouseService : IDisposable
                 break;
         }
 
-        SimpleLogger.Log("Control", $"StartRemoteControl: virtualPos=({_virtualX:F2},{_virtualY:F2}), lastMouse=({_lastMouseX},{_lastMouseY})");
+        SimpleLogger.Log("Control", $"StartRemoteControl: virtualPos=({_virtualX:F2},{_virtualY:F2}), captureAt=({edge.X},{edge.Y})");
 
         _cursorManager.Capture(edge.X, edge.Y);
 
