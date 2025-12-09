@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network.Protocol;
@@ -14,7 +14,7 @@ public sealed class PeerConnection : IDisposable
     private readonly TcpClient _client;
     private readonly NetworkStream _stream;
     private readonly CancellationTokenSource _cts;
-    private readonly Task _receiveTask;
+    private Task _receiveTask;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private bool _disposed;
 
@@ -344,8 +344,12 @@ public sealed class PeerConnection : IDisposable
         _disposed = true;
         _cts.Cancel();
 
-        try { _stream.Close(); } catch { }
-        try { _client.Close(); } catch { }
+        try
+        { _stream.Close(); }
+        catch { }
+        try
+        { _client.Close(); }
+        catch { }
 
         _stream.Dispose();
         _client.Dispose();
