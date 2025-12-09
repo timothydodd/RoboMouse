@@ -36,6 +36,7 @@ public sealed class RoboMouseService : IDisposable
     private float _virtualX;
     private float _virtualY;
     private bool _hasMovedIntoRemote; // Must move away from entry edge before return is allowed
+    private bool _ignoreNextMouseMove; // Used to ignore warp-back generated events
 
     /// <summary>
     /// Whether the service is enabled.
@@ -389,12 +390,19 @@ public sealed class RoboMouseService : IDisposable
 
             if (e.EventType == MouseEventType.Move)
             {
+                // Skip if this is the warp-back event we generated
+                if (_ignoreNextMouseMove)
+                {
+                    _ignoreNextMouseMove = false;
+                    return;
+                }
+
                 // Calculate delta from captured position
                 var capturedPos = _cursorManager.CapturedPosition;
                 var deltaX = e.X - capturedPos.X;
                 var deltaY = e.Y - capturedPos.Y;
 
-                // Skip if no actual movement (this can happen from our own warp)
+                // Skip if no actual movement
                 if (deltaX == 0 && deltaY == 0)
                     return;
 
@@ -408,6 +416,7 @@ public sealed class RoboMouseService : IDisposable
                 _virtualY = Math.Clamp(_virtualY, 0f, 1f);
 
                 // Warp cursor back to captured position for next delta
+                _ignoreNextMouseMove = true;
                 _cursorManager.WarpBack();
 
                 // Check if returning from remote (hit opposite edge)
@@ -418,9 +427,8 @@ public sealed class RoboMouseService : IDisposable
                     var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
                         ? _virtualY : _virtualX;
                     EndRemoteControl();
-                    _cursorManager.ReleaseAt(
-                        CursorManager.GetOppositeEdge(peerPosition),
-                        normalizedPos);
+                    // Return cursor to the edge where the peer is (where we left from)
+                    _cursorManager.ReleaseAt(peerPosition, normalizedPos);
                     return;
                 }
 
@@ -650,6 +658,7 @@ public sealed class RoboMouseService : IDisposable
         _activePeer = peer;
         _isControllingRemote = true;
         _hasMovedIntoRemote = false;
+        _ignoreNextMouseMove = false;
 
         // Initialize virtual cursor position based on entry edge
         switch (peer.Position)
