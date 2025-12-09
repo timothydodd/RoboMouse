@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network.Protocol;
 using ProtocolMessage = RoboMouse.Core.Network.Protocol.Message;
 
@@ -57,12 +58,28 @@ public sealed class PeerConnection : IDisposable
     /// </summary>
     public event EventHandler<Exception?>? Disconnected;
 
-    private PeerConnection(TcpClient client)
+    private PeerConnection(TcpClient client, bool startReceiveLoop = true)
     {
         _client = client;
         _client.NoDelay = true; // Disable Nagle's algorithm for lower latency
         _stream = _client.GetStream();
         _cts = new CancellationTokenSource();
+
+        if (startReceiveLoop)
+        {
+            _receiveTask = ReceiveLoopAsync(_cts.Token);
+        }
+        else
+        {
+            _receiveTask = Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// Starts the background receive loop. Call after handshake is complete.
+    /// </summary>
+    private void StartReceiveLoop()
+    {
         _receiveTask = ReceiveLoopAsync(_cts.Token);
     }
 
@@ -78,10 +95,15 @@ public sealed class PeerConnection : IDisposable
         int localScreenHeight,
         CancellationToken ct = default)
     {
+        SimpleLogger.Log("Connect", $"Connecting to {host}:{port}...");
+
         var client = new TcpClient();
         await client.ConnectAsync(host, port, ct);
 
-        var connection = new PeerConnection(client);
+        SimpleLogger.Log("Connect", $"TCP connected to {host}:{port}");
+
+        // Don't start receive loop yet - we need to complete handshake first
+        var connection = new PeerConnection(client, startReceiveLoop: false);
 
         // Send handshake
         var handshake = new HandshakeMessage
@@ -93,15 +115,20 @@ public sealed class PeerConnection : IDisposable
             SupportsClipboard = true
         };
 
+        SimpleLogger.Log("Connect", $"Sending handshake (Id={localMachineId}, Name={localMachineName}, Screen={localScreenWidth}x{localScreenHeight})");
         await connection.SendAsync(handshake, ct);
 
+        SimpleLogger.Log("Connect", "Waiting for handshake response...");
         // Wait for handshake acknowledgment
         var response = await connection.ReceiveMessageAsync(ct);
 
+        SimpleLogger.Log("Connect", $"Received response: {response?.GetType().Name ?? "null"}");
+
         if (response is not HandshakeAckMessage ack)
         {
+            var responseType = response?.GetType().Name ?? "null/invalid";
             connection.Dispose();
-            throw new InvalidOperationException("Invalid handshake response");
+            throw new InvalidOperationException($"Invalid handshake response: received {responseType}");
         }
 
         if (!ack.Accepted)
@@ -115,6 +142,10 @@ public sealed class PeerConnection : IDisposable
         connection.PeerScreenWidth = ack.ScreenWidth;
         connection.PeerScreenHeight = ack.ScreenHeight;
 
+        // Now start the receive loop for ongoing messages
+        connection.StartReceiveLoop();
+
+        SimpleLogger.Log("Connect", $"Connected successfully to {ack.MachineName}");
         return connection;
     }
 
@@ -129,16 +160,25 @@ public sealed class PeerConnection : IDisposable
         int localScreenHeight,
         CancellationToken ct = default)
     {
-        var connection = new PeerConnection(client);
+        var remoteEp = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
+        SimpleLogger.Log("Accept", $"Processing incoming connection from {remoteEp}");
+
+        // Don't start receive loop yet - we need to complete handshake first
+        var connection = new PeerConnection(client, startReceiveLoop: false);
 
         // Wait for handshake
+        SimpleLogger.Log("Accept", "Waiting for handshake message...");
         var message = await connection.ReceiveMessageAsync(ct);
+
+        SimpleLogger.Log("Accept", $"Received message: {message?.GetType().Name ?? "null"}");
 
         if (message is not HandshakeMessage handshake)
         {
             connection.Dispose();
-            throw new InvalidOperationException("Expected handshake message");
+            throw new InvalidOperationException($"Expected handshake message, got {message?.GetType().Name ?? "null"}");
         }
+
+        SimpleLogger.Log("Accept", $"Handshake from: {handshake.MachineName} ({handshake.MachineId}), Screen={handshake.ScreenWidth}x{handshake.ScreenHeight}");
 
         connection.PeerId = handshake.MachineId;
         connection.PeerName = handshake.MachineName;
@@ -155,8 +195,13 @@ public sealed class PeerConnection : IDisposable
             ScreenHeight = localScreenHeight
         };
 
+        SimpleLogger.Log("Accept", $"Sending HandshakeAck (Id={localMachineId}, Name={localMachineName})");
         await connection.SendAsync(ack, ct);
 
+        // Now start the receive loop for ongoing messages
+        connection.StartReceiveLoop();
+
+        SimpleLogger.Log("Accept", "Connection established successfully");
         return connection;
     }
 

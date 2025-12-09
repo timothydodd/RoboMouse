@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using RoboMouse.Core.Logging;
 
 namespace RoboMouse.Core.Network;
 
@@ -64,6 +65,8 @@ public sealed class ConnectionListener : IDisposable
         _listener.Start();
         IsListening = true;
 
+        SimpleLogger.Log("Listener", $"Started listening on port {Port}");
+
         _acceptTask = AcceptLoopAsync(_cts.Token);
     }
 
@@ -111,6 +114,9 @@ public sealed class ConnectionListener : IDisposable
 
     private async Task HandleConnectionAsync(TcpClient client, CancellationToken ct)
     {
+        var remoteEp = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
+        SimpleLogger.Log("Listener", $"Incoming connection from {remoteEp}");
+
         try
         {
             var connection = await PeerConnection.AcceptAsync(
@@ -121,11 +127,12 @@ public sealed class ConnectionListener : IDisposable
                 _screenHeight,
                 ct);
 
+            SimpleLogger.Log("Listener", $"Connection accepted from {remoteEp} - Peer: {connection.PeerName} ({connection.PeerId})");
             PeerConnected?.Invoke(this, connection);
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Failed to accept connection: {ex.Message}");
+            SimpleLogger.Log("Listener", $"Failed to accept connection from {remoteEp}: {ex.Message}");
             client.Dispose();
         }
     }

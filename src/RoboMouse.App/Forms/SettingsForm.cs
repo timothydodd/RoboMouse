@@ -303,7 +303,7 @@ public partial class SettingsForm : Form
     private void OnAddPeerClick(object? sender, EventArgs e)
     {
         using var dialog = new PeerSetupForm(null);
-        if (dialog.ShowDialog() == DialogResult.OK && dialog.PeerConfig != null)
+        if (dialog.ShowDialog(this) == DialogResult.OK && dialog.PeerConfig != null)
         {
             _settings.Peers.Add(dialog.PeerConfig);
             RefreshPeersList();
@@ -315,7 +315,7 @@ public partial class SettingsForm : Form
         if (_peersListBox.SelectedItem is PeerListItem item)
         {
             using var dialog = new PeerSetupForm(item.Peer);
-            if (dialog.ShowDialog() == DialogResult.OK)
+            if (dialog.ShowDialog(this) == DialogResult.OK)
             {
                 RefreshPeersList();
             }

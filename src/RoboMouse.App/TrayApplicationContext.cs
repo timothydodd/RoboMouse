@@ -187,20 +187,33 @@ public class TrayApplicationContext : ApplicationContext
         using var form = new PeerSetupForm(null);
         if (form.ShowDialog() == DialogResult.OK && form.PeerConfig != null)
         {
+            var address = form.PeerConfig.Address;
+            var port = form.PeerConfig.Port;
+
+            ShowBalloon($"Connecting to {address}:{port}...", ToolTipIcon.Info);
+
             try
             {
-                await _service.ConnectToAddressAsync(
-                    form.PeerConfig.Address,
-                    form.PeerConfig.Port,
-                    form.PeerConfig.Position);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+                var peer = await _service.ConnectToAddressAsync(
+                    address,
+                    port,
+                    form.PeerConfig.Position,
+                    cts.Token);
 
                 _settings.Save();
                 UpdateStatus();
-                ShowBalloon($"Connected to {form.PeerConfig.Address}", ToolTipIcon.Info);
+                ShowBalloon($"Connected to {peer.Name} ({address})", ToolTipIcon.Info);
+            }
+            catch (OperationCanceledException)
+            {
+                MessageBox.Show($"Connection to {address}:{port} timed out after 10 seconds.\n\nMake sure:\n- RoboMouse is running on the other computer\n- Firewall allows port {port}\n- The IP address is correct",
+                    "Connection Timeout", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Failed to connect to {form.PeerConfig.Address}:\n{ex.Message}",
+                MessageBox.Show($"Failed to connect to {address}:{port}\n\n{ex.GetType().Name}: {ex.Message}",
                     "Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
