@@ -388,7 +388,8 @@ public class TrayApplicationContext : ApplicationContext
             DeltaX = e.DeltaX,
             DeltaY = e.DeltaY,
             VelocityX = e.VelocityX,
-            VelocityY = e.VelocityY
+            VelocityY = e.VelocityY,
+            IsIgnored = e.IsIgnored
         });
     }
 

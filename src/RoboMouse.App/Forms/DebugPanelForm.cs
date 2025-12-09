@@ -182,8 +182,16 @@ public class DebugPanelForm : Form
             return;
         }
 
-        _statusLabel.Text = $"Status: {(data.IsControlling ? "Controlling" : "Idle")}";
-        _statusLabel.ForeColor = data.IsControlling ? Color.FromArgb(100, 255, 100) : Color.White;
+        if (data.IsIgnored)
+        {
+            _statusLabel.Text = "Status: IGNORED (warp)";
+            _statusLabel.ForeColor = Color.FromArgb(255, 165, 0); // Orange for ignored
+        }
+        else
+        {
+            _statusLabel.Text = $"Status: {(data.IsControlling ? "Controlling" : "Idle")}";
+            _statusLabel.ForeColor = data.IsControlling ? Color.FromArgb(100, 255, 100) : Color.White;
+        }
 
         _peerLabel.Text = $"Peer: {data.PeerName ?? "None"}";
 
@@ -191,6 +199,7 @@ public class DebugPanelForm : Form
         _virtualPosLabel.Text = $"Virtual: ({data.VirtualX:F3}, {data.VirtualY:F3})";
 
         _deltaLabel.Text = $"Delta: ({data.DeltaX:+0;-0;0}, {data.DeltaY:+0;-0;0})";
+        _deltaLabel.ForeColor = data.IsIgnored ? Color.FromArgb(255, 165, 0) : Color.White;
 
         var speed = (float)Math.Sqrt(data.VelocityX * data.VelocityX + data.VelocityY * data.VelocityY);
         _velocityLabel.Text = $"Velocity: {speed:F0} px/s";
@@ -274,4 +283,5 @@ public class MouseDebugData
     public int DeltaY { get; set; }
     public float VelocityX { get; set; }
     public float VelocityY { get; set; }
+    public bool IsIgnored { get; set; }
 }

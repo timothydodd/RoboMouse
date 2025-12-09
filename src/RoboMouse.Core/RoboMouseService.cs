@@ -46,8 +46,7 @@ public sealed class RoboMouseService : IDisposable
     private float _velocityY;
     private long _lastMoveTime;
 
-    // Warp tracking - use timestamp to determine base position for delta
-    private uint _warpTimestamp;
+    // Warp tracking - ignore events at warp position
     private int _warpX;
     private int _warpY;
 
@@ -409,27 +408,32 @@ public sealed class RoboMouseService : IDisposable
 
             if (e.EventType == MouseEventType.Move)
             {
-                // Determine base position for delta calculation based on timestamp
-                // If event timestamp is after our warp, use warp position as base
-                // Otherwise use last seen position
-                int baseX, baseY;
-                if (_warpTimestamp > 0 && e.Timestamp >= _warpTimestamp)
+                // Ignore events at the warp position
+                if (e.X == _warpX && e.Y == _warpY)
                 {
-                    // Event happened after warp - use warp position as base
-                    baseX = _warpX;
-                    baseY = _warpY;
-                    _warpTimestamp = 0; // Clear warp tracking
-                }
-                else
-                {
-                    // Event happened before warp or no warp - use last seen
-                    baseX = _lastSeenX;
-                    baseY = _lastSeenY;
+                    // Fire debug event showing ignored
+                    MouseDebugUpdate?.Invoke(this, new MouseDebugEventArgs
+                    {
+                        IsControlling = true,
+                        PeerName = _activePeer.Name,
+                        LocalX = e.X,
+                        LocalY = e.Y,
+                        VirtualX = _virtualX,
+                        VirtualY = _virtualY,
+                        DeltaX = 0,
+                        DeltaY = 0,
+                        VelocityX = _velocityX,
+                        VelocityY = _velocityY,
+                        IsIgnored = true
+                    });
+                    return;
                 }
 
-                // Calculate delta
-                var deltaX = e.X - baseX;
-                var deltaY = e.Y - baseY;
+                var now = Environment.TickCount64;
+
+                // Calculate delta from last seen position
+                var deltaX = e.X - _lastSeenX;
+                var deltaY = e.Y - _lastSeenY;
 
                 // Update last seen position
                 _lastSeenX = e.X;
@@ -439,109 +443,7 @@ public sealed class RoboMouseService : IDisposable
                 if (deltaX == 0 && deltaY == 0)
                     return;
 
-                // Calculate velocity for prediction
-                var now = Environment.TickCount64;
-                var timeDelta = now - _lastMoveTime;
-                if (timeDelta > 0 && timeDelta < 1000) // Only calculate velocity for reasonable intervals
-                {
-                    // Velocity in pixels per second
-                    var newVelX = (deltaX * 1000f) / timeDelta;
-                    var newVelY = (deltaY * 1000f) / timeDelta;
-
-                    // Smooth velocity with exponential moving average
-                    const float smoothing = 0.3f;
-                    _velocityX = _velocityX * (1 - smoothing) + newVelX * smoothing;
-                    _velocityY = _velocityY * (1 - smoothing) + newVelY * smoothing;
-                }
-                else
-                {
-                    // Reset velocity on first move or after long pause
-                    _velocityX = 0;
-                    _velocityY = 0;
-                }
-                _lastMoveTime = now;
-
-                // Update virtual position on remote screen (normalized 0-1)
-                _virtualX += (float)deltaX / _activePeer.ScreenWidth;
-                _virtualY += (float)deltaY / _activePeer.ScreenHeight;
-
-                // Clamp to screen bounds
-                _virtualX = Math.Clamp(_virtualX, 0f, 1f);
-                _virtualY = Math.Clamp(_virtualY, 0f, 1f);
-
-                // Check if we've moved into the remote screen
-                if (!_hasMovedIntoRemote)
-                {
-                    _hasMovedIntoRemote = HasMovedIntoRemote(_activePeer.Position, _virtualX, _virtualY);
-                }
-
-                // Check if returning from remote (hit opposite edge)
-                if (_hasMovedIntoRemote)
-                {
-                    var returnEdge = GetReturnEdge(_activePeer.Position, _virtualX, _virtualY);
-                    if (returnEdge != null)
-                    {
-                        var peerPosition = _activePeer.Position;
-                        var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
-                            ? _virtualY : _virtualX;
-                        EndRemoteControl();
-                        _cursorManager.ReleaseAt(peerPosition, normalizedPos);
-                        return;
-                    }
-                }
-
-                // Send position to remote
-                var remoteX = (int)(_virtualX * _activePeer.ScreenWidth);
-                var remoteY = (int)(_virtualY * _activePeer.ScreenHeight);
-
-                var msg = new MouseMessage
-                {
-                    X = remoteX,
-                    Y = remoteY,
-                    EventType = MouseEventType.Move,
-                    WheelDelta = 0,
-                    VelocityX = _velocityX,
-                    VelocityY = _velocityY
-                };
-
-                SendToActivePeer(msg);
-
-                // Fire debug event for UI
-                MouseDebugUpdate?.Invoke(this, new MouseDebugEventArgs
-                {
-                    IsControlling = true,
-                    PeerName = _activePeer.Name,
-                    LocalX = e.X,
-                    LocalY = e.Y,
-                    VirtualX = _virtualX,
-                    VirtualY = _virtualY,
-                    DeltaX = deltaX,
-                    DeltaY = deltaY,
-                    VelocityX = _velocityX,
-                    VelocityY = _velocityY
-                });
-
-                // Only warp back if cursor is getting close to screen edge
-                // This reduces overhead while preventing cursor from escaping
-                var bounds = _screenInfo.PrimaryBounds;
-                var edgeMargin = 100; // pixels from edge before we warp back
-
-                var nearEdge = e.X < bounds.Left + edgeMargin ||
-                               e.X > bounds.Right - edgeMargin ||
-                               e.Y < bounds.Top + edgeMargin ||
-                               e.Y > bounds.Bottom - edgeMargin;
-
-                if (nearEdge)
-                {
-                    var capturedPos = _cursorManager.CapturedPosition;
-                    // Record warp position and timestamp for delta calculation
-                    _warpX = capturedPos.X;
-                    _warpY = capturedPos.Y;
-                    _warpTimestamp = (uint)(Environment.TickCount & 0xFFFFFFFF);
-                    InputSimulator.MoveTo(capturedPos.X, capturedPos.Y);
-                    _lastSeenX = capturedPos.X;
-                    _lastSeenY = capturedPos.Y;
-                }
+                ProcessMouseDelta(e, deltaX, deltaY, now);
             }
             else
             {
@@ -591,6 +493,110 @@ public sealed class RoboMouseService : IDisposable
         {
             e.Handled = true;
             SendToActivePeer(KeyboardMessage.FromEvent(e));
+        }
+    }
+
+    private void ProcessMouseDelta(InputMouseEventArgs e, int deltaX, int deltaY, long now)
+    {
+        if (_activePeer == null)
+            return;
+
+        // Calculate velocity for prediction
+        var timeDelta = now - _lastMoveTime;
+        if (timeDelta > 0 && timeDelta < 1000)
+        {
+            var newVelX = (deltaX * 1000f) / timeDelta;
+            var newVelY = (deltaY * 1000f) / timeDelta;
+
+            const float smoothing = 0.3f;
+            _velocityX = _velocityX * (1 - smoothing) + newVelX * smoothing;
+            _velocityY = _velocityY * (1 - smoothing) + newVelY * smoothing;
+        }
+        else
+        {
+            _velocityX = 0;
+            _velocityY = 0;
+        }
+        _lastMoveTime = now;
+
+        // Update virtual position on remote screen (normalized 0-1)
+        _virtualX += (float)deltaX / _activePeer.ScreenWidth;
+        _virtualY += (float)deltaY / _activePeer.ScreenHeight;
+
+        // Clamp to screen bounds
+        _virtualX = Math.Clamp(_virtualX, 0f, 1f);
+        _virtualY = Math.Clamp(_virtualY, 0f, 1f);
+
+        // Check if we've moved into the remote screen
+        if (!_hasMovedIntoRemote)
+        {
+            _hasMovedIntoRemote = HasMovedIntoRemote(_activePeer.Position, _virtualX, _virtualY);
+        }
+
+        // Check if returning from remote (hit opposite edge)
+        if (_hasMovedIntoRemote)
+        {
+            var returnEdge = GetReturnEdge(_activePeer.Position, _virtualX, _virtualY);
+            if (returnEdge != null)
+            {
+                var peerPosition = _activePeer.Position;
+                var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
+                    ? _virtualY : _virtualX;
+                EndRemoteControl();
+                _cursorManager.ReleaseAt(peerPosition, normalizedPos);
+                return;
+            }
+        }
+
+        // Send position to remote
+        var remoteX = (int)(_virtualX * _activePeer.ScreenWidth);
+        var remoteY = (int)(_virtualY * _activePeer.ScreenHeight);
+
+        var msg = new MouseMessage
+        {
+            X = remoteX,
+            Y = remoteY,
+            EventType = MouseEventType.Move,
+            WheelDelta = 0,
+            VelocityX = _velocityX,
+            VelocityY = _velocityY
+        };
+
+        SendToActivePeer(msg);
+
+        // Fire debug event for UI
+        MouseDebugUpdate?.Invoke(this, new MouseDebugEventArgs
+        {
+            IsControlling = true,
+            PeerName = _activePeer.Name,
+            LocalX = e.X,
+            LocalY = e.Y,
+            VirtualX = _virtualX,
+            VirtualY = _virtualY,
+            DeltaX = deltaX,
+            DeltaY = deltaY,
+            VelocityX = _velocityX,
+            VelocityY = _velocityY
+        });
+
+        // Only warp back if cursor is getting close to screen edge
+        var bounds = _screenInfo.PrimaryBounds;
+        var edgeMargin = 100;
+
+        var nearEdge = e.X < bounds.Left + edgeMargin ||
+                       e.X > bounds.Right - edgeMargin ||
+                       e.Y < bounds.Top + edgeMargin ||
+                       e.Y > bounds.Bottom - edgeMargin;
+
+        if (nearEdge)
+        {
+            var capturedPos = _cursorManager.CapturedPosition;
+            // Record warp position so we can ignore events at this position
+            _warpX = capturedPos.X;
+            _warpY = capturedPos.Y;
+            InputSimulator.MoveTo(capturedPos.X, capturedPos.Y);
+            _lastSeenX = capturedPos.X;
+            _lastSeenY = capturedPos.Y;
         }
     }
 
@@ -661,7 +667,7 @@ public sealed class RoboMouseService : IDisposable
         if (!_isControlledByRemote)
             return;
 
-        // The sender now sends coordinates in OUR screen space directly
+        // The sender sends coordinates in OUR screen space directly
         // (they track a virtual cursor position and scale it to our screen dimensions)
         var localX = (float)msg.X;
         var localY = (float)msg.Y;
@@ -816,7 +822,6 @@ public sealed class RoboMouseService : IDisposable
         // Reset velocity and warp tracking
         _velocityX = 0;
         _velocityY = 0;
-        _warpTimestamp = 0;
         _warpX = 0;
         _warpY = 0;
 
@@ -969,4 +974,5 @@ public class MouseDebugEventArgs : EventArgs
     public int DeltaY { get; set; }
     public float VelocityX { get; set; }
     public float VelocityY { get; set; }
+    public bool IsIgnored { get; set; }
 }
