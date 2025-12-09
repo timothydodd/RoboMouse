@@ -46,12 +46,6 @@ public sealed class RoboMouseService : IDisposable
     private float _velocityY;
     private long _lastMoveTime;
 
-    // Warp tracking - ignore events until warp completes
-    private int _warpX;
-    private int _warpY;
-    private bool _warpPending; // True after warp initiated, false once we see event at warp position
-
-
     /// <summary>
     /// Whether the service is enabled.
     /// </summary>
@@ -409,41 +403,6 @@ public sealed class RoboMouseService : IDisposable
 
             if (e.EventType == MouseEventType.Move)
             {
-                // When warp is pending, ignore all events until we see the warp position
-                if (_warpPending)
-                {
-                    // Check if this is the warp event (at or very close to warp position)
-                    var atWarp = Math.Abs(e.X - _warpX) <= 1 && Math.Abs(e.Y - _warpY) <= 1;
-
-                    // Fire debug event showing ignored
-                    MouseDebugUpdate?.Invoke(this, new MouseDebugEventArgs
-                    {
-                        IsControlling = true,
-                        PeerName = _activePeer.Name,
-                        LocalX = e.X,
-                        LocalY = e.Y,
-                        PrevX = _lastSeenX,
-                        PrevY = _lastSeenY,
-                        VirtualX = _virtualX,
-                        VirtualY = _virtualY,
-                        DeltaX = 0,
-                        DeltaY = 0,
-                        VelocityX = _velocityX,
-                        VelocityY = _velocityY,
-                        IsIgnored = true
-                    });
-
-                    if (atWarp)
-                    {
-                        // Warp complete - resume tracking from warp position
-                        _warpPending = false;
-                        _lastSeenX = e.X;
-                        _lastSeenY = e.Y;
-                    }
-                    // Either way, ignore this event
-                    return;
-                }
-
                 var now = Environment.TickCount64;
 
                 // Calculate delta from last seen position
@@ -598,24 +557,7 @@ public sealed class RoboMouseService : IDisposable
             VelocityY = _velocityY
         });
 
-        // Only warp back if cursor is getting close to screen edge
-        var bounds = _screenInfo.PrimaryBounds;
-        var edgeMargin = 100;
-
-        var nearEdge = e.X < bounds.Left + edgeMargin ||
-                       e.X > bounds.Right - edgeMargin ||
-                       e.Y < bounds.Top + edgeMargin ||
-                       e.Y > bounds.Bottom - edgeMargin;
-
-        if (nearEdge)
-        {
-            var capturedPos = _cursorManager.CapturedPosition;
-            // Record warp position and set pending flag to ignore events until warp completes
-            _warpX = capturedPos.X;
-            _warpY = capturedPos.Y;
-            _warpPending = true;
-            InputSimulator.MoveTo(capturedPos.X, capturedPos.Y);
-        }
+        // No warp needed - blocking the event with Handled=true keeps cursor in place
     }
 
     private void OnClipboardChanged(object? sender, ClipboardMessage message)
@@ -833,18 +775,16 @@ public sealed class RoboMouseService : IDisposable
 
         SimpleLogger.Log("Control", $"StartRemoteControl: peer={peer.Name}, virtualPos=({_virtualX:F2},{_virtualY:F2})");
 
-        // Initialize last seen position for delta tracking
+        // Reset velocity tracking
+        _velocityX = 0;
+        _velocityY = 0;
+
+        // Initialize last seen to current edge position
+        // Blocking handled events keeps cursor in place, so just track from where we are
         _lastSeenX = edge.X;
         _lastSeenY = edge.Y;
 
-        // Reset velocity and warp tracking
-        _velocityX = 0;
-        _velocityY = 0;
-        _warpX = 0;
-        _warpY = 0;
-        _warpPending = false;
-
-        // Capture cursor at edge position
+        // Still capture for cursor release logic
         _cursorManager.Capture(edge.X, edge.Y);
 
         // Notify the peer that cursor is entering
@@ -864,9 +804,8 @@ public sealed class RoboMouseService : IDisposable
         if (!_isControllingRemote)
             return;
 
-        // Release cursor and reset warp state
+        // Release cursor
         _cursorManager.Release();
-        _warpPending = false;
 
         if (_activePeer != null)
         {
