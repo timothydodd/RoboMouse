@@ -391,7 +391,14 @@ public class TrayApplicationContext : ApplicationContext
             DeltaY = e.DeltaY,
             VelocityX = e.VelocityX,
             VelocityY = e.VelocityY,
-            IsIgnored = e.IsIgnored
+            IsIgnored = e.IsIgnored,
+            RemoteX = e.RemoteX,
+            RemoteY = e.RemoteY,
+            PeerScreenWidth = e.PeerScreenWidth,
+            PeerScreenHeight = e.PeerScreenHeight,
+            CaptureX = e.CaptureX,
+            CaptureY = e.CaptureY,
+            PeerPosition = e.PeerPosition
         });
     }
 

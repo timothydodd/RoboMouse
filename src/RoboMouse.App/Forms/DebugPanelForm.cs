@@ -14,18 +14,23 @@ public class DebugPanelForm : Form
     private readonly Label _directionLabel;
     private readonly Panel _directionIndicator;
     private readonly Label _peerLabel;
+    private readonly Label _remotePosLabel;
+    private readonly Label _peerScreenLabel;
+    private readonly Label _captureLabel;
+    private readonly Label _peerPositionLabel;
     private readonly ListBox _historyList;
 
     private float _lastVelocityX;
     private float _lastVelocityY;
     private readonly List<string> _history = new(10);
+    private MouseDebugData? _lastData;
 
     public DebugPanelForm()
     {
         Text = "RoboMouse Debug";
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(320, 680);
+        Size = new Size(320, 780);
         TopMost = true;
         ShowInTaskbar = false;
         BackColor = Color.FromArgb(30, 30, 30);
@@ -74,6 +79,25 @@ public class DebugPanelForm : Form
         _prevPosLabel = CreateLabel("Prev: (0, 0)", ref y, labelHeight, padding);
         _positionLabel = CreateLabel("Curr: (0, 0)", ref y, labelHeight, padding);
         _virtualPosLabel = CreateLabel("Virtual: (0.00, 0.00)", ref y, labelHeight, padding);
+        _remotePosLabel = CreateLabel("Remote: (0, 0)", ref y, labelHeight, padding);
+
+        y += 8; // spacing
+
+        // Peer info section
+        var peerHeader = new Label
+        {
+            Text = "Peer Info",
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            Location = new Point(padding, y),
+            Size = new Size(Width - padding * 2, 20),
+            ForeColor = Color.FromArgb(150, 150, 150)
+        };
+        Controls.Add(peerHeader);
+        y += 22;
+
+        _peerPositionLabel = CreateLabel("Position: -", ref y, labelHeight, padding);
+        _peerScreenLabel = CreateLabel("Screen: 0x0", ref y, labelHeight, padding);
+        _captureLabel = CreateLabel("Capture: (0, 0)", ref y, labelHeight, padding);
 
         y += 8; // spacing
 
@@ -161,9 +185,19 @@ public class DebugPanelForm : Form
         sb.AppendLine("=== RoboMouse Debug ===");
         sb.AppendLine(_statusLabel.Text);
         sb.AppendLine(_peerLabel.Text);
+        sb.AppendLine();
+        sb.AppendLine("=== Position ===");
         sb.AppendLine(_prevPosLabel.Text);
         sb.AppendLine(_positionLabel.Text);
         sb.AppendLine(_virtualPosLabel.Text);
+        sb.AppendLine(_remotePosLabel.Text);
+        sb.AppendLine();
+        sb.AppendLine("=== Peer Info ===");
+        sb.AppendLine(_peerPositionLabel.Text);
+        sb.AppendLine(_peerScreenLabel.Text);
+        sb.AppendLine(_captureLabel.Text);
+        sb.AppendLine();
+        sb.AppendLine("=== Movement ===");
         sb.AppendLine(_deltaLabel.Text);
         sb.AppendLine(_velocityLabel.Text);
         sb.AppendLine(_directionLabel.Text);
@@ -276,6 +310,11 @@ public class DebugPanelForm : Form
         _prevPosLabel.Text = $"Prev: ({data.PrevX}, {data.PrevY})";
         _positionLabel.Text = $"Curr: ({data.LocalX}, {data.LocalY})";
         _virtualPosLabel.Text = $"Virtual: ({data.VirtualX:F3}, {data.VirtualY:F3})";
+        _remotePosLabel.Text = $"Remote: ({data.RemoteX}, {data.RemoteY})";
+
+        _peerPositionLabel.Text = $"Position: {data.PeerPosition ?? "-"}";
+        _peerScreenLabel.Text = $"Screen: {data.PeerScreenWidth}x{data.PeerScreenHeight}";
+        _captureLabel.Text = $"Capture: ({data.CaptureX}, {data.CaptureY})";
 
         _deltaLabel.Text = $"Delta: ({data.DeltaX:+0;-0;0}, {data.DeltaY:+0;-0;0})";
         _deltaLabel.ForeColor = data.IsIgnored ? Color.FromArgb(255, 165, 0) : Color.White;
@@ -289,15 +328,14 @@ public class DebugPanelForm : Form
 
         _lastVelocityX = data.VelocityX;
         _lastVelocityY = data.VelocityY;
+        _lastData = data;
         _directionIndicator.Invalidate();
 
         // Add to history (only non-ignored movements with actual delta)
         if (!data.IsIgnored && (data.DeltaX != 0 || data.DeltaY != 0))
         {
-            var remoteX = (int)(data.VirtualX * 1920); // Approximate remote pos
-            var remoteY = (int)(data.VirtualY * 1080);
             var arrow = GetDirectionArrow(data.DeltaX, data.DeltaY);
-            var historyEntry = $"{arrow} Δ({data.DeltaX:+00;-00},{data.DeltaY:+00;-00}) v{speed:000} →({remoteX,4},{remoteY,4})";
+            var historyEntry = $"{arrow} Δ({data.DeltaX:+00;-00},{data.DeltaY:+00;-00}) v{speed:000} →({data.RemoteX,4},{data.RemoteY,4})";
 
             _history.Insert(0, historyEntry);
             if (_history.Count > 10)
@@ -402,4 +440,15 @@ public class MouseDebugData
     public float VelocityX { get; set; }
     public float VelocityY { get; set; }
     public bool IsIgnored { get; set; }
+
+    // Extra debug info
+    public int RemoteX { get; set; }
+    public int RemoteY { get; set; }
+    public int PeerScreenWidth { get; set; }
+    public int PeerScreenHeight { get; set; }
+    public int CaptureX { get; set; }
+    public int CaptureY { get; set; }
+    public string? PeerPosition { get; set; }
+    public float InitialVirtualX { get; set; }
+    public float InitialVirtualY { get; set; }
 }
