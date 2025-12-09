@@ -1,4 +1,4 @@
-using RoboMouse.App.Forms;
+﻿using RoboMouse.App.Forms;
 using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Network;
@@ -22,7 +22,7 @@ public class TrayApplicationContext : ApplicationContext
     private SettingsForm? _settingsForm;
     private ScreenLayoutForm? _layoutForm;
     private DebugPanelForm? _debugPanel;
-    private bool _debugPanelEnabled;
+    private bool _debugPanelEnabled = true; // Default on for debugging
 
     public TrayApplicationContext(AppSettings settings)
     {

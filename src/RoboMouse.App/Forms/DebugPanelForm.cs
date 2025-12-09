@@ -1,4 +1,4 @@
-namespace RoboMouse.App.Forms;
+﻿namespace RoboMouse.App.Forms;
 
 /// <summary>
 /// Debug panel that shows mouse movement information when controlling a remote machine.
@@ -14,16 +14,18 @@ public class DebugPanelForm : Form
     private readonly Label _directionLabel;
     private readonly Panel _directionIndicator;
     private readonly Label _peerLabel;
+    private readonly ListBox _historyList;
 
     private float _lastVelocityX;
     private float _lastVelocityY;
+    private readonly List<string> _history = new(10);
 
     public DebugPanelForm()
     {
         Text = "RoboMouse Debug";
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(280, 345);
+        Size = new Size(320, 680);
         TopMost = true;
         ShowInTaskbar = false;
         BackColor = Color.FromArgb(30, 30, 30);
@@ -111,6 +113,80 @@ public class DebugPanelForm : Form
         };
         _directionIndicator.Paint += DirectionIndicator_Paint;
         Controls.Add(_directionIndicator);
+
+        y += 70;
+
+        // History section
+        var historyHeader = new Label
+        {
+            Text = "Last 10 Movements",
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            Location = new Point(padding, y),
+            Size = new Size(Width - padding * 2, 20),
+            ForeColor = Color.FromArgb(150, 150, 150)
+        };
+        Controls.Add(historyHeader);
+        y += 22;
+
+        _historyList = new ListBox
+        {
+            Location = new Point(padding, y),
+            Size = new Size(Width - padding * 2 - 10, 140),
+            BackColor = Color.FromArgb(40, 40, 40),
+            ForeColor = Color.White,
+            Font = new Font("Consolas", 8),
+            BorderStyle = BorderStyle.None
+        };
+        Controls.Add(_historyList);
+        y += 145;
+
+        // Copy button
+        var copyButton = new Button
+        {
+            Text = "Copy to Clipboard",
+            Location = new Point(padding, y),
+            Size = new Size(Width - padding * 2 - 10, 28),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        copyButton.FlatAppearance.BorderColor = Color.FromArgb(100, 100, 100);
+        copyButton.Click += CopyButton_Click;
+        Controls.Add(copyButton);
+    }
+
+    private void CopyButton_Click(object? sender, EventArgs e)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== RoboMouse Debug ===");
+        sb.AppendLine(_statusLabel.Text);
+        sb.AppendLine(_peerLabel.Text);
+        sb.AppendLine(_prevPosLabel.Text);
+        sb.AppendLine(_positionLabel.Text);
+        sb.AppendLine(_virtualPosLabel.Text);
+        sb.AppendLine(_deltaLabel.Text);
+        sb.AppendLine(_velocityLabel.Text);
+        sb.AppendLine(_directionLabel.Text);
+        sb.AppendLine();
+        sb.AppendLine("=== History ===");
+        foreach (var entry in _history)
+        {
+            sb.AppendLine(entry);
+        }
+
+        try
+        {
+            Clipboard.SetText(sb.ToString());
+            if (sender is Button btn)
+            {
+                var originalText = btn.Text;
+                btn.Text = "Copied!";
+                var timer = new System.Windows.Forms.Timer { Interval = 1000 };
+                timer.Tick += (_, _) => { btn.Text = originalText; timer.Stop(); timer.Dispose(); };
+                timer.Start();
+            }
+        }
+        catch { }
     }
 
     private Label CreateLabel(string text, ref int y, int height, int padding)
@@ -214,12 +290,49 @@ public class DebugPanelForm : Form
         _lastVelocityX = data.VelocityX;
         _lastVelocityY = data.VelocityY;
         _directionIndicator.Invalidate();
+
+        // Add to history (only non-ignored movements with actual delta)
+        if (!data.IsIgnored && (data.DeltaX != 0 || data.DeltaY != 0))
+        {
+            var remoteX = (int)(data.VirtualX * 1920); // Approximate remote pos
+            var remoteY = (int)(data.VirtualY * 1080);
+            var arrow = GetDirectionArrow(data.DeltaX, data.DeltaY);
+            var historyEntry = $"{arrow} Δ({data.DeltaX:+00;-00},{data.DeltaY:+00;-00}) v{speed:000} →({remoteX,4},{remoteY,4})";
+
+            _history.Insert(0, historyEntry);
+            if (_history.Count > 10)
+                _history.RemoveAt(10);
+
+            _historyList.Items.Clear();
+            foreach (var entry in _history)
+                _historyList.Items.Add(entry);
+        }
+    }
+
+    private static string GetDirectionArrow(int dx, int dy)
+    {
+        if (dx == 0 && dy == 0)
+            return "·";
+        var angle = Math.Atan2(dy, dx) * 180 / Math.PI;
+        return angle switch
+        {
+            >= -22.5 and < 22.5 => "→",
+            >= 22.5 and < 67.5 => "↘",
+            >= 67.5 and < 112.5 => "↓",
+            >= 112.5 and < 157.5 => "↙",
+            >= 157.5 or < -157.5 => "←",
+            >= -157.5 and < -112.5 => "↖",
+            >= -112.5 and < -67.5 => "↑",
+            >= -67.5 and < -22.5 => "↗",
+            _ => "?"
+        };
     }
 
     private static string GetDirectionString(float vx, float vy)
     {
         var speed = (float)Math.Sqrt(vx * vx + vy * vy);
-        if (speed < 10) return "Stationary";
+        if (speed < 10)
+            return "Stationary";
 
         var angle = Math.Atan2(vy, vx) * 180 / Math.PI;
 

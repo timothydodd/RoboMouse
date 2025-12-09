@@ -46,6 +46,7 @@ public sealed class RoboMouseService : IDisposable
     private float _velocityY;
     private long _lastMoveTime;
 
+
     /// <summary>
     /// Whether the service is enabled.
     /// </summary>
@@ -124,7 +125,6 @@ public sealed class RoboMouseService : IDisposable
     /// Event raised when mouse debug data is updated (for debug panel).
     /// </summary>
     public event EventHandler<MouseDebugEventArgs>? MouseDebugUpdate;
-
     public RoboMouseService(AppSettings settings)
     {
         _settings = settings;
@@ -399,12 +399,10 @@ public sealed class RoboMouseService : IDisposable
         // If we're controlling a remote, forward input
         if (_isControllingRemote && _activePeer != null)
         {
-            e.Handled = true;
+
 
             if (e.EventType == MouseEventType.Move)
             {
-                var now = Environment.TickCount64;
-
                 // Calculate delta from last seen position
                 var prevX = _lastSeenX;
                 var prevY = _lastSeenY;
@@ -419,10 +417,95 @@ public sealed class RoboMouseService : IDisposable
                 if (deltaX == 0 && deltaY == 0)
                     return;
 
-                ProcessMouseDelta(e, deltaX, deltaY, prevX, prevY, now);
+                // Calculate velocity for prediction
+                var now = Environment.TickCount64;
+                var timeDelta = now - _lastMoveTime;
+                if (timeDelta > 0 && timeDelta < 1000)
+                {
+                    var newVelX = (deltaX * 1000f) / timeDelta;
+                    var newVelY = (deltaY * 1000f) / timeDelta;
+
+                    const float smoothing = 0.3f;
+                    _velocityX = _velocityX * (1 - smoothing) + newVelX * smoothing;
+                    _velocityY = _velocityY * (1 - smoothing) + newVelY * smoothing;
+                }
+                else
+                {
+                    _velocityX = 0;
+                    _velocityY = 0;
+                }
+                _lastMoveTime = now;
+
+                // Update virtual position on remote screen (normalized 0-1)
+                _virtualX += (float)deltaX / _activePeer.ScreenWidth;
+                _virtualY += (float)deltaY / _activePeer.ScreenHeight;
+
+                // Clamp to screen bounds
+                _virtualX = Math.Clamp(_virtualX, 0f, 1f);
+                _virtualY = Math.Clamp(_virtualY, 0f, 1f);
+
+                // Check if we've moved into the remote screen
+                if (!_hasMovedIntoRemote)
+                {
+                    _hasMovedIntoRemote = HasMovedIntoRemote(_activePeer.Position, _virtualX, _virtualY);
+                }
+
+                // Check if returning from remote (hit opposite edge)
+                if (_hasMovedIntoRemote)
+                {
+                    var returnEdge = GetReturnEdge(_activePeer.Position, _virtualX, _virtualY);
+                    if (returnEdge != null)
+                    {
+                        var peerPosition = _activePeer.Position;
+                        var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
+                            ? _virtualY : _virtualX;
+                        EndRemoteControl();
+                        _cursorManager.ReleaseAt(peerPosition, normalizedPos);
+                        return;
+                    }
+                }
+
+                // Send position to remote with velocity for prediction
+                var remoteX = (int)(_virtualX * _activePeer.ScreenWidth);
+                var remoteY = (int)(_virtualY * _activePeer.ScreenHeight);
+
+                var msg = new MouseMessage
+                {
+                    X = remoteX,
+                    Y = remoteY,
+                    EventType = MouseEventType.Move,
+                    WheelDelta = 0,
+                    VelocityX = _velocityX,
+                    VelocityY = _velocityY
+                };
+                SendToActivePeer(msg);
+
+                // Fire debug event
+                MouseDebugUpdate?.Invoke(this, new MouseDebugEventArgs
+                {
+                    IsControlling = true,
+                    PeerName = _activePeer.Name,
+                    LocalX = e.X,
+                    LocalY = e.Y,
+                    PrevX = prevX,
+                    PrevY = prevY,
+                    VirtualX = _virtualX,
+                    VirtualY = _virtualY,
+                    DeltaX = deltaX,
+                    DeltaY = deltaY,
+                    VelocityX = _velocityX,
+                    VelocityY = _velocityY
+                });
+
+                // Warp cursor back to captured position to allow continuous tracking
+                var capturedPos = _cursorManager.CapturedPosition;
+                InputSimulator.MoveTo(capturedPos.X, capturedPos.Y);
+                _lastSeenX = capturedPos.X;
+                _lastSeenY = capturedPos.Y;
             }
             else
             {
+                e.Handled = true;
                 // For clicks/wheel, use current virtual position
                 var msg = new MouseMessage
                 {
@@ -451,6 +534,7 @@ public sealed class RoboMouseService : IDisposable
                 }
             }
         }
+
     }
 
     private void OnKeyboardEvent(object? sender, KeyboardEventArgs e)
@@ -470,94 +554,6 @@ public sealed class RoboMouseService : IDisposable
             e.Handled = true;
             SendToActivePeer(KeyboardMessage.FromEvent(e));
         }
-    }
-
-    private void ProcessMouseDelta(InputMouseEventArgs e, int deltaX, int deltaY, int prevX, int prevY, long now)
-    {
-        if (_activePeer == null)
-            return;
-
-        // Calculate velocity for prediction
-        var timeDelta = now - _lastMoveTime;
-        if (timeDelta > 0 && timeDelta < 1000)
-        {
-            var newVelX = (deltaX * 1000f) / timeDelta;
-            var newVelY = (deltaY * 1000f) / timeDelta;
-
-            const float smoothing = 0.3f;
-            _velocityX = _velocityX * (1 - smoothing) + newVelX * smoothing;
-            _velocityY = _velocityY * (1 - smoothing) + newVelY * smoothing;
-        }
-        else
-        {
-            _velocityX = 0;
-            _velocityY = 0;
-        }
-        _lastMoveTime = now;
-
-        // Update virtual position on remote screen (normalized 0-1)
-        _virtualX += (float)deltaX / _activePeer.ScreenWidth;
-        _virtualY += (float)deltaY / _activePeer.ScreenHeight;
-
-        // Clamp to screen bounds
-        _virtualX = Math.Clamp(_virtualX, 0f, 1f);
-        _virtualY = Math.Clamp(_virtualY, 0f, 1f);
-
-        // Check if we've moved into the remote screen
-        if (!_hasMovedIntoRemote)
-        {
-            _hasMovedIntoRemote = HasMovedIntoRemote(_activePeer.Position, _virtualX, _virtualY);
-        }
-
-        // Check if returning from remote (hit opposite edge)
-        if (_hasMovedIntoRemote)
-        {
-            var returnEdge = GetReturnEdge(_activePeer.Position, _virtualX, _virtualY);
-            if (returnEdge != null)
-            {
-                var peerPosition = _activePeer.Position;
-                var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
-                    ? _virtualY : _virtualX;
-                EndRemoteControl();
-                _cursorManager.ReleaseAt(peerPosition, normalizedPos);
-                return;
-            }
-        }
-
-        // Send position to remote
-        var remoteX = (int)(_virtualX * _activePeer.ScreenWidth);
-        var remoteY = (int)(_virtualY * _activePeer.ScreenHeight);
-
-        var msg = new MouseMessage
-        {
-            X = remoteX,
-            Y = remoteY,
-            EventType = MouseEventType.Move,
-            WheelDelta = 0,
-            VelocityX = _velocityX,
-            VelocityY = _velocityY
-        };
-
-        SendToActivePeer(msg);
-
-        // Fire debug event for UI
-        MouseDebugUpdate?.Invoke(this, new MouseDebugEventArgs
-        {
-            IsControlling = true,
-            PeerName = _activePeer.Name,
-            LocalX = e.X,
-            LocalY = e.Y,
-            PrevX = prevX,
-            PrevY = prevY,
-            VirtualX = _virtualX,
-            VirtualY = _virtualY,
-            DeltaX = deltaX,
-            DeltaY = deltaY,
-            VelocityX = _velocityX,
-            VelocityY = _velocityY
-        });
-
-        // No warp needed - blocking the event with Handled=true keeps cursor in place
     }
 
     private void OnClipboardChanged(object? sender, ClipboardMessage message)
@@ -627,7 +623,7 @@ public sealed class RoboMouseService : IDisposable
         if (!_isControlledByRemote)
             return;
 
-        // The sender sends coordinates in OUR screen space directly
+        // The sender now sends coordinates in OUR screen space directly
         // (they track a virtual cursor position and scale it to our screen dimensions)
         var localX = (float)msg.X;
         var localY = (float)msg.Y;
@@ -775,16 +771,11 @@ public sealed class RoboMouseService : IDisposable
 
         SimpleLogger.Log("Control", $"StartRemoteControl: peer={peer.Name}, virtualPos=({_virtualX:F2},{_virtualY:F2})");
 
-        // Reset velocity tracking
-        _velocityX = 0;
-        _velocityY = 0;
-
-        // Initialize last seen to current edge position
-        // Blocking handled events keeps cursor in place, so just track from where we are
+        // Initialize last seen position for delta tracking
         _lastSeenX = edge.X;
         _lastSeenY = edge.Y;
 
-        // Still capture for cursor release logic
+        // Capture cursor at edge position
         _cursorManager.Capture(edge.X, edge.Y);
 
         // Notify the peer that cursor is entering
@@ -917,10 +908,6 @@ public sealed class RoboMouseService : IDisposable
         _listener.Dispose();
     }
 }
-
-/// <summary>
-/// Event args for mouse debug updates.
-/// </summary>
 public class MouseDebugEventArgs : EventArgs
 {
     public bool IsControlling { get; set; }
@@ -937,3 +924,4 @@ public class MouseDebugEventArgs : EventArgs
     public float VelocityY { get; set; }
     public bool IsIgnored { get; set; }
 }
+
