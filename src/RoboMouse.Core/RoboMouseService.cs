@@ -1,4 +1,4 @@
-using RoboMouse.Core.Configuration;
+﻿using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Input;
 using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network;
@@ -37,11 +37,10 @@ public sealed class RoboMouseService : IDisposable
     private float _virtualY;
     private bool _hasMovedIntoRemote; // Must move away from entry edge before return is allowed
 
-    // Mouse polling for remote control
-    private CancellationTokenSource? _mousePollingCts;
-    private Task? _mousePollingTask;
-    private int _lastPolledX;
-    private int _lastPolledY;
+    // Track last seen mouse position for delta calculation (avoids race conditions with warp)
+    private int _lastSeenX;
+    private int _lastSeenY;
+
 
     /// <summary>
     /// Whether the service is enabled.
@@ -388,13 +387,77 @@ public sealed class RoboMouseService : IDisposable
             return;
         }
 
-        // If we're controlling a remote, forward non-move input (clicks, wheel)
-        // Mouse movement is handled by the polling loop
+        // If we're controlling a remote, forward input
         if (_isControllingRemote && _activePeer != null)
         {
             e.Handled = true;
 
-            if (e.EventType != MouseEventType.Move)
+            if (e.EventType == MouseEventType.Move)
+            {
+                // Calculate delta from last seen position (not captured position)
+                // This avoids race conditions where warp-back hasn't completed yet
+                var deltaX = e.X - _lastSeenX;
+                var deltaY = e.Y - _lastSeenY;
+
+                // Update last seen position BEFORE any other processing
+                _lastSeenX = e.X;
+                _lastSeenY = e.Y;
+
+                // Skip if no movement
+                if (deltaX == 0 && deltaY == 0)
+                    return;
+
+                // Update virtual position on remote screen (normalized 0-1)
+                _virtualX += (float)deltaX / _activePeer.ScreenWidth;
+                _virtualY += (float)deltaY / _activePeer.ScreenHeight;
+
+                // Clamp to screen bounds
+                _virtualX = Math.Clamp(_virtualX, 0f, 1f);
+                _virtualY = Math.Clamp(_virtualY, 0f, 1f);
+
+                // Check if we've moved into the remote screen
+                if (!_hasMovedIntoRemote)
+                {
+                    _hasMovedIntoRemote = HasMovedIntoRemote(_activePeer.Position, _virtualX, _virtualY);
+                }
+
+                // Check if returning from remote (hit opposite edge)
+                if (_hasMovedIntoRemote)
+                {
+                    var returnEdge = GetReturnEdge(_activePeer.Position, _virtualX, _virtualY);
+                    if (returnEdge != null)
+                    {
+                        var peerPosition = _activePeer.Position;
+                        var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
+                            ? _virtualY : _virtualX;
+                        EndRemoteControl();
+                        _cursorManager.ReleaseAt(peerPosition, normalizedPos);
+                        return;
+                    }
+                }
+
+                // Send position to remote
+                var remoteX = (int)(_virtualX * _activePeer.ScreenWidth);
+                var remoteY = (int)(_virtualY * _activePeer.ScreenHeight);
+
+                var msg = new MouseMessage
+                {
+                    X = remoteX,
+                    Y = remoteY,
+                    EventType = MouseEventType.Move,
+                    WheelDelta = 0
+                };
+                SendToActivePeer(msg);
+
+                // Warp cursor back AFTER sending the message
+                _cursorManager.WarpBack();
+
+                // Update last seen to warp position so next event at that position has delta=0
+                var capturedPos = _cursorManager.CapturedPosition;
+                _lastSeenX = capturedPos.X;
+                _lastSeenY = capturedPos.Y;
+            }
+            else
             {
                 // For clicks/wheel, use current virtual position
                 var msg = new MouseMessage
@@ -631,13 +694,12 @@ public sealed class RoboMouseService : IDisposable
 
         SimpleLogger.Log("Control", $"StartRemoteControl: peer={peer.Name}, virtualPos=({_virtualX:F2},{_virtualY:F2})");
 
-        // Initialize polling position
-        _lastPolledX = edge.X;
-        _lastPolledY = edge.Y;
+        // Initialize last seen position for delta tracking
+        _lastSeenX = edge.X;
+        _lastSeenY = edge.Y;
 
-        // Start mouse polling loop
-        _mousePollingCts = new CancellationTokenSource();
-        _mousePollingTask = MousePollingLoopAsync(_mousePollingCts.Token);
+        // Capture cursor at edge position
+        _cursorManager.Capture(edge.X, edge.Y);
 
         // Notify the peer that cursor is entering
         var enterMsg = new CursorEnterMessage
@@ -656,10 +718,8 @@ public sealed class RoboMouseService : IDisposable
         if (!_isControllingRemote)
             return;
 
-        // Stop mouse polling loop
-        _mousePollingCts?.Cancel();
-        _mousePollingCts?.Dispose();
-        _mousePollingCts = null;
+        // Release cursor
+        _cursorManager.Release();
 
         if (_activePeer != null)
         {
@@ -675,86 +735,6 @@ public sealed class RoboMouseService : IDisposable
         _isControllingRemote = false;
         _activePeer = null;
         ControlStateChanged?.Invoke(this, EventArgs.Empty);
-    }
-
-    private async Task MousePollingLoopAsync(CancellationToken ct)
-    {
-        const int pollIntervalMs = 8; // ~120Hz polling rate
-
-        SimpleLogger.Log("Polling", "Mouse polling loop started");
-
-        try
-        {
-            while (!ct.IsCancellationRequested && _isControllingRemote && _activePeer != null)
-            {
-                // Get current cursor position
-                var (currentX, currentY) = InputSimulator.GetCursorPosition();
-
-                // Calculate delta
-                var deltaX = currentX - _lastPolledX;
-                var deltaY = currentY - _lastPolledY;
-
-                // Process if there's movement
-                if (deltaX != 0 || deltaY != 0)
-                {
-                    SimpleLogger.Log("Polling", $"Delta: ({deltaX},{deltaY}), Virtual: ({_virtualX:F2},{_virtualY:F2})");
-                    // Update virtual position on remote screen (normalized 0-1)
-                    _virtualX += (float)deltaX / _activePeer.ScreenWidth;
-                    _virtualY += (float)deltaY / _activePeer.ScreenHeight;
-
-                    // Clamp to screen bounds
-                    _virtualX = Math.Clamp(_virtualX, 0f, 1f);
-                    _virtualY = Math.Clamp(_virtualY, 0f, 1f);
-
-                    // Warp cursor back to start position
-                    InputSimulator.MoveTo(_lastPolledX, _lastPolledY);
-
-                    // Check if we've moved into the remote screen
-                    if (!_hasMovedIntoRemote)
-                    {
-                        _hasMovedIntoRemote = HasMovedIntoRemote(_activePeer.Position, _virtualX, _virtualY);
-                    }
-
-                    // Check if returning from remote (hit opposite edge)
-                    if (_hasMovedIntoRemote)
-                    {
-                        var returnEdge = GetReturnEdge(_activePeer.Position, _virtualX, _virtualY);
-                        if (returnEdge != null)
-                        {
-                            var peerPosition = _activePeer.Position;
-                            var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
-                                ? _virtualY : _virtualX;
-                            EndRemoteControl();
-                            _cursorManager.ReleaseAt(peerPosition, normalizedPos);
-                            return;
-                        }
-                    }
-
-                    // Send position to remote
-                    var remoteX = (int)(_virtualX * _activePeer.ScreenWidth);
-                    var remoteY = (int)(_virtualY * _activePeer.ScreenHeight);
-
-                    var msg = new MouseMessage
-                    {
-                        X = remoteX,
-                        Y = remoteY,
-                        EventType = MouseEventType.Move,
-                        WheelDelta = 0
-                    };
-                    SendToActivePeer(msg);
-                }
-
-                await Task.Delay(pollIntervalMs, ct);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Normal cancellation
-        }
-        catch (Exception ex)
-        {
-            SimpleLogger.Log("Polling", $"Error in mouse polling loop: {ex.Message}");
-        }
     }
 
     private void SendToActivePeer(ProtocolMessage message)
