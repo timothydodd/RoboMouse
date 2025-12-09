@@ -6,6 +6,7 @@ namespace RoboMouse.App.Forms;
 public class DebugPanelForm : Form
 {
     private readonly Label _statusLabel;
+    private readonly Label _prevPosLabel;
     private readonly Label _positionLabel;
     private readonly Label _virtualPosLabel;
     private readonly Label _deltaLabel;
@@ -22,7 +23,7 @@ public class DebugPanelForm : Form
         Text = "RoboMouse Debug";
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(280, 320);
+        Size = new Size(280, 345);
         TopMost = true;
         ShowInTaskbar = false;
         BackColor = Color.FromArgb(30, 30, 30);
@@ -68,7 +69,8 @@ public class DebugPanelForm : Form
         Controls.Add(posHeader);
         y += 22;
 
-        _positionLabel = CreateLabel("Local: (0, 0)", ref y, labelHeight, padding);
+        _prevPosLabel = CreateLabel("Prev: (0, 0)", ref y, labelHeight, padding);
+        _positionLabel = CreateLabel("Curr: (0, 0)", ref y, labelHeight, padding);
         _virtualPosLabel = CreateLabel("Virtual: (0.00, 0.00)", ref y, labelHeight, padding);
 
         y += 8; // spacing
@@ -195,7 +197,8 @@ public class DebugPanelForm : Form
 
         _peerLabel.Text = $"Peer: {data.PeerName ?? "None"}";
 
-        _positionLabel.Text = $"Local: ({data.LocalX}, {data.LocalY})";
+        _prevPosLabel.Text = $"Prev: ({data.PrevX}, {data.PrevY})";
+        _positionLabel.Text = $"Curr: ({data.LocalX}, {data.LocalY})";
         _virtualPosLabel.Text = $"Virtual: ({data.VirtualX:F3}, {data.VirtualY:F3})";
 
         _deltaLabel.Text = $"Delta: ({data.DeltaX:+0;-0;0}, {data.DeltaY:+0;-0;0})";
@@ -277,6 +280,8 @@ public class MouseDebugData
     public string? PeerName { get; set; }
     public int LocalX { get; set; }
     public int LocalY { get; set; }
+    public int PrevX { get; set; }
+    public int PrevY { get; set; }
     public float VirtualX { get; set; }
     public float VirtualY { get; set; }
     public int DeltaX { get; set; }

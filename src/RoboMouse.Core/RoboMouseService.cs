@@ -46,9 +46,10 @@ public sealed class RoboMouseService : IDisposable
     private float _velocityY;
     private long _lastMoveTime;
 
-    // Warp tracking - ignore events at warp position
+    // Warp tracking - ignore events until warp completes
     private int _warpX;
     private int _warpY;
+    private bool _warpPending; // True after warp initiated, false once we see event at warp position
 
 
     /// <summary>
@@ -408,9 +409,12 @@ public sealed class RoboMouseService : IDisposable
 
             if (e.EventType == MouseEventType.Move)
             {
-                // Ignore events at the warp position
-                if (e.X == _warpX && e.Y == _warpY)
+                // When warp is pending, ignore all events until we see the warp position
+                if (_warpPending)
                 {
+                    // Check if this is the warp event (at or very close to warp position)
+                    var atWarp = Math.Abs(e.X - _warpX) <= 1 && Math.Abs(e.Y - _warpY) <= 1;
+
                     // Fire debug event showing ignored
                     MouseDebugUpdate?.Invoke(this, new MouseDebugEventArgs
                     {
@@ -418,6 +422,8 @@ public sealed class RoboMouseService : IDisposable
                         PeerName = _activePeer.Name,
                         LocalX = e.X,
                         LocalY = e.Y,
+                        PrevX = _lastSeenX,
+                        PrevY = _lastSeenY,
                         VirtualX = _virtualX,
                         VirtualY = _virtualY,
                         DeltaX = 0,
@@ -426,14 +432,25 @@ public sealed class RoboMouseService : IDisposable
                         VelocityY = _velocityY,
                         IsIgnored = true
                     });
+
+                    if (atWarp)
+                    {
+                        // Warp complete - resume tracking from warp position
+                        _warpPending = false;
+                        _lastSeenX = e.X;
+                        _lastSeenY = e.Y;
+                    }
+                    // Either way, ignore this event
                     return;
                 }
 
                 var now = Environment.TickCount64;
 
                 // Calculate delta from last seen position
-                var deltaX = e.X - _lastSeenX;
-                var deltaY = e.Y - _lastSeenY;
+                var prevX = _lastSeenX;
+                var prevY = _lastSeenY;
+                var deltaX = e.X - prevX;
+                var deltaY = e.Y - prevY;
 
                 // Update last seen position
                 _lastSeenX = e.X;
@@ -443,7 +460,7 @@ public sealed class RoboMouseService : IDisposable
                 if (deltaX == 0 && deltaY == 0)
                     return;
 
-                ProcessMouseDelta(e, deltaX, deltaY, now);
+                ProcessMouseDelta(e, deltaX, deltaY, prevX, prevY, now);
             }
             else
             {
@@ -496,7 +513,7 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
-    private void ProcessMouseDelta(InputMouseEventArgs e, int deltaX, int deltaY, long now)
+    private void ProcessMouseDelta(InputMouseEventArgs e, int deltaX, int deltaY, int prevX, int prevY, long now)
     {
         if (_activePeer == null)
             return;
@@ -571,6 +588,8 @@ public sealed class RoboMouseService : IDisposable
             PeerName = _activePeer.Name,
             LocalX = e.X,
             LocalY = e.Y,
+            PrevX = prevX,
+            PrevY = prevY,
             VirtualX = _virtualX,
             VirtualY = _virtualY,
             DeltaX = deltaX,
@@ -591,12 +610,11 @@ public sealed class RoboMouseService : IDisposable
         if (nearEdge)
         {
             var capturedPos = _cursorManager.CapturedPosition;
-            // Record warp position so we can ignore events at this position
+            // Record warp position and set pending flag to ignore events until warp completes
             _warpX = capturedPos.X;
             _warpY = capturedPos.Y;
+            _warpPending = true;
             InputSimulator.MoveTo(capturedPos.X, capturedPos.Y);
-            _lastSeenX = capturedPos.X;
-            _lastSeenY = capturedPos.Y;
         }
     }
 
@@ -657,8 +675,8 @@ public sealed class RoboMouseService : IDisposable
 
     // For velocity-based prediction on receiver
     private long _lastRemoteMoveTime;
-    private float _predictedX;
-    private float _predictedY;
+    private readonly float _predictedX;
+    private readonly float _predictedY;
     private float _remoteVelocityX;
     private float _remoteVelocityY;
 
@@ -824,6 +842,7 @@ public sealed class RoboMouseService : IDisposable
         _velocityY = 0;
         _warpX = 0;
         _warpY = 0;
+        _warpPending = false;
 
         // Capture cursor at edge position
         _cursorManager.Capture(edge.X, edge.Y);
@@ -845,8 +864,9 @@ public sealed class RoboMouseService : IDisposable
         if (!_isControllingRemote)
             return;
 
-        // Release cursor
+        // Release cursor and reset warp state
         _cursorManager.Release();
+        _warpPending = false;
 
         if (_activePeer != null)
         {
@@ -968,6 +988,8 @@ public class MouseDebugEventArgs : EventArgs
     public string? PeerName { get; set; }
     public int LocalX { get; set; }
     public int LocalY { get; set; }
+    public int PrevX { get; set; }
+    public int PrevY { get; set; }
     public float VirtualX { get; set; }
     public float VirtualY { get; set; }
     public int DeltaX { get; set; }

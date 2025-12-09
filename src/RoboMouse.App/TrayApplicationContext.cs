@@ -383,6 +383,8 @@ public class TrayApplicationContext : ApplicationContext
             PeerName = e.PeerName,
             LocalX = e.LocalX,
             LocalY = e.LocalY,
+            PrevX = e.PrevX,
+            PrevY = e.PrevY,
             VirtualX = e.VirtualX,
             VirtualY = e.VirtualY,
             DeltaX = e.DeltaX,
