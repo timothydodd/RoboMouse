@@ -32,11 +32,7 @@ public sealed class RoboMouseService : IDisposable
     private bool _enabled;
     private bool _disposed;
 
-    // Virtual cursor position on remote screen (0.0 to 1.0 normalized)
-    private float _virtualX;
-    private float _virtualY;
     private bool _hasMovedIntoRemote; // Must move away from entry edge before return is allowed
-    private bool _ignoreNextMouseMove; // Used to ignore warp-back generated events
 
     /// <summary>
     /// Whether the service is enabled.
@@ -390,51 +386,42 @@ public sealed class RoboMouseService : IDisposable
 
             if (e.EventType == MouseEventType.Move)
             {
-                // Skip if this is the warp-back event we generated
-                if (_ignoreNextMouseMove)
+                // Use direct screen position mapping
+                // Local cursor moves on our screen, we map it to remote screen
+                var bounds = _screenInfo.PrimaryBounds;
+
+                // Calculate normalized position on our screen (0-1)
+                var localNormX = (float)(e.X - bounds.Left) / bounds.Width;
+                var localNormY = (float)(e.Y - bounds.Top) / bounds.Height;
+
+                // Map to remote screen coordinates directly
+                var remoteX = (int)(localNormX * _activePeer.ScreenWidth);
+                var remoteY = (int)(localNormY * _activePeer.ScreenHeight);
+
+                // Check if we should return (cursor hit the entry edge of our screen)
+                var edge = _screenInfo.GetEdgeAt(e.X, e.Y, _settings.EdgeThreshold);
+                if (edge != null && _hasMovedIntoRemote)
                 {
-                    _ignoreNextMouseMove = false;
-                    return;
+                    // Check if we hit the edge where the peer is (return edge)
+                    if (edge.Edge == _activePeer.Position)
+                    {
+                        // We've returned to where we started - exit remote control
+                        var peerPosition = _activePeer.Position;
+                        EndRemoteControl();
+                        return;
+                    }
                 }
 
-                // Calculate delta from captured position
-                var capturedPos = _cursorManager.CapturedPosition;
-                var deltaX = e.X - capturedPos.X;
-                var deltaY = e.Y - capturedPos.Y;
-
-                // Skip if no actual movement
-                if (deltaX == 0 && deltaY == 0)
-                    return;
-
-                // Update virtual position on remote screen (normalized 0-1)
-                // Scale delta to remote screen space
-                _virtualX += (float)deltaX / _activePeer.ScreenWidth;
-                _virtualY += (float)deltaY / _activePeer.ScreenHeight;
-
-                // Clamp to screen bounds
-                _virtualX = Math.Clamp(_virtualX, 0f, 1f);
-                _virtualY = Math.Clamp(_virtualY, 0f, 1f);
-
-                // Warp cursor back to captured position for next delta
-                _ignoreNextMouseMove = true;
-                _cursorManager.WarpBack();
-
-                // Check if returning from remote (hit opposite edge)
-                var returnEdge = GetReturnEdge(_activePeer.Position, _virtualX, _virtualY);
-                if (returnEdge != null)
+                // Track if we've moved away from the entry edge
+                if (!_hasMovedIntoRemote)
                 {
-                    var peerPosition = _activePeer.Position;
-                    var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
-                        ? _virtualY : _virtualX;
-                    EndRemoteControl();
-                    // Return cursor to the edge where the peer is (where we left from)
-                    _cursorManager.ReleaseAt(peerPosition, normalizedPos);
-                    return;
+                    var entryEdge = _activePeer.Position;
+                    var currentEdge = _screenInfo.GetEdgeAt(e.X, e.Y, _settings.EdgeThreshold + 50);
+                    if (currentEdge == null || currentEdge.Edge != entryEdge)
+                    {
+                        _hasMovedIntoRemote = true;
+                    }
                 }
-
-                // Send absolute position on remote screen
-                var remoteX = (int)(_virtualX * _activePeer.ScreenWidth);
-                var remoteY = (int)(_virtualY * _activePeer.ScreenHeight);
 
                 var msg = new MouseMessage
                 {
@@ -447,11 +434,15 @@ public sealed class RoboMouseService : IDisposable
             }
             else
             {
-                // For clicks/wheel, just forward the event type
+                // For clicks/wheel, map current position and forward
+                var bounds = _screenInfo.PrimaryBounds;
+                var localNormX = (float)(e.X - bounds.Left) / bounds.Width;
+                var localNormY = (float)(e.Y - bounds.Top) / bounds.Height;
+
                 var msg = new MouseMessage
                 {
-                    X = (int)(_virtualX * _activePeer.ScreenWidth),
-                    Y = (int)(_virtualY * _activePeer.ScreenHeight),
+                    X = (int)(localNormX * _activePeer.ScreenWidth),
+                    Y = (int)(localNormY * _activePeer.ScreenHeight),
                     EventType = e.EventType,
                     WheelDelta = e.WheelDelta
                 };
@@ -658,32 +649,8 @@ public sealed class RoboMouseService : IDisposable
         _activePeer = peer;
         _isControllingRemote = true;
         _hasMovedIntoRemote = false;
-        _ignoreNextMouseMove = false;
 
-        // Initialize virtual cursor position based on entry edge
-        switch (peer.Position)
-        {
-            case ScreenPosition.Right:
-                _virtualX = 0f; // Enter from left of remote screen
-                _virtualY = edge.NormalizedPosition;
-                break;
-            case ScreenPosition.Left:
-                _virtualX = 1f; // Enter from right of remote screen
-                _virtualY = edge.NormalizedPosition;
-                break;
-            case ScreenPosition.Bottom:
-                _virtualX = edge.NormalizedPosition;
-                _virtualY = 0f; // Enter from top of remote screen
-                break;
-            case ScreenPosition.Top:
-                _virtualX = edge.NormalizedPosition;
-                _virtualY = 1f; // Enter from bottom of remote screen
-                break;
-        }
-
-        SimpleLogger.Log("Control", $"StartRemoteControl: virtualPos=({_virtualX:F2},{_virtualY:F2}), captureAt=({edge.X},{edge.Y})");
-
-        _cursorManager.Capture(edge.X, edge.Y);
+        SimpleLogger.Log("Control", $"StartRemoteControl: peer={peer.Name}, position={peer.Position}, entry=({edge.X},{edge.Y})");
 
         // Notify the peer that cursor is entering
         var enterMsg = new CursorEnterMessage
@@ -735,47 +702,6 @@ public sealed class RoboMouseService : IDisposable
         {
             _ = connection.SendAsync(message);
         }
-    }
-
-    /// <summary>
-    /// Checks if virtual cursor has hit the return edge (opposite to entry edge).
-    /// </summary>
-    private ScreenPosition? GetReturnEdge(ScreenPosition peerPosition, float virtualX, float virtualY)
-    {
-        const float entryThreshold = 0.05f; // 5% - must move this far into screen before return is allowed
-        const float returnThreshold = 0.01f; // 1% from edge to trigger return
-
-        // First, check if we've moved far enough into the remote screen
-        if (!_hasMovedIntoRemote)
-        {
-            bool movedIn = peerPosition switch
-            {
-                ScreenPosition.Right => virtualX >= entryThreshold,  // Entered from left, must move right
-                ScreenPosition.Left => virtualX <= 1f - entryThreshold,  // Entered from right, must move left
-                ScreenPosition.Bottom => virtualY >= entryThreshold,  // Entered from top, must move down
-                ScreenPosition.Top => virtualY <= 1f - entryThreshold,  // Entered from bottom, must move up
-                _ => false
-            };
-
-            if (movedIn)
-            {
-                _hasMovedIntoRemote = true;
-            }
-            else
-            {
-                return null; // Can't return yet, haven't moved into screen
-            }
-        }
-
-        // Now check for return edge
-        return peerPosition switch
-        {
-            ScreenPosition.Right => virtualX <= returnThreshold ? ScreenPosition.Left : null,
-            ScreenPosition.Left => virtualX >= 1f - returnThreshold ? ScreenPosition.Right : null,
-            ScreenPosition.Bottom => virtualY <= returnThreshold ? ScreenPosition.Top : null,
-            ScreenPosition.Top => virtualY >= 1f - returnThreshold ? ScreenPosition.Bottom : null,
-            _ => null
-        };
     }
 
     private PeerConfig? GetPeerAtEdge(ScreenPosition edge)
