@@ -200,7 +200,80 @@ public sealed class RoboMouseService : IDisposable
         peerConfig.ScreenWidth = connection.PeerScreenWidth;
         peerConfig.ScreenHeight = connection.PeerScreenHeight;
 
+        // Update the peer ID to match what the remote machine reports
+        peerConfig.Id = connection.PeerId;
+
         AddConnection(connection);
+    }
+
+    /// <summary>
+    /// Connects to a peer by IP address. Creates and saves the peer config.
+    /// </summary>
+    public async Task<PeerConfig> ConnectToAddressAsync(string address, int port, ScreenPosition position, CancellationToken ct = default)
+    {
+        var peerConfig = new PeerConfig
+        {
+            Address = address,
+            Port = port,
+            Position = position,
+            Name = address // Will be updated after connection
+        };
+
+        await ConnectToPeerAsync(peerConfig, ct);
+
+        // Update name from connection info
+        lock (_connectionLock)
+        {
+            if (_connections.TryGetValue(peerConfig.Id, out var conn))
+            {
+                peerConfig.Name = conn.PeerName;
+            }
+        }
+
+        // Add to settings if not already present
+        var existing = _settings.Peers.FirstOrDefault(p => p.Id == peerConfig.Id);
+        if (existing == null)
+        {
+            _settings.Peers.Add(peerConfig);
+        }
+        else
+        {
+            // Update existing config
+            existing.Address = peerConfig.Address;
+            existing.Port = peerConfig.Port;
+            existing.Position = peerConfig.Position;
+            existing.Name = peerConfig.Name;
+        }
+
+        return peerConfig;
+    }
+
+    /// <summary>
+    /// Connects to all configured peers that have addresses.
+    /// </summary>
+    public async Task ConnectToConfiguredPeersAsync(CancellationToken ct = default)
+    {
+        var peersToConnect = _settings.Peers.Where(p => !string.IsNullOrEmpty(p.Address)).ToList();
+
+        foreach (var peer in peersToConnect)
+        {
+            try
+            {
+                // Skip if already connected
+                lock (_connectionLock)
+                {
+                    if (_connections.ContainsKey(peer.Id))
+                        continue;
+                }
+
+                await ConnectToPeerAsync(peer, ct);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to connect to {peer.Name} ({peer.Address}): {ex.Message}");
+                // Continue trying other peers
+            }
+        }
     }
 
     /// <summary>

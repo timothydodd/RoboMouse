@@ -48,6 +48,27 @@ public class TrayApplicationContext : ApplicationContext
         // Start the service
         _service.Start();
         UpdateStatus();
+
+        // Auto-connect to configured peers
+        _ = AutoConnectAsync();
+    }
+
+    private async Task AutoConnectAsync()
+    {
+        // Small delay to let the UI initialize
+        await Task.Delay(1000);
+
+        try
+        {
+            await _service.ConnectToConfiguredPeersAsync();
+            if (InvokeRequired(() => UpdateStatus()))
+                return;
+            UpdateStatus();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Auto-connect failed: {ex.Message}");
+        }
     }
 
     private ContextMenuStrip CreateContextMenu()
@@ -66,6 +87,11 @@ public class TrayApplicationContext : ApplicationContext
         // Discovered peers submenu
         _discoveredPeersItem = new ToolStripMenuItem("Connect to...");
         menu.Items.Add(_discoveredPeersItem);
+
+        // Add peer by IP
+        var addPeerItem = new ToolStripMenuItem("Add Peer by IP...");
+        addPeerItem.Click += OnAddPeerByIp;
+        menu.Items.Add(addPeerItem);
 
         // Screen layout
         var layoutItem = new ToolStripMenuItem("Screen Layout...");
@@ -153,6 +179,30 @@ public class TrayApplicationContext : ApplicationContext
         {
             MessageBox.Show($"Failed to connect: {ex.Message}", "Connection Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private async void OnAddPeerByIp(object? sender, EventArgs e)
+    {
+        using var form = new PeerSetupForm(null);
+        if (form.ShowDialog() == DialogResult.OK && form.PeerConfig != null)
+        {
+            try
+            {
+                await _service.ConnectToAddressAsync(
+                    form.PeerConfig.Address,
+                    form.PeerConfig.Port,
+                    form.PeerConfig.Position);
+
+                _settings.Save();
+                UpdateStatus();
+                ShowBalloon($"Connected to {form.PeerConfig.Address}", ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to connect to {form.PeerConfig.Address}:\n{ex.Message}",
+                    "Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
     }
 

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for f in /mnt/f/github/mouse/src/RoboMouse.Core/Network/Protocol/Message.cs /mnt/f/github/mouse/src/RoboMouse.Core/Network/Protocol/MouseMessage.cs /mnt/f/github/mouse/src/RoboMouse.Core/Network/PeerConnection.cs /mnt/f/github/mouse/src/RoboMouse.Core/Input/ClipboardManager.cs /mnt/f/github/mouse/src/RoboMouse.Core/Screen/CursorManager.cs /mnt/f/github/mouse/src/RoboMouse.Core/Screen/ScreenInfo.cs /mnt/f/github/mouse/src/RoboMouse.Core/Network/ConnectionListener.cs /mnt/f/github/mouse/src/RoboMouse.Core/Network/PeerDiscovery.cs /mnt/f/github/mouse/src/RoboMouse.Core/Network/DiscoveredPeer.cs)",
+      "Bash(do sed -i 's/MouseShare/RoboMouse/g' \"$f\")",
+      "Bash(done)",
+      "Bash(for f in /mnt/f/github/mouse/src/RoboMouse.Core/Input/InputSimulator.cs /mnt/f/github/mouse/src/RoboMouse.Core/Input/KeyboardHook.cs /mnt/f/github/mouse/src/RoboMouse.Core/Input/MouseHook.cs /mnt/f/github/mouse/src/RoboMouse.Core/Input/KeyboardEventArgs.cs /mnt/f/github/mouse/src/RoboMouse.Core/Input/MouseEventArgs.cs)",
+      "Bash(for f in /mnt/f/github/mouse/src/RoboMouse.Core/Input/NativeMethods.cs /mnt/f/github/mouse/src/RoboMouse.Core/Configuration/AppSettings.cs /mnt/f/github/mouse/src/RoboMouse.Core/Configuration/ClipboardSettings.cs /mnt/f/github/mouse/src/RoboMouse.Core/Configuration/PeerConfig.cs /mnt/f/github/mouse/src/RoboMouse.Core/Configuration/ScreenPosition.cs)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
