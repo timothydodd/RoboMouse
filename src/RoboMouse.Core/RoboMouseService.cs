@@ -1,5 +1,6 @@
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Input;
+using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network;
 using RoboMouse.Core.Network.Protocol;
 using RoboMouse.Core.Screen;
@@ -403,6 +404,7 @@ public sealed class RoboMouseService : IDisposable
                 var targetPeer = GetPeerAtEdge(edge.Edge);
                 if (targetPeer != null)
                 {
+                    SimpleLogger.Log("Control", $"Starting remote control to {targetPeer.Name} at edge {edge.Edge}");
                     StartRemoteControl(targetPeer, edge);
                     e.Handled = true;
                 }
@@ -455,6 +457,7 @@ public sealed class RoboMouseService : IDisposable
             switch (message)
             {
                 case MouseMessage mouseMsg:
+                    SimpleLogger.Log("Input", $"MouseMsg: Type={mouseMsg.EventType}, Pos=({mouseMsg.X},{mouseMsg.Y}), Controlled={_isControlledByRemote}");
                     HandleRemoteMouseInput(mouseMsg, connection);
                     break;
 
@@ -463,10 +466,12 @@ public sealed class RoboMouseService : IDisposable
                     break;
 
                 case CursorEnterMessage enterMsg:
+                    SimpleLogger.Log("Input", $"CursorEnter: Edge={enterMsg.EntryEdge}, Pos=({enterMsg.EntryX},{enterMsg.EntryY})");
                     HandleCursorEnter(enterMsg, connection);
                     break;
 
                 case CursorLeaveMessage leaveMsg:
+                    SimpleLogger.Log("Input", "CursorLeave received");
                     HandleCursorLeave(leaveMsg, connection);
                     break;
 
@@ -486,13 +491,22 @@ public sealed class RoboMouseService : IDisposable
         if (!_isControlledByRemote)
             return;
 
-        // Convert coordinates based on peer's screen size
-        var peerConfig = GetPeerConfig(connection.PeerId);
-        if (peerConfig == null)
-            return;
+        // Use screen dimensions from the connection (received during handshake)
+        var peerScreenWidth = connection.PeerScreenWidth;
+        var peerScreenHeight = connection.PeerScreenHeight;
 
-        var localX = (int)(msg.X * _screenInfo.PrimaryBounds.Width / (float)peerConfig.ScreenWidth);
-        var localY = (int)(msg.Y * _screenInfo.PrimaryBounds.Height / (float)peerConfig.ScreenHeight);
+        if (peerScreenWidth <= 0 || peerScreenHeight <= 0)
+        {
+            // Fallback to peer config if connection doesn't have screen info
+            var peerConfig = GetPeerConfig(connection.PeerId);
+            if (peerConfig == null)
+                return;
+            peerScreenWidth = peerConfig.ScreenWidth;
+            peerScreenHeight = peerConfig.ScreenHeight;
+        }
+
+        var localX = (int)(msg.X * _screenInfo.PrimaryBounds.Width / (float)peerScreenWidth);
+        var localY = (int)(msg.Y * _screenInfo.PrimaryBounds.Height / (float)peerScreenHeight);
 
         if (msg.EventType == MouseEventType.Move)
         {
@@ -514,6 +528,7 @@ public sealed class RoboMouseService : IDisposable
 
     private void HandleCursorEnter(CursorEnterMessage msg, PeerConnection connection)
     {
+        SimpleLogger.Log("Control", $"HandleCursorEnter: Setting _isControlledByRemote = true, entry edge = {msg.EntryEdge}");
         _isControlledByRemote = true;
 
         // Calculate entry position
