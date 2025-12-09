@@ -35,6 +35,7 @@ public sealed class RoboMouseService : IDisposable
     // Virtual cursor position on remote screen (0.0 to 1.0 normalized)
     private float _virtualX;
     private float _virtualY;
+    private bool _hasMovedIntoRemote; // Must move away from entry edge before return is allowed
 
     /// <summary>
     /// Whether the service is enabled.
@@ -413,11 +414,12 @@ public sealed class RoboMouseService : IDisposable
                 var returnEdge = GetReturnEdge(_activePeer.Position, _virtualX, _virtualY);
                 if (returnEdge != null)
                 {
-                    var normalizedPos = _activePeer.Position is ScreenPosition.Left or ScreenPosition.Right
+                    var peerPosition = _activePeer.Position;
+                    var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
                         ? _virtualY : _virtualX;
                     EndRemoteControl();
                     _cursorManager.ReleaseAt(
-                        CursorManager.GetOppositeEdge(_activePeer.Position),
+                        CursorManager.GetOppositeEdge(peerPosition),
                         normalizedPos);
                     return;
                 }
@@ -647,6 +649,7 @@ public sealed class RoboMouseService : IDisposable
     {
         _activePeer = peer;
         _isControllingRemote = true;
+        _hasMovedIntoRemote = false;
 
         // Initialize virtual cursor position based on entry edge
         switch (peer.Position)
@@ -730,15 +733,38 @@ public sealed class RoboMouseService : IDisposable
     /// </summary>
     private ScreenPosition? GetReturnEdge(ScreenPosition peerPosition, float virtualX, float virtualY)
     {
-        const float threshold = 0.01f; // 1% from edge
+        const float entryThreshold = 0.05f; // 5% - must move this far into screen before return is allowed
+        const float returnThreshold = 0.01f; // 1% from edge to trigger return
 
-        // Return when hitting the opposite edge of where we entered
+        // First, check if we've moved far enough into the remote screen
+        if (!_hasMovedIntoRemote)
+        {
+            bool movedIn = peerPosition switch
+            {
+                ScreenPosition.Right => virtualX >= entryThreshold,  // Entered from left, must move right
+                ScreenPosition.Left => virtualX <= 1f - entryThreshold,  // Entered from right, must move left
+                ScreenPosition.Bottom => virtualY >= entryThreshold,  // Entered from top, must move down
+                ScreenPosition.Top => virtualY <= 1f - entryThreshold,  // Entered from bottom, must move up
+                _ => false
+            };
+
+            if (movedIn)
+            {
+                _hasMovedIntoRemote = true;
+            }
+            else
+            {
+                return null; // Can't return yet, haven't moved into screen
+            }
+        }
+
+        // Now check for return edge
         return peerPosition switch
         {
-            ScreenPosition.Right => virtualX <= threshold ? ScreenPosition.Left : null,
-            ScreenPosition.Left => virtualX >= 1f - threshold ? ScreenPosition.Right : null,
-            ScreenPosition.Bottom => virtualY <= threshold ? ScreenPosition.Top : null,
-            ScreenPosition.Top => virtualY >= 1f - threshold ? ScreenPosition.Bottom : null,
+            ScreenPosition.Right => virtualX <= returnThreshold ? ScreenPosition.Left : null,
+            ScreenPosition.Left => virtualX >= 1f - returnThreshold ? ScreenPosition.Right : null,
+            ScreenPosition.Bottom => virtualY <= returnThreshold ? ScreenPosition.Top : null,
+            ScreenPosition.Top => virtualY >= 1f - returnThreshold ? ScreenPosition.Bottom : null,
             _ => null
         };
     }
