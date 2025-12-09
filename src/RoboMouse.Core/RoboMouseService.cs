@@ -32,6 +32,10 @@ public sealed class RoboMouseService : IDisposable
     private bool _enabled;
     private bool _disposed;
 
+    // Virtual cursor position on remote screen (0.0 to 1.0 normalized)
+    private float _virtualX;
+    private float _virtualY;
+
     /// <summary>
     /// Whether the service is enabled.
     /// </summary>
@@ -381,16 +385,67 @@ public sealed class RoboMouseService : IDisposable
         if (_isControllingRemote && _activePeer != null)
         {
             e.Handled = true;
-            SendToActivePeer(MouseMessage.FromEvent(e));
 
-            // Check if returning from remote
-            var edge = _screenInfo.GetEdgeAt(e.X, e.Y, _settings.EdgeThreshold);
-            if (edge != null && ShouldReturnFromRemote(edge.Edge, _activePeer.Position))
+            if (e.EventType == MouseEventType.Move)
             {
-                EndRemoteControl();
-                _cursorManager.ReleaseAt(
-                    CursorManager.GetOppositeEdge(_activePeer.Position),
-                    edge.NormalizedPosition);
+                // Calculate delta from captured position
+                var capturedPos = _cursorManager.CapturedPosition;
+                var deltaX = e.X - capturedPos.X;
+                var deltaY = e.Y - capturedPos.Y;
+
+                // Skip if no actual movement (this can happen from our own warp)
+                if (deltaX == 0 && deltaY == 0)
+                    return;
+
+                // Update virtual position on remote screen (normalized 0-1)
+                // Scale delta to remote screen space
+                _virtualX += (float)deltaX / _activePeer.ScreenWidth;
+                _virtualY += (float)deltaY / _activePeer.ScreenHeight;
+
+                // Clamp to screen bounds
+                _virtualX = Math.Clamp(_virtualX, 0f, 1f);
+                _virtualY = Math.Clamp(_virtualY, 0f, 1f);
+
+                // Warp cursor back to captured position for next delta
+                _cursorManager.WarpBack();
+
+                // Check if returning from remote (hit opposite edge)
+                var returnEdge = GetReturnEdge(_activePeer.Position, _virtualX, _virtualY);
+                if (returnEdge != null)
+                {
+                    var normalizedPos = _activePeer.Position is ScreenPosition.Left or ScreenPosition.Right
+                        ? _virtualY : _virtualX;
+                    EndRemoteControl();
+                    _cursorManager.ReleaseAt(
+                        CursorManager.GetOppositeEdge(_activePeer.Position),
+                        normalizedPos);
+                    return;
+                }
+
+                // Send absolute position on remote screen
+                var remoteX = (int)(_virtualX * _activePeer.ScreenWidth);
+                var remoteY = (int)(_virtualY * _activePeer.ScreenHeight);
+
+                var msg = new MouseMessage
+                {
+                    X = remoteX,
+                    Y = remoteY,
+                    EventType = MouseEventType.Move,
+                    WheelDelta = 0
+                };
+                SendToActivePeer(msg);
+            }
+            else
+            {
+                // For clicks/wheel, just forward the event type
+                var msg = new MouseMessage
+                {
+                    X = (int)(_virtualX * _activePeer.ScreenWidth),
+                    Y = (int)(_virtualY * _activePeer.ScreenHeight),
+                    EventType = e.EventType,
+                    WheelDelta = e.WheelDelta
+                };
+                SendToActivePeer(msg);
             }
             return;
         }
@@ -491,22 +546,15 @@ public sealed class RoboMouseService : IDisposable
         if (!_isControlledByRemote)
             return;
 
-        // Use screen dimensions from the connection (received during handshake)
-        var peerScreenWidth = connection.PeerScreenWidth;
-        var peerScreenHeight = connection.PeerScreenHeight;
+        // The sender now sends coordinates in OUR screen space directly
+        // (they track a virtual cursor position and scale it to our screen dimensions)
+        var localX = msg.X;
+        var localY = msg.Y;
 
-        if (peerScreenWidth <= 0 || peerScreenHeight <= 0)
-        {
-            // Fallback to peer config if connection doesn't have screen info
-            var peerConfig = GetPeerConfig(connection.PeerId);
-            if (peerConfig == null)
-                return;
-            peerScreenWidth = peerConfig.ScreenWidth;
-            peerScreenHeight = peerConfig.ScreenHeight;
-        }
-
-        var localX = (int)(msg.X * _screenInfo.PrimaryBounds.Width / (float)peerScreenWidth);
-        var localY = (int)(msg.Y * _screenInfo.PrimaryBounds.Height / (float)peerScreenHeight);
+        // Clamp to screen bounds
+        var bounds = _screenInfo.PrimaryBounds;
+        localX = Math.Clamp(localX, bounds.Left, bounds.Right - 1);
+        localY = Math.Clamp(localY, bounds.Top, bounds.Bottom - 1);
 
         if (msg.EventType == MouseEventType.Move)
         {
@@ -514,6 +562,8 @@ public sealed class RoboMouseService : IDisposable
         }
         else
         {
+            // Move to position first for clicks
+            InputSimulator.MoveTo(localX, localY);
             InputSimulator.SimulateMouseEvent(msg.EventType, wheelDelta: msg.WheelDelta);
         }
     }
@@ -597,6 +647,30 @@ public sealed class RoboMouseService : IDisposable
     {
         _activePeer = peer;
         _isControllingRemote = true;
+
+        // Initialize virtual cursor position based on entry edge
+        switch (peer.Position)
+        {
+            case ScreenPosition.Right:
+                _virtualX = 0f; // Enter from left of remote screen
+                _virtualY = edge.NormalizedPosition;
+                break;
+            case ScreenPosition.Left:
+                _virtualX = 1f; // Enter from right of remote screen
+                _virtualY = edge.NormalizedPosition;
+                break;
+            case ScreenPosition.Bottom:
+                _virtualX = edge.NormalizedPosition;
+                _virtualY = 0f; // Enter from top of remote screen
+                break;
+            case ScreenPosition.Top:
+                _virtualX = edge.NormalizedPosition;
+                _virtualY = 1f; // Enter from bottom of remote screen
+                break;
+        }
+
+        SimpleLogger.Log("Control", $"StartRemoteControl: virtualPos=({_virtualX:F2},{_virtualY:F2}), lastMouse=({_lastMouseX},{_lastMouseY})");
+
         _cursorManager.Capture(edge.X, edge.Y);
 
         // Notify the peer that cursor is entering
@@ -649,6 +723,24 @@ public sealed class RoboMouseService : IDisposable
         {
             _ = connection.SendAsync(message);
         }
+    }
+
+    /// <summary>
+    /// Checks if virtual cursor has hit the return edge (opposite to entry edge).
+    /// </summary>
+    private ScreenPosition? GetReturnEdge(ScreenPosition peerPosition, float virtualX, float virtualY)
+    {
+        const float threshold = 0.01f; // 1% from edge
+
+        // Return when hitting the opposite edge of where we entered
+        return peerPosition switch
+        {
+            ScreenPosition.Right => virtualX <= threshold ? ScreenPosition.Left : null,
+            ScreenPosition.Left => virtualX >= 1f - threshold ? ScreenPosition.Right : null,
+            ScreenPosition.Bottom => virtualY <= threshold ? ScreenPosition.Top : null,
+            ScreenPosition.Top => virtualY >= 1f - threshold ? ScreenPosition.Bottom : null,
+            _ => null
+        };
     }
 
     private PeerConfig? GetPeerAtEdge(ScreenPosition edge)

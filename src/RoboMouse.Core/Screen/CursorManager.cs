@@ -42,18 +42,28 @@ public class CursorManager
 
     /// <summary>
     /// Captures the cursor at the specified position.
+    /// Uses warp-back approach instead of clipping for delta tracking.
     /// </summary>
     public void Capture(int x, int y)
     {
-        if (_isCaptured)
-            return;
-
         _capturedX = x;
         _capturedY = y;
         _isCaptured = true;
 
-        // Clip cursor to a 1x1 pixel area to effectively lock it
-        InputSimulator.ClipCursor(x, y, x + 1, y + 1);
+        // Move cursor to capture point (will be warped back here after each move)
+        InputSimulator.MoveTo(x, y);
+    }
+
+    /// <summary>
+    /// Warps the cursor back to the captured position.
+    /// Call this after processing mouse movement to reset for next delta.
+    /// </summary>
+    public void WarpBack()
+    {
+        if (_isCaptured)
+        {
+            InputSimulator.MoveTo(_capturedX, _capturedY);
+        }
     }
 
     /// <summary>
@@ -65,7 +75,7 @@ public class CursorManager
             return;
 
         _isCaptured = false;
-        InputSimulator.ReleaseCursorClip();
+        // No need to release clip since we're not using ClipCursor anymore
     }
 
     /// <summary>
