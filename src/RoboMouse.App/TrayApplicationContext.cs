@@ -21,6 +21,8 @@ public class TrayApplicationContext : ApplicationContext
 
     private SettingsForm? _settingsForm;
     private ScreenLayoutForm? _layoutForm;
+    private DebugPanelForm? _debugPanel;
+    private bool _debugPanelEnabled;
 
     public TrayApplicationContext(AppSettings settings)
     {
@@ -32,6 +34,7 @@ public class TrayApplicationContext : ApplicationContext
         _service.PeerDiscovered += OnPeerDiscovered;
         _service.ControlStateChanged += OnControlStateChanged;
         _service.Error += OnServiceError;
+        _service.MouseDebugUpdate += OnMouseDebugUpdate;
 
         _contextMenu = CreateContextMenu();
 
@@ -102,6 +105,15 @@ public class TrayApplicationContext : ApplicationContext
         var settingsItem = new ToolStripMenuItem("Settings...");
         settingsItem.Click += (s, e) => ShowSettings();
         menu.Items.Add(settingsItem);
+
+        // Debug panel toggle
+        var debugItem = new ToolStripMenuItem("Debug Panel")
+        {
+            CheckOnClick = true,
+            Checked = _debugPanelEnabled
+        };
+        debugItem.CheckedChanged += OnDebugPanelToggled;
+        menu.Items.Add(debugItem);
 
         menu.Items.Add(new ToolStripSeparator());
 
@@ -319,6 +331,67 @@ public class TrayApplicationContext : ApplicationContext
         ShowBalloon($"Error: {e.Message}", ToolTipIcon.Error);
     }
 
+    private void OnDebugPanelToggled(object? sender, EventArgs e)
+    {
+        var item = sender as ToolStripMenuItem;
+        _debugPanelEnabled = item?.Checked ?? false;
+
+        if (_debugPanelEnabled)
+        {
+            // Create panel if needed and show if currently controlling
+            if (_debugPanel == null || _debugPanel.IsDisposed)
+            {
+                _debugPanel = new DebugPanelForm();
+            }
+
+            if (_service.IsControllingRemote)
+            {
+                _debugPanel.ShowOnEdge(_service.ActivePeer?.Position.ToString());
+            }
+        }
+        else
+        {
+            _debugPanel?.Hide();
+        }
+    }
+
+    private void OnMouseDebugUpdate(object? sender, MouseDebugEventArgs e)
+    {
+        if (!_debugPanelEnabled)
+            return;
+
+        if (_debugPanel == null || _debugPanel.IsDisposed)
+        {
+            _debugPanel = new DebugPanelForm();
+        }
+
+        // Show panel if controlling and not visible
+        if (e.IsControlling && !_debugPanel.Visible)
+        {
+            _debugPanel.ShowOnEdge(_service.ActivePeer?.Position.ToString());
+        }
+        // Hide panel if no longer controlling
+        else if (!e.IsControlling && _debugPanel.Visible)
+        {
+            _debugPanel.Hide();
+        }
+
+        // Update the data
+        _debugPanel.UpdateData(new MouseDebugData
+        {
+            IsControlling = e.IsControlling,
+            PeerName = e.PeerName,
+            LocalX = e.LocalX,
+            LocalY = e.LocalY,
+            VirtualX = e.VirtualX,
+            VirtualY = e.VirtualY,
+            DeltaX = e.DeltaX,
+            DeltaY = e.DeltaY,
+            VelocityX = e.VelocityX,
+            VelocityY = e.VelocityY
+        });
+    }
+
     private void ShowBalloon(string message, ToolTipIcon icon)
     {
         _trayIcon.BalloonTipTitle = "RoboMouse";
@@ -385,6 +458,7 @@ public class TrayApplicationContext : ApplicationContext
             _service.Dispose();
             _settingsForm?.Dispose();
             _layoutForm?.Dispose();
+            _debugPanel?.Dispose();
         }
         base.Dispose(disposing);
     }
