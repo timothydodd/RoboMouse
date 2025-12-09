@@ -41,6 +41,11 @@ public sealed class RoboMouseService : IDisposable
     private int _lastSeenX;
     private int _lastSeenY;
 
+    // Velocity tracking for smooth movement
+    private float _velocityX;
+    private float _velocityY;
+    private long _lastMoveTime;
+
 
     /// <summary>
     /// Whether the service is enabled.
@@ -407,6 +412,28 @@ public sealed class RoboMouseService : IDisposable
                 if (deltaX == 0 && deltaY == 0)
                     return;
 
+                // Calculate velocity for prediction
+                var now = Environment.TickCount64;
+                var timeDelta = now - _lastMoveTime;
+                if (timeDelta > 0 && timeDelta < 1000) // Only calculate velocity for reasonable intervals
+                {
+                    // Velocity in pixels per second
+                    var newVelX = (deltaX * 1000f) / timeDelta;
+                    var newVelY = (deltaY * 1000f) / timeDelta;
+
+                    // Smooth velocity with exponential moving average
+                    const float smoothing = 0.3f;
+                    _velocityX = _velocityX * (1 - smoothing) + newVelX * smoothing;
+                    _velocityY = _velocityY * (1 - smoothing) + newVelY * smoothing;
+                }
+                else
+                {
+                    // Reset velocity on first move or after long pause
+                    _velocityX = 0;
+                    _velocityY = 0;
+                }
+                _lastMoveTime = now;
+
                 // Update virtual position on remote screen (normalized 0-1)
                 _virtualX += (float)deltaX / _activePeer.ScreenWidth;
                 _virtualY += (float)deltaY / _activePeer.ScreenHeight;
@@ -436,7 +463,7 @@ public sealed class RoboMouseService : IDisposable
                     }
                 }
 
-                // Send position to remote
+                // Send position to remote with velocity for prediction
                 var remoteX = (int)(_virtualX * _activePeer.ScreenWidth);
                 var remoteY = (int)(_virtualY * _activePeer.ScreenHeight);
 
@@ -445,17 +472,29 @@ public sealed class RoboMouseService : IDisposable
                     X = remoteX,
                     Y = remoteY,
                     EventType = MouseEventType.Move,
-                    WheelDelta = 0
+                    WheelDelta = 0,
+                    VelocityX = _velocityX,
+                    VelocityY = _velocityY
                 };
                 SendToActivePeer(msg);
 
-                // Warp cursor back AFTER sending the message
-                _cursorManager.WarpBack();
+                // Only warp back if cursor is getting close to screen edge
+                // This reduces overhead while preventing cursor from escaping
+                var bounds = _screenInfo.PrimaryBounds;
+                var edgeMargin = 100; // pixels from edge before we warp back
 
-                // Update last seen to warp position so next event at that position has delta=0
-                var capturedPos = _cursorManager.CapturedPosition;
-                _lastSeenX = capturedPos.X;
-                _lastSeenY = capturedPos.Y;
+                var nearEdge = e.X < bounds.Left + edgeMargin ||
+                               e.X > bounds.Right - edgeMargin ||
+                               e.Y < bounds.Top + edgeMargin ||
+                               e.Y > bounds.Bottom - edgeMargin;
+
+                if (nearEdge)
+                {
+                    var capturedPos = _cursorManager.CapturedPosition;
+                    InputSimulator.MoveTo(capturedPos.X, capturedPos.Y);
+                    _lastSeenX = capturedPos.X;
+                    _lastSeenY = capturedPos.Y;
+                }
             }
             else
             {
@@ -563,6 +602,13 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
+    // For velocity-based prediction on receiver
+    private long _lastRemoteMoveTime;
+    private float _predictedX;
+    private float _predictedY;
+    private float _remoteVelocityX;
+    private float _remoteVelocityY;
+
     private void HandleRemoteMouseInput(MouseMessage msg, PeerConnection connection)
     {
         if (!_isControlledByRemote)
@@ -570,22 +616,44 @@ public sealed class RoboMouseService : IDisposable
 
         // The sender now sends coordinates in OUR screen space directly
         // (they track a virtual cursor position and scale it to our screen dimensions)
-        var localX = msg.X;
-        var localY = msg.Y;
+        var localX = (float)msg.X;
+        var localY = (float)msg.Y;
+
+        // Apply velocity-based prediction to compensate for network latency
+        if (msg.EventType == MouseEventType.Move && (msg.VelocityX != 0 || msg.VelocityY != 0))
+        {
+            var now = Environment.TickCount64;
+            var timeSinceLastUpdate = now - _lastRemoteMoveTime;
+
+            // Only predict for reasonable time windows (up to 100ms of latency compensation)
+            if (_lastRemoteMoveTime > 0 && timeSinceLastUpdate < 100)
+            {
+                // Predict position based on velocity and time since last known position
+                // Use a fraction of the prediction to avoid overshooting
+                const float predictionFactor = 0.5f;
+                var predictMs = timeSinceLastUpdate * predictionFactor / 1000f;
+                localX += msg.VelocityX * predictMs;
+                localY += msg.VelocityY * predictMs;
+            }
+
+            _lastRemoteMoveTime = now;
+            _remoteVelocityX = msg.VelocityX;
+            _remoteVelocityY = msg.VelocityY;
+        }
 
         // Clamp to screen bounds
         var bounds = _screenInfo.PrimaryBounds;
-        localX = Math.Clamp(localX, bounds.Left, bounds.Right - 1);
-        localY = Math.Clamp(localY, bounds.Top, bounds.Bottom - 1);
+        var clampedX = (int)Math.Clamp(localX, bounds.Left, bounds.Right - 1);
+        var clampedY = (int)Math.Clamp(localY, bounds.Top, bounds.Bottom - 1);
 
         if (msg.EventType == MouseEventType.Move)
         {
-            InputSimulator.MoveTo(localX, localY);
+            InputSimulator.MoveTo(clampedX, clampedY);
         }
         else
         {
             // Move to position first for clicks
-            InputSimulator.MoveTo(localX, localY);
+            InputSimulator.MoveTo(clampedX, clampedY);
             InputSimulator.SimulateMouseEvent(msg.EventType, wheelDelta: msg.WheelDelta);
         }
     }
