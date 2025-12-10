@@ -326,18 +326,30 @@ public class TrayApplicationContext : ApplicationContext
 
     private void UpdateBorderOverlay()
     {
-        // Show border when being controlled by remote (mouse entered our screen)
-        if (_service.IsControlledByRemote)
+        // Show border flash when mouse enters this screen (either from remote control, or returning from controlling remote)
+        bool wasControllingRemote = _borderOverlay?.Tag as string == "controlling";
+        bool isNowLocal = !_service.IsControlledByRemote && !_service.IsControllingRemote;
+
+        // Flash border when: entering from remote, OR returning from controlling remote
+        if (_service.IsControlledByRemote || (wasControllingRemote && isNowLocal))
         {
             if (_borderOverlay == null || _borderOverlay.IsDisposed)
             {
                 _borderOverlay = new BorderOverlayForm();
             }
+            _borderOverlay.Tag = _service.IsControllingRemote ? "controlling" : null;
             _borderOverlay.ShowBorder();
+            _borderOverlay.HideBorder(fadeOut: true); // Immediately start fading
         }
-        else
+
+        // Track if we're controlling remote for next state change
+        if (_service.IsControllingRemote)
         {
-            _borderOverlay?.HideBorder(fadeOut: true);
+            if (_borderOverlay == null || _borderOverlay.IsDisposed)
+            {
+                _borderOverlay = new BorderOverlayForm();
+            }
+            _borderOverlay.Tag = "controlling";
         }
     }
 
