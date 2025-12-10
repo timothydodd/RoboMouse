@@ -74,6 +74,11 @@ public class AppSettings
     public int EdgeThreshold { get; set; } = 0;
 
     /// <summary>
+    /// Whether the debug panel is enabled.
+    /// </summary>
+    public bool DebugPanelEnabled { get; set; } = false;
+
+    /// <summary>
     /// Loads settings from the default configuration file.
     /// </summary>
     public static AppSettings Load(string? path = null)

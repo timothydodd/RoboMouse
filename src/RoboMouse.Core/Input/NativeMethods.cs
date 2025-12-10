@@ -189,6 +189,51 @@ internal static class NativeMethods
     public static extern int ShowCursor([MarshalAs(UnmanagedType.Bool)] bool bShow);
 
     [DllImport("user32.dll")]
+    public static extern IntPtr SetCursor(IntPtr hCursor);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetCursor();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr LoadCursor(IntPtr hInstance, int lpCursorName);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr CopyIcon(IntPtr hIcon);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetSystemCursor(IntPtr hcur, uint id);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr CreateCursor(IntPtr hInst, int xHotSpot, int yHotSpot, int nWidth, int nHeight, byte[] pvANDPlane, byte[] pvXORPlane);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DestroyCursor(IntPtr hCursor);
+
+    // Cursor IDs for SetSystemCursor
+    public const uint OCR_NORMAL = 32512;
+    public const uint OCR_IBEAM = 32513;
+    public const uint OCR_WAIT = 32514;
+    public const uint OCR_CROSS = 32515;
+    public const uint OCR_UP = 32516;
+    public const uint OCR_SIZENWSE = 32642;
+    public const uint OCR_SIZENESW = 32643;
+    public const uint OCR_SIZEWE = 32644;
+    public const uint OCR_SIZENS = 32645;
+    public const uint OCR_SIZEALL = 32646;
+    public const uint OCR_NO = 32648;
+    public const uint OCR_HAND = 32649;
+    public const uint OCR_APPSTARTING = 32650;
+
+    // SystemParametersInfo constants
+    public const uint SPI_SETCURSORS = 0x0057;
+
+    [DllImport("user32.dll")]
     public static extern int GetSystemMetrics(int nIndex);
 
     public const int SM_CXSCREEN = 0;

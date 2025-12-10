@@ -1,4 +1,5 @@
 using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Logging;
 
 namespace RoboMouse.App;
 
@@ -15,6 +16,9 @@ internal static class Program
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
+
+        // Clear log file on startup
+        SimpleLogger.ClearLog();
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);

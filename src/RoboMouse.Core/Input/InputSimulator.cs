@@ -300,11 +300,68 @@ public static class InputSimulator
     }
 
     /// <summary>
-    /// Shows or hides the cursor.
+    /// Shows or hides the cursor (unreliable due to counter system).
     /// </summary>
     public static void ShowCursor(bool show)
     {
         NativeMethods.ShowCursor(show);
+    }
+
+    // All system cursor IDs that need to be replaced for complete hiding
+    private static readonly uint[] AllCursorIds = new uint[]
+    {
+        NativeMethods.OCR_NORMAL,
+        NativeMethods.OCR_IBEAM,
+        NativeMethods.OCR_WAIT,
+        NativeMethods.OCR_CROSS,
+        NativeMethods.OCR_UP,
+        NativeMethods.OCR_SIZENWSE,
+        NativeMethods.OCR_SIZENESW,
+        NativeMethods.OCR_SIZEWE,
+        NativeMethods.OCR_SIZENS,
+        NativeMethods.OCR_SIZEALL,
+        NativeMethods.OCR_NO,
+        NativeMethods.OCR_HAND,
+        NativeMethods.OCR_APPSTARTING
+    };
+
+    /// <summary>
+    /// Hides the system cursor by replacing all cursor types with a blank cursor.
+    /// Call RestoreSystemCursor to restore.
+    /// </summary>
+    public static void HideSystemCursor()
+    {
+        // Create a blank cursor using CreateCursor API
+        // AND plane: all 0xFF = all transparent (AND with screen = keep screen pixels)
+        // XOR plane: all 0x00 = no XOR (don't invert anything)
+        var andPlane = new byte[32 * 4]; // 32x32 cursor, 1 bit per pixel = 32 * 32 / 8 = 128 bytes, but needs to be DWORD aligned per row
+        var xorPlane = new byte[32 * 4];
+
+        // Fill AND plane with 0xFF (transparent)
+        for (int i = 0; i < andPlane.Length; i++)
+            andPlane[i] = 0xFF;
+
+        // XOR plane stays 0x00 (no color)
+
+        // Replace all system cursors with blank cursor
+        foreach (var cursorId in AllCursorIds)
+        {
+            var blankCursor = NativeMethods.CreateCursor(IntPtr.Zero, 0, 0, 32, 32, andPlane, xorPlane);
+            if (blankCursor != IntPtr.Zero)
+            {
+                // SetSystemCursor destroys the cursor handle, so we don't need to destroy it
+                NativeMethods.SetSystemCursor(blankCursor, cursorId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Restores the system cursor to default.
+    /// </summary>
+    public static void RestoreSystemCursor()
+    {
+        // Restore default cursors from system
+        NativeMethods.SystemParametersInfo(NativeMethods.SPI_SETCURSORS, 0, IntPtr.Zero, 0);
     }
 
     #endregion

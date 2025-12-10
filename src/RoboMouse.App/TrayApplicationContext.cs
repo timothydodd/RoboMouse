@@ -22,7 +22,7 @@ public class TrayApplicationContext : ApplicationContext
     private SettingsForm? _settingsForm;
     private ScreenLayoutForm? _layoutForm;
     private DebugPanelForm? _debugPanel;
-    private bool _debugPanelEnabled = true; // Default on for debugging
+    private BorderOverlayForm? _borderOverlay;
 
     public TrayApplicationContext(AppSettings settings)
     {
@@ -110,7 +110,7 @@ public class TrayApplicationContext : ApplicationContext
         var debugItem = new ToolStripMenuItem("Debug Panel")
         {
             CheckOnClick = true,
-            Checked = _debugPanelEnabled
+            Checked = _settings.DebugPanelEnabled
         };
         debugItem.CheckedChanged += OnDebugPanelToggled;
         menu.Items.Add(debugItem);
@@ -321,6 +321,24 @@ public class TrayApplicationContext : ApplicationContext
             return;
 
         UpdateStatus();
+        UpdateBorderOverlay();
+    }
+
+    private void UpdateBorderOverlay()
+    {
+        // Show border when being controlled by remote (mouse entered our screen)
+        if (_service.IsControlledByRemote)
+        {
+            if (_borderOverlay == null || _borderOverlay.IsDisposed)
+            {
+                _borderOverlay = new BorderOverlayForm();
+            }
+            _borderOverlay.ShowBorder();
+        }
+        else
+        {
+            _borderOverlay?.HideBorder(fadeOut: true);
+        }
     }
 
     private void OnServiceError(object? sender, Exception e)
@@ -334,9 +352,10 @@ public class TrayApplicationContext : ApplicationContext
     private void OnDebugPanelToggled(object? sender, EventArgs e)
     {
         var item = sender as ToolStripMenuItem;
-        _debugPanelEnabled = item?.Checked ?? false;
+        _settings.DebugPanelEnabled = item?.Checked ?? false;
+        _settings.Save();
 
-        if (_debugPanelEnabled)
+        if (_settings.DebugPanelEnabled)
         {
             // Create panel if needed and show if currently controlling
             if (_debugPanel == null || _debugPanel.IsDisposed)
@@ -357,7 +376,7 @@ public class TrayApplicationContext : ApplicationContext
 
     private void OnMouseDebugUpdate(object? sender, MouseDebugEventArgs e)
     {
-        if (!_debugPanelEnabled)
+        if (!_settings.DebugPanelEnabled)
             return;
 
         if (_debugPanel == null || _debugPanel.IsDisposed)
@@ -469,6 +488,7 @@ public class TrayApplicationContext : ApplicationContext
             _settingsForm?.Dispose();
             _layoutForm?.Dispose();
             _debugPanel?.Dispose();
+            _borderOverlay?.Dispose();
         }
         base.Dispose(disposing);
     }

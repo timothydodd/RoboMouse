@@ -110,6 +110,7 @@ public class CursorManager
                 return;
         }
 
+        System.Diagnostics.Debug.WriteLine($"ReleaseAt: edge={entryEdge}, normalized={normalizedPosition}, moving to ({x}, {y}), bounds=({bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom})");
         InputSimulator.MoveTo(x, y);
     }
 

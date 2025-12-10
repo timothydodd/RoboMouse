@@ -49,6 +49,10 @@ public sealed class RoboMouseService : IDisposable
     // Warp state - just need to track last seen position for deltas
     // Events at capture position are ignored (they're warp-backs, not real movement)
 
+    // Cooldown to prevent immediate re-entry after returning from remote
+    private long _returnCooldownUntil;
+
+
 
     /// <summary>
     /// Whether the service is enabled.
@@ -476,9 +480,25 @@ public sealed class RoboMouseService : IDisposable
                         var peerPosition = _activePeer.Position;
                         var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
                             ? _virtualY : _virtualX;
+
+                        // Set cooldown to prevent immediate re-entry (the cursor will be at the edge
+                        // which would otherwise trigger StartRemoteControl again)
+                        _returnCooldownUntil = Environment.TickCount64 + 500; // 500ms cooldown
+
+                        SimpleLogger.Log("Control", $"Return detected! Setting cooldown until {_returnCooldownUntil}, peerPosition={peerPosition}");
+
+                        // End remote control first (restores cursor visibility)
                         EndRemoteControl();
-                        // Release at the same edge as peer position (returning FROM remote)
+
+                        // Then position cursor at the edge we're returning from
+                        SimpleLogger.Log("Control", $"Calling ReleaseAt({peerPosition}, {normalizedPos})");
                         _cursorManager.ReleaseAt(peerPosition, normalizedPos);
+
+                        var (px, py) = InputSimulator.GetCursorPosition();
+                        SimpleLogger.Log("Control", $"After ReleaseAt, cursor is at ({px}, {py})");
+
+                        // Handle the event since we moved the cursor
+                        e.Handled = true;
                         return;
                     }
                 }
@@ -522,8 +542,23 @@ public sealed class RoboMouseService : IDisposable
                     PeerPosition = _activePeer.Position.ToString()
                 });
 
-                // Warp cursor back to capture position (center of screen)
-                InputSimulator.MoveTo(capturedPos.X, capturedPos.Y);
+                // Only warp back to capture position when approaching screen edge
+                // This allows larger deltas to accumulate for smoother movement
+                var bounds = _screenInfo.VirtualBounds;
+                const int edgeMargin = 100; // Warp back when within 100px of edge
+
+                bool nearEdge = e.X <= bounds.Left + edgeMargin ||
+                                e.X >= bounds.Right - edgeMargin ||
+                                e.Y <= bounds.Top + edgeMargin ||
+                                e.Y >= bounds.Bottom - edgeMargin;
+
+                if (nearEdge)
+                {
+                    InputSimulator.MoveTo(capturedPos.X, capturedPos.Y);
+                    _lastSeenX = capturedPos.X;
+                    _lastSeenY = capturedPos.Y;
+                    e.Handled = true;
+                }
             }
             else
             {
@@ -544,6 +579,14 @@ public sealed class RoboMouseService : IDisposable
         // Check for edge transition to remote
         if (e.EventType == MouseEventType.Move)
         {
+            // Skip if we just returned from remote (cooldown period)
+            var now = Environment.TickCount64;
+            if (now < _returnCooldownUntil)
+            {
+                SimpleLogger.Log("Control", $"Cooldown active: {_returnCooldownUntil - now}ms remaining, ignoring edge at ({e.X}, {e.Y})");
+                return;
+            }
+
             var edge = _screenInfo.GetEdgeAt(e.X, e.Y, _settings.EdgeThreshold);
             if (edge != null)
             {
@@ -743,6 +786,8 @@ public sealed class RoboMouseService : IDisposable
 
     private void StartRemoteControl(PeerConfig peer, EdgeInfo edge)
     {
+        SimpleLogger.Log("Control", $">>> StartRemoteControl CALLED for {peer.Name}, will move cursor to center!");
+
         _activePeer = peer;
         _isControllingRemote = true;
         _hasMovedIntoRemote = false;
@@ -781,7 +826,7 @@ public sealed class RoboMouseService : IDisposable
         _lastSeenY = captureY;
 
         // Hide cursor while controlling remote (prevents flashing during warp-back)
-        InputSimulator.ShowCursor(false);
+        InputSimulator.HideSystemCursor();
 
         // Move cursor to capture position and set it as the warp-back point
         _cursorManager.Capture(captureX, captureY);
@@ -804,8 +849,8 @@ public sealed class RoboMouseService : IDisposable
         if (!_isControllingRemote)
             return;
 
-        // Show cursor again
-        InputSimulator.ShowCursor(true);
+        // Restore cursor
+        InputSimulator.RestoreSystemCursor();
 
         // Release cursor
         _cursorManager.Release();
