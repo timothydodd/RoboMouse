@@ -43,7 +43,9 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 **Network Layer** (`src/RoboMouse.Core/Network/`):
 - `PeerDiscovery` - UDP broadcast for automatic peer finding
 - `ConnectionListener` - TCP server for incoming connections
-- `PeerConnection` - One TCP connection with a dedicated sender thread (outbound queue, consecutive motion messages merged) and receiver thread (buffered frame parsing). `Post()` is non-blocking and safe from hooks. Sends a ping each second and exposes `RoundTripMs`.
+- `SecureChannel` - Authenticated, encrypted stream over the socket: ECDH key exchange authenticated with HMACs keyed from the shared pairing code, then AES-256-GCM per frame. Every connection goes through it before any protocol message.
+- `PeerConnection` - One TCP connection with a dedicated sender thread (`OutboundQueue`, consecutive motion messages merged) and receiver thread (`MessageFramer`). `Post()` is non-blocking and safe from hooks. Pings each second, exposes `RoundTripMs`, and drops the connection after 5 s without a pong. `IsOutbound` is used to resolve simultaneous connects (keep the one initiated by the smaller machine id).
+- `RoboMouseService` retries configured peers every 5 s in the background.
 
 **Protocol** (`src/RoboMouse.Core/Network/Protocol/`):
 - Binary message format with 2-byte magic, version, type, length prefix, and timestamp (16-byte header)
@@ -58,6 +60,8 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 4. Controlled peer places its cursor on the entry edge and injects each delta relatively; it tracks whether its cursor is pinned on the entry edge while the controller keeps pushing into it
 5. When pushed through the entry edge, the controlled peer sends `CursorLeaveMessage` with the normalized edge position and releases any held keys/buttons
 6. Controller restores its cursor one pixel inside the matching local edge and resumes local control (short cooldown prevents immediate re-entry)
+
+The keyboard hook checks the toggle hotkey (`Hotkey`) before anything else: while controlling it releases control; otherwise it toggles `Enabled`. Hooks stay installed while the service runs so this works when disabled.
 
 Never do per-event file logging on the input path: the hook callback has a system timeout and file I/O at 1000 Hz adds visible latency.
 

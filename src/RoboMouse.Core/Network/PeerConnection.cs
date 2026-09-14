@@ -18,8 +18,8 @@ namespace RoboMouse.Core.Network;
 /// </summary>
 public sealed class PeerConnection : IDisposable
 {
-    private const int HeaderSize = 16;
-    private const int MaxMessageSize = 64 * 1024 * 1024;
+    private const int HeaderSize = MessageFramer.HeaderSize;
+    private const int MaxMessageSize = MessageFramer.MaxMessageSize;
     private const int PingIntervalMs = 1000;
     private const int PongTimeoutMs = 5000;
 
@@ -27,8 +27,7 @@ public sealed class PeerConnection : IDisposable
     private Stream _stream;
     private readonly CancellationTokenSource _cts = new();
 
-    private readonly object _sendLock = new();
-    private readonly Queue<ProtocolMessage> _outbound = new();
+    private readonly OutboundQueue _outbound = new();
     private readonly AutoResetEvent _outboundSignal = new(false);
     private readonly ManualResetEventSlim _outboundDrained = new(true);
     private Thread? _sendThread;
@@ -270,27 +269,10 @@ public sealed class PeerConnection : IDisposable
         if (_disposed)
             return;
 
-        lock (_sendLock)
-        {
-            if (message is MouseMessage { IsMotion: true } motion
-                && _outbound.Count > 0
-                && _lastQueued is MouseMessage { IsMotion: true } tail)
-            {
-                tail.DeltaX += motion.DeltaX;
-                tail.DeltaY += motion.DeltaY;
-            }
-            else
-            {
-                _outbound.Enqueue(message);
-                _lastQueued = message;
-            }
-            _outboundDrained.Reset();
-        }
-
+        _outbound.Post(message);
+        _outboundDrained.Reset();
         _outboundSignal.Set();
     }
-
-    private ProtocolMessage? _lastQueued;
 
     private void SendLoop()
     {
@@ -303,15 +285,13 @@ public sealed class PeerConnection : IDisposable
             {
                 _outboundSignal.WaitOne();
 
-                lock (_sendLock)
-                {
-                    while (_outbound.Count > 0)
-                        batch.Add(_outbound.Dequeue());
-                    _lastQueued = null;
-                }
+                _outbound.DrainTo(batch);
 
                 if (batch.Count == 0)
+                {
+                    _outboundDrained.Set();
                     continue;
+                }
 
                 buffer.SetLength(0);
                 foreach (var message in batch)
@@ -323,11 +303,8 @@ public sealed class PeerConnection : IDisposable
 
                 _stream.Write(buffer.GetBuffer(), 0, (int)buffer.Length);
 
-                lock (_sendLock)
-                {
-                    if (_outbound.Count == 0)
-                        _outboundDrained.Set();
-                }
+                if (_outbound.Count == 0)
+                    _outboundDrained.Set();
             }
         }
         catch (Exception ex) when (!_disposed)
@@ -355,31 +332,25 @@ public sealed class PeerConnection : IDisposable
                     break; // Closed gracefully
                 filled += read;
 
-                var consumed = 0;
-                while (filled - consumed >= HeaderSize)
+                // Grow the buffer if the next frame is larger than what we can hold.
+                if (filled >= HeaderSize)
                 {
-                    var size = ProtocolMessage.GetMessageSize(buffer.AsSpan(consumed, HeaderSize));
-                    if (size < HeaderSize || size > MaxMessageSize)
+                    var next = MessageFramer.PeekFrameSize(buffer.AsSpan(0, HeaderSize));
+                    if (next < 0)
                         throw new InvalidDataException("Invalid frame header from peer.");
-
-                    if (size > buffer.Length)
-                    {
-                        Array.Resize(ref buffer, Math.Max(size, buffer.Length * 2));
-                    }
-
-                    if (filled - consumed < size)
-                        break; // Need more data for this frame
-
-                    var message = ProtocolMessage.Deserialize(buffer.AsSpan(consumed, size));
-                    consumed += size;
-
-                    if (message != null && !Dispatch(message))
-                    {
-                        filled = 0;
-                        consumed = 0;
-                        goto done;
-                    }
+                    if (next > buffer.Length)
+                        Array.Resize(ref buffer, Math.Max(next, buffer.Length * 2));
                 }
+
+                var stop = false;
+                var consumed = MessageFramer.ReadFrames(buffer.AsSpan(0, filled), message =>
+                {
+                    if (!stop && !Dispatch(message))
+                        stop = true;
+                });
+
+                if (stop)
+                    goto done;
 
                 if (consumed > 0)
                 {

@@ -7,8 +7,16 @@ namespace RoboMouse.App;
 internal static class Program
 {
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        // Recovery switch: if a previous instance was killed while controlling a remote, the system
+        // cursors may still be blank. "RoboMouse.exe --restore-cursor" puts them back and exits.
+        if (args.Any(a => string.Equals(a, "--restore-cursor", StringComparison.OrdinalIgnoreCase)))
+        {
+            InputSimulator.RestoreSystemCursor();
+            return;
+        }
+
         // Ensure single instance
         using var mutex = new Mutex(true, "RoboMouse_SingleInstance", out var isNew);
         if (!isNew)

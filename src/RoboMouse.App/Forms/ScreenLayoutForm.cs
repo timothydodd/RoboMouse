@@ -114,7 +114,8 @@ public class ScreenLayoutPanel : Panel
         _screens.Clear();
 
         // Add local screen at center
-        var localBounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+        // The whole desktop (all monitors), since edges are detected on the virtual screen.
+        var localBounds = SystemInformation.VirtualScreen;
         _localScreen = new ScreenRect
         {
             Name = "This PC",

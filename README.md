@@ -22,6 +22,15 @@ A Windows application that lets you share your mouse and keyboard across multipl
 
 ## Getting Started
 
+### Publishing a Release Build
+
+```bash
+dotnet publish src/RoboMouse.App -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
+```
+
+The output in `src/RoboMouse.App/bin/Release/net9.0-windows/win-x64/publish/` needs only the
+.NET 9 Desktop Runtime on the target machine.
+
 ### Building from Source
 
 ```bash
@@ -105,6 +114,25 @@ Consecutive motion messages are merged while waiting to send, and a ping every s
 measures round-trip time (shown in the Debug Panel).
 
 Peer discovery uses UDP broadcast on the local network.
+
+## Hotkey
+
+The hotkey (default **Ctrl+Alt+M**, Settings > General) is the escape hatch: while you are
+controlling another screen it hands control straight back to this machine, even if the
+other machine has stopped responding. Otherwise it turns sharing on or off.
+
+## Known Limitations
+
+- **Elevated windows.** Windows does not let a normal process send input to programs running
+  as administrator, or to UAC prompts. Either run RoboMouse as administrator on the controlled
+  machine, or move that machine's own mouse for those dialogs.
+- **Keyboard layouts.** Keys are forwarded as virtual key codes, so with different layouts on the
+  two machines some symbol keys will produce different characters on the remote.
+- **Different subnets.** Automatic discovery uses broadcast and never crosses subnets; add such
+  peers by IP and make sure the firewall rule on each side allows any remote address
+  (Settings > Network > Allow through Windows Firewall).
+- **Blank cursor after a crash.** The cursor is hidden by swapping the system cursors while
+  controlling. If RoboMouse is killed at that moment, run `RoboMouse.exe --restore-cursor`.
 
 ## Firewall Configuration
 

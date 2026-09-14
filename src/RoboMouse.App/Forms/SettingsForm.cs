@@ -48,7 +48,7 @@ public partial class SettingsForm : Form
 
     private void InitializeComponent()
     {
-        Text = "RoboMouse Settings";
+        Text = $"RoboMouse Settings  (v{typeof(SettingsForm).Assembly.GetName().Version?.ToString(3)})";
         Size = new Size(560, 600);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;

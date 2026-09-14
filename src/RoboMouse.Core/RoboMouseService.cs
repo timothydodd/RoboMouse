@@ -143,7 +143,7 @@ public sealed class RoboMouseService : IDisposable
         _clipboardManager = new ClipboardManager(_settings.Clipboard.MaxSizeBytes);
         _clipboardManager.ClipboardChanged += OnClipboardChanged;
 
-        var (width, height) = InputSimulator.GetPrimaryScreenSize();
+        var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
 
         _discovery = new PeerDiscovery(
             _settings.DiscoveryPort,
@@ -226,7 +226,7 @@ public sealed class RoboMouseService : IDisposable
 
         try
         {
-            var (width, height) = InputSimulator.GetPrimaryScreenSize();
+            var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
 
             var connection = await PeerConnection.ConnectAsync(
                 peerConfig.Address,
@@ -509,7 +509,7 @@ public sealed class RoboMouseService : IDisposable
         PeerConnection? probe = null;
         try
         {
-            var (width, height) = InputSimulator.GetPrimaryScreenSize();
+            var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
             probe = await PeerConnection.ConnectAsync(
                 address, port, GetPairingKey(), _settings.MachineId, _settings.MachineName, width, height, ct, probe: true);
 

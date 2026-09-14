@@ -8,6 +8,9 @@
     <RootNamespace>RoboMouse.Core</RootNamespace>
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Version>1.0.0</Version>
+    <Authors>Tim Dodd</Authors>
+    <Product>RoboMouse</Product>
   </PropertyGroup>
 
 </Project>
