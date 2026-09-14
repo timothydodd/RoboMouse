@@ -337,7 +337,140 @@ public sealed class RoboMouseService : IDisposable
 
     private void OnIncomingConnection(object? sender, PeerConnection connection)
     {
+        if (connection.IsProbe)
+        {
+            // A connection test from another machine. It only needs pings answered (the connection
+            // does that itself) until the tester hangs up; never treat it as a peer.
+            SimpleLogger.Log("Accept", $"Connection test from {connection.PeerName}");
+            connection.Disconnected += (s, e) => connection.Dispose();
+            return;
+        }
+
         AddConnection(connection);
+    }
+
+    /// <summary>Whether a live connection to the given peer exists.</summary>
+    public bool IsPeerConnected(string peerId)
+    {
+        lock (_connectionLock)
+        {
+            return _connections.TryGetValue(peerId, out var c) && c.IsConnected;
+        }
+    }
+
+    /// <summary>Gets the live connection to a peer, if any.</summary>
+    public PeerConnection? GetConnection(string peerId)
+    {
+        lock (_connectionLock)
+        {
+            return _connections.TryGetValue(peerId, out var c) && c.IsConnected ? c : null;
+        }
+    }
+
+    /// <summary>
+    /// Tests a configured peer. Uses the live connection when there is one; otherwise probes the address.
+    /// </summary>
+    public Task<ConnectionTestResult> TestConnectionAsync(PeerConfig peer, CancellationToken ct = default)
+    {
+        var existing = GetConnection(peer.Id);
+        return existing != null
+            ? MeasureExistingAsync(existing, ct)
+            : TestConnectionAsync(peer.Address, peer.Port, ct);
+    }
+
+    /// <summary>
+    /// Tests reachability of an address: TCP connect, handshake, one round-trip ping, then hang up.
+    /// The remote does not register us as a peer for this.
+    /// </summary>
+    public async Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct = default)
+    {
+        var result = new ConnectionTestResult { Address = address, Port = port };
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        PeerConnection? probe = null;
+        try
+        {
+            var (width, height) = InputSimulator.GetPrimaryScreenSize();
+            probe = await PeerConnection.ConnectAsync(
+                address, port, _settings.MachineId, _settings.MachineName, width, height, ct, probe: true);
+
+            result.ConnectMs = (int)sw.ElapsedMilliseconds;
+            result.PeerName = probe.PeerName;
+            result.PeerId = probe.PeerId;
+            result.PeerScreenWidth = probe.PeerScreenWidth;
+            result.PeerScreenHeight = probe.PeerScreenHeight;
+
+            result.RoundTripMs = await MeasureAveragedAsync(probe, ct);
+            result.Success = true;
+        }
+        catch (OperationCanceledException)
+        {
+            result.Error = "Timed out. Is RoboMouse running there, and is the port open in the firewall?";
+        }
+        catch (System.Net.Sockets.SocketException ex)
+        {
+            result.Error = ex.SocketErrorCode switch
+            {
+                System.Net.Sockets.SocketError.ConnectionRefused => "Connection refused. RoboMouse is not listening on that port.",
+                System.Net.Sockets.SocketError.HostNotFound => "Host name could not be resolved.",
+                System.Net.Sockets.SocketError.TimedOut => "No response. Check the address and firewall.",
+                _ => ex.Message
+            };
+        }
+        catch (Exception ex)
+        {
+            result.Error = ex.Message;
+        }
+        finally
+        {
+            if (probe != null)
+            {
+                try { await probe.DisconnectAsync(); } catch { }
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<ConnectionTestResult> MeasureExistingAsync(PeerConnection connection, CancellationToken ct)
+    {
+        var result = new ConnectionTestResult
+        {
+            Address = connection.RemoteEndPoint?.Address.ToString() ?? string.Empty,
+            Port = connection.RemoteEndPoint?.Port ?? 0,
+            PeerName = connection.PeerName,
+            PeerId = connection.PeerId,
+            PeerScreenWidth = connection.PeerScreenWidth,
+            PeerScreenHeight = connection.PeerScreenHeight,
+            UsedExistingConnection = true
+        };
+
+        try
+        {
+            result.RoundTripMs = await MeasureAveragedAsync(connection, ct);
+            result.Success = true;
+        }
+        catch (OperationCanceledException)
+        {
+            result.Error = "The peer stopped answering pings. The connection may be dead.";
+        }
+        catch (Exception ex)
+        {
+            result.Error = ex.Message;
+        }
+
+        return result;
+    }
+
+    private static async Task<int> MeasureAveragedAsync(PeerConnection connection, CancellationToken ct)
+    {
+        const int samples = 5;
+        var total = 0;
+        for (var i = 0; i < samples; i++)
+        {
+            total += await connection.MeasureRoundTripAsync(ct);
+        }
+        return total / samples;
     }
 
     private void OnPeerDiscovered(object? sender, DiscoveredPeer peer)
@@ -828,6 +961,48 @@ public sealed class RoboMouseService : IDisposable
         _clipboardManager.Dispose();
         _discovery.Dispose();
         _listener.Dispose();
+    }
+}
+
+/// <summary>
+/// Outcome of a connection test.
+/// </summary>
+public class ConnectionTestResult
+{
+    public bool Success { get; set; }
+    public string Address { get; set; } = string.Empty;
+    public int Port { get; set; }
+    public string? PeerName { get; set; }
+    public string? PeerId { get; set; }
+    public int PeerScreenWidth { get; set; }
+    public int PeerScreenHeight { get; set; }
+    /// <summary>Time to establish TCP and complete the handshake. Zero when an existing connection was used.</summary>
+    public int ConnectMs { get; set; }
+    /// <summary>Average round-trip time over several pings.</summary>
+    public int RoundTripMs { get; set; }
+    public bool UsedExistingConnection { get; set; }
+    public string? Error { get; set; }
+
+    public string Summary
+    {
+        get
+        {
+            if (!Success)
+                return $"Could not reach {Address}:{Port}.\n\n{Error}";
+
+            var lines = new List<string>
+            {
+                $"Reached {PeerName} at {Address}:{Port}.",
+                string.Empty,
+                $"Screen: {PeerScreenWidth}x{PeerScreenHeight}",
+                $"Round trip: {RoundTripMs} ms (average of 5 pings)"
+            };
+            if (UsedExistingConnection)
+                lines.Add("Measured over the existing connection.");
+            else
+                lines.Add($"Connect + handshake: {ConnectMs} ms");
+            return string.Join("\n", lines);
+        }
     }
 }
 

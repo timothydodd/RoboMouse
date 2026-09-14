@@ -52,6 +52,9 @@ public sealed class PeerConnection : IDisposable
     /// <summary>Most recent measured round-trip time in milliseconds, or -1 if not yet measured.</summary>
     public int RoundTripMs { get; private set; } = -1;
 
+    /// <summary>True when the remote side opened this connection only to test reachability.</summary>
+    public bool IsProbe { get; private set; }
+
     /// <summary>Remote endpoint address.</summary>
     public IPEndPoint? RemoteEndPoint => _client.Client.RemoteEndPoint as IPEndPoint;
 
@@ -86,9 +89,10 @@ public sealed class PeerConnection : IDisposable
         string localMachineName,
         int localScreenWidth,
         int localScreenHeight,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool probe = false)
     {
-        SimpleLogger.Log("Connect", $"Connecting to {host}:{port}...");
+        SimpleLogger.Log("Connect", $"Connecting to {host}:{port}{(probe ? " (probe)" : "")}...");
 
         var client = new TcpClient();
         await client.ConnectAsync(host, port, ct);
@@ -101,8 +105,10 @@ public sealed class PeerConnection : IDisposable
             MachineName = localMachineName,
             ScreenWidth = localScreenWidth,
             ScreenHeight = localScreenHeight,
-            SupportsClipboard = true
+            SupportsClipboard = true,
+            IsProbe = probe
         };
+        connection.IsProbe = probe;
 
         await connection.WriteDirectAsync(handshake, ct);
         var response = await connection.ReadOneAsync(ct);
@@ -111,7 +117,9 @@ public sealed class PeerConnection : IDisposable
         {
             var responseType = response?.GetType().Name ?? "null/invalid";
             connection.Dispose();
-            throw new InvalidOperationException($"Invalid handshake response: received {responseType}");
+            throw new InvalidOperationException(response == null
+                ? "No valid handshake reply. The other machine may be running a different RoboMouse version."
+                : $"Invalid handshake response: received {responseType}");
         }
 
         if (!ack.Accepted)
@@ -157,6 +165,7 @@ public sealed class PeerConnection : IDisposable
         connection.PeerName = handshake.MachineName;
         connection.PeerScreenWidth = handshake.ScreenWidth;
         connection.PeerScreenHeight = handshake.ScreenHeight;
+        connection.IsProbe = handshake.IsProbe;
 
         var ack = new HandshakeAckMessage
         {
@@ -355,6 +364,7 @@ public sealed class PeerConnection : IDisposable
                 if (rtt >= 0)
                 {
                     RoundTripMs = rtt;
+                    Interlocked.Exchange(ref _pendingRtt, null)?.TrySetResult(rtt);
                     RoundTripMeasured?.Invoke(this, rtt);
                 }
                 return true;
@@ -374,6 +384,22 @@ public sealed class PeerConnection : IDisposable
                 }
                 return true;
         }
+    }
+
+    private TaskCompletionSource<int>? _pendingRtt;
+
+    /// <summary>
+    /// Sends a ping now and returns the measured round-trip time in milliseconds.
+    /// </summary>
+    public async Task<int> MeasureRoundTripAsync(CancellationToken ct = default)
+    {
+        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var previous = Interlocked.Exchange(ref _pendingRtt, tcs);
+        previous?.TrySetCanceled();
+
+        using var registration = ct.Register(() => tcs.TrySetCanceled(ct));
+        Post(new PingMessage());
+        return await tcs.Task;
     }
 
     private void RaiseDisconnected(Exception? reason)
@@ -455,6 +481,7 @@ public sealed class PeerConnection : IDisposable
         _cts.Cancel();
         _pingTimer?.Dispose();
         _outboundSignal.Set();
+        Interlocked.Exchange(ref _pendingRtt, null)?.TrySetException(new ObjectDisposedException(nameof(PeerConnection)));
 
         try { _stream.Close(); } catch { }
         try { _client.Close(); } catch { }

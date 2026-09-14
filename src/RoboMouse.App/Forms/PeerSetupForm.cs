@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
 
 namespace RoboMouse.App.Forms;
@@ -11,16 +12,23 @@ public partial class PeerSetupForm : Form
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public PeerConfig? PeerConfig { get; private set; }
 
+    private readonly RoboMouseService? _service;
+    private readonly AppSettings? _settings;
+
     private TextBox _nameTextBox = null!;
     private TextBox _addressTextBox = null!;
     private NumericUpDown _portNumeric = null!;
     private ComboBox _positionCombo = null!;
     private NumericUpDown _offsetXNumeric = null!;
     private NumericUpDown _offsetYNumeric = null!;
+    private Button _testButton = null!;
+    private Label _testResultLabel = null!;
 
-    public PeerSetupForm(PeerConfig? existingPeer)
+    public PeerSetupForm(PeerConfig? existingPeer, RoboMouseService? service = null, AppSettings? settings = null)
     {
         PeerConfig = existingPeer;
+        _service = service;
+        _settings = settings;
         InitializeComponent();
 
         if (existingPeer != null)
@@ -32,7 +40,7 @@ public partial class PeerSetupForm : Form
     private void InitializeComponent()
     {
         Text = PeerConfig == null ? "Add Peer" : "Edit Peer";
-        Size = new Size(400, 300);
+        Size = new Size(420, 360);
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -43,7 +51,7 @@ public partial class PeerSetupForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(10),
             ColumnCount = 2,
-            RowCount = 8
+            RowCount = 9
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -55,10 +63,17 @@ public partial class PeerSetupForm : Form
         _nameTextBox = new TextBox { Dock = DockStyle.Fill };
         layout.Controls.Add(_nameTextBox, 1, row++);
 
-        // Address
+        // Address + Test
         layout.Controls.Add(new Label { Text = "Address:", AutoSize = true }, 0, row);
+        var addressPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
+        addressPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        addressPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _addressTextBox = new TextBox { Dock = DockStyle.Fill };
-        layout.Controls.Add(_addressTextBox, 1, row++);
+        addressPanel.Controls.Add(_addressTextBox, 0, 0);
+        _testButton = new Button { Text = "Test", Width = 60, Enabled = _service != null };
+        _testButton.Click += OnTestClick;
+        addressPanel.Controls.Add(_testButton, 1, 0);
+        layout.Controls.Add(addressPanel, 1, row++);
 
         // Port
         layout.Controls.Add(new Label { Text = "Port:", AutoSize = true }, 0, row);
@@ -70,6 +85,18 @@ public partial class PeerSetupForm : Form
             Width = 100
         };
         layout.Controls.Add(_portNumeric, 1, row++);
+
+        // Test result
+        layout.Controls.Add(new Label(), 0, row);
+        _testResultLabel = new Label
+        {
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            Height = 36,
+            ForeColor = Color.Gray,
+            Text = _service != null ? "Click Test to check the machine answers on this address and port." : ""
+        };
+        layout.Controls.Add(_testResultLabel, 1, row++);
 
         // Position
         layout.Controls.Add(new Label { Text = "Position:", AutoSize = true }, 0, row);
@@ -148,6 +175,48 @@ public partial class PeerSetupForm : Form
         }
     }
 
+    private async void OnTestClick(object? sender, EventArgs e)
+    {
+        if (_service == null)
+            return;
+
+        var address = _addressTextBox.Text.Trim();
+        if (string.IsNullOrEmpty(address))
+        {
+            _testResultLabel.ForeColor = Color.DarkOrange;
+            _testResultLabel.Text = "Enter an address first.";
+            return;
+        }
+
+        _testButton.Enabled = false;
+        _testResultLabel.ForeColor = Color.Gray;
+        _testResultLabel.Text = $"Testing {address}:{(int)_portNumeric.Value}...";
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            var result = await _service.TestConnectionAsync(address, (int)_portNumeric.Value, cts.Token);
+
+            if (result.Success)
+            {
+                _testResultLabel.ForeColor = Color.Green;
+                _testResultLabel.Text = $"OK: {result.PeerName} ({result.PeerScreenWidth}x{result.PeerScreenHeight}), round trip {result.RoundTripMs} ms";
+
+                if (string.IsNullOrWhiteSpace(_nameTextBox.Text) && !string.IsNullOrEmpty(result.PeerName))
+                    _nameTextBox.Text = result.PeerName;
+            }
+            else
+            {
+                _testResultLabel.ForeColor = Color.Firebrick;
+                _testResultLabel.Text = result.Error ?? "Failed.";
+            }
+        }
+        finally
+        {
+            _testButton.Enabled = true;
+        }
+    }
+
     private void OnOkClick(object? sender, EventArgs e)
     {
         if (string.IsNullOrWhiteSpace(_nameTextBox.Text))
@@ -165,6 +234,21 @@ public partial class PeerSetupForm : Form
         }
 
         var position = (_positionCombo.SelectedItem as PositionItem)?.Position ?? ScreenPosition.Right;
+
+        // Another configured peer on the same edge would never be reachable; offer a swap.
+        var occupant = _settings?.Peers.FirstOrDefault(p => p != PeerConfig && p.Position == position);
+        if (occupant != null)
+        {
+            var answer = MessageBox.Show(this,
+                $"{occupant.Name} is already {PeerPositions.Describe(position).ToLower()} of this screen.\n\n" +
+                $"Swap them so {occupant.Name} moves {PeerPositions.Describe(PeerConfig?.Position ?? ScreenPosition.Right).ToLower()}?",
+                "Edge already in use", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+
+            if (answer == DialogResult.Cancel)
+                return;
+            if (answer == DialogResult.Yes)
+                occupant.Position = PeerConfig?.Position ?? ScreenPosition.Right;
+        }
 
         if (PeerConfig == null)
         {

@@ -19,7 +19,15 @@ public partial class SettingsForm : Form
     private CheckBox _startWithWindowsCheck = null!;
     private CheckBox _startMinimizedCheck = null!;
     private TextBox _hotkeyTextBox = null!;
-    private ListBox _peersListBox = null!;
+    private ListView _peersList = null!;
+    private Button _testButton = null!;
+    private Button _connectButton = null!;
+    private Button _editButton = null!;
+    private Button _removeButton = null!;
+    private ComboBox _positionCombo = null!;
+    private Label _peerHintLabel = null!;
+    private System.Windows.Forms.Timer _statusTimer = null!;
+    private bool _suppressPositionChange;
 
     public SettingsForm(AppSettings settings, RoboMouseService service)
     {
@@ -33,7 +41,7 @@ public partial class SettingsForm : Form
     private void InitializeComponent()
     {
         Text = "RoboMouse Settings";
-        Size = new Size(500, 500);
+        Size = new Size(560, 520);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -179,11 +187,79 @@ public partial class SettingsForm : Form
             AutoSize = true,
             ForeColor = Color.Gray
         };
-        layout.Controls.Add(infoLabel, 0, row);
+        layout.Controls.Add(infoLabel, 0, row++);
         layout.SetColumnSpan(infoLabel, 2);
+
+        // Firewall
+        layout.Controls.Add(new Label { Text = "Firewall:", AutoSize = true, Margin = new Padding(0, 12, 0, 0) }, 0, row);
+        var firewallPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown, Margin = new Padding(0, 8, 0, 0) };
+        var firewallButton = new Button { Text = "Allow RoboMouse through Windows Firewall...", AutoSize = true };
+        firewallButton.Click += OnFirewallClick;
+        firewallPanel.Controls.Add(firewallButton);
+        firewallPanel.Controls.Add(new Label
+        {
+            Text = "Adds inbound rules for the ports above from any address, on all network profiles.\n" +
+                   "Needed when the other machine is on a different subnet: the rule Windows creates\n" +
+                   "automatically is often limited to the local subnet. Requires administrator approval.",
+            AutoSize = true,
+            ForeColor = Color.Gray
+        });
+        firewallPanel.Controls.Add(new Label
+        {
+            Text = "Automatic discovery uses broadcast and never crosses subnets; add such peers by IP.",
+            AutoSize = true,
+            ForeColor = Color.Gray
+        });
+        layout.Controls.Add(firewallPanel, 1, row++);
 
         tab.Controls.Add(layout);
         return tab;
+    }
+
+    private void OnFirewallClick(object? sender, EventArgs e)
+    {
+        var tcp = (int)_portNumeric.Value;
+        var udp = (int)_discoveryPortNumeric.Value;
+
+        // One elevated cmd that replaces any previous RoboMouse rules.
+        var script =
+            $"netsh advfirewall firewall delete rule name=\"RoboMouse (TCP)\" & " +
+            $"netsh advfirewall firewall delete rule name=\"RoboMouse (UDP)\" & " +
+            $"netsh advfirewall firewall add rule name=\"RoboMouse (TCP)\" dir=in action=allow protocol=TCP localport={tcp} remoteip=any profile=any & " +
+            $"netsh advfirewall firewall add rule name=\"RoboMouse (UDP)\" dir=in action=allow protocol=UDP localport={udp} remoteip=any profile=any";
+
+        try
+        {
+            var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = "/c " + script,
+                Verb = "runas",
+                UseShellExecute = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden
+            });
+            process?.WaitForExit(15000);
+
+            if (process?.ExitCode == 0)
+            {
+                MessageBox.Show(this, $"Firewall rules added for TCP {tcp} and UDP {udp}.", "RoboMouse",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show(this, "The firewall command did not complete. You can add the rules manually in Windows Defender Firewall with Advanced Security.",
+                    "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // User declined the elevation prompt.
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not update the firewall: {ex.Message}", "RoboMouse",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private TabPage CreatePeersTab()
@@ -195,20 +271,29 @@ public partial class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 2
+            RowCount = 3
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        _peersListBox = new ListBox
+        _peersList = new ListView
         {
             Dock = DockStyle.Fill,
-            DisplayMember = "DisplayText"
+            View = View.Details,
+            FullRowSelect = true,
+            MultiSelect = false,
+            HideSelection = false
         };
-        layout.Controls.Add(_peersListBox, 0, 0);
-        layout.SetRowSpan(_peersListBox, 2);
+        _peersList.Columns.Add("Name", 110);
+        _peersList.Columns.Add("Address", 120);
+        _peersList.Columns.Add("Position", 60);
+        _peersList.Columns.Add("Status", 100);
+        _peersList.SelectedIndexChanged += (s, e) => UpdatePeerButtons();
+        _peersList.DoubleClick += OnEditPeerClick;
+        layout.Controls.Add(_peersList, 0, 0);
 
         var buttonPanel = new FlowLayoutPanel
         {
@@ -216,22 +301,209 @@ public partial class SettingsForm : Form
             FlowDirection = FlowDirection.TopDown
         };
 
-        var addButton = new Button { Text = "Add...", Width = 80 };
+        var addButton = new Button { Text = "Add...", Width = 110 };
         addButton.Click += OnAddPeerClick;
         buttonPanel.Controls.Add(addButton);
 
-        var editButton = new Button { Text = "Edit...", Width = 80 };
-        editButton.Click += OnEditPeerClick;
-        buttonPanel.Controls.Add(editButton);
+        _editButton = new Button { Text = "Edit...", Width = 110 };
+        _editButton.Click += OnEditPeerClick;
+        buttonPanel.Controls.Add(_editButton);
 
-        var removeButton = new Button { Text = "Remove", Width = 80 };
-        removeButton.Click += OnRemovePeerClick;
-        buttonPanel.Controls.Add(removeButton);
+        _removeButton = new Button { Text = "Remove", Width = 110 };
+        _removeButton.Click += OnRemovePeerClick;
+        buttonPanel.Controls.Add(_removeButton);
+
+        buttonPanel.Controls.Add(new Label { Height = 8 });
+
+        _testButton = new Button { Text = "Test Connection", Width = 110 };
+        _testButton.Click += OnTestPeerClick;
+        buttonPanel.Controls.Add(_testButton);
+
+        _connectButton = new Button { Text = "Connect", Width = 110 };
+        _connectButton.Click += OnConnectPeerClick;
+        buttonPanel.Controls.Add(_connectButton);
 
         layout.Controls.Add(buttonPanel, 1, 0);
 
+        // Quick position change
+        var positionPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
+        positionPanel.Controls.Add(new Label { Text = "Selected peer is:", AutoSize = true, Margin = new Padding(0, 6, 6, 0) });
+        _positionCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 };
+        foreach (var position in PeerPositions.All)
+            _positionCombo.Items.Add(new PositionChoice(position));
+        _positionCombo.SelectedIndexChanged += OnQuickPositionChanged;
+        positionPanel.Controls.Add(_positionCombo);
+        positionPanel.Controls.Add(new Label { Text = "of this screen", AutoSize = true, Margin = new Padding(6, 6, 0, 0) });
+        layout.Controls.Add(positionPanel, 0, 1);
+        layout.SetColumnSpan(positionPanel, 2);
+
+        _peerHintLabel = new Label
+        {
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Margin = new Padding(0, 4, 0, 0),
+            Text = "Position changes apply immediately. Peers on another subnet must be added by IP."
+        };
+        layout.Controls.Add(_peerHintLabel, 0, 2);
+        layout.SetColumnSpan(_peerHintLabel, 2);
+
         tab.Controls.Add(layout);
+
+        _statusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _statusTimer.Tick += (s, e) => RefreshPeerStatus();
+        _statusTimer.Start();
+
         return tab;
+    }
+
+    private PeerConfig? SelectedPeer => _peersList.SelectedItems.Count > 0 ? _peersList.SelectedItems[0].Tag as PeerConfig : null;
+
+    private void RefreshPeersList()
+    {
+        var selected = SelectedPeer;
+        _peersList.BeginUpdate();
+        _peersList.Items.Clear();
+        foreach (var peer in _settings.Peers)
+        {
+            var item = new ListViewItem(peer.Name) { Tag = peer };
+            item.SubItems.Add($"{peer.Address}:{peer.Port}");
+            item.SubItems.Add(PeerPositions.Describe(peer.Position));
+            item.SubItems.Add(string.Empty);
+            _peersList.Items.Add(item);
+            if (peer == selected)
+                item.Selected = true;
+        }
+        _peersList.EndUpdate();
+        RefreshPeerStatus();
+        UpdatePeerButtons();
+    }
+
+    private void RefreshPeerStatus()
+    {
+        if (IsDisposed)
+            return;
+
+        foreach (ListViewItem item in _peersList.Items)
+        {
+            if (item.Tag is not PeerConfig peer)
+                continue;
+
+            var connection = _service.GetConnection(peer.Id);
+            var status = connection == null
+                ? "Not connected"
+                : connection.RoundTripMs >= 0 ? $"Connected, {connection.RoundTripMs} ms" : "Connected";
+
+            if (item.SubItems[3].Text != status)
+            {
+                item.SubItems[3].Text = status;
+                item.ForeColor = connection == null ? SystemColors.GrayText : SystemColors.WindowText;
+            }
+            var position = PeerPositions.Describe(peer.Position);
+            if (item.SubItems[2].Text != position)
+                item.SubItems[2].Text = position;
+        }
+
+        var selected = SelectedPeer;
+        if (selected != null)
+            _connectButton.Text = _service.IsPeerConnected(selected.Id) ? "Disconnect" : "Connect";
+    }
+
+    private void UpdatePeerButtons()
+    {
+        var peer = SelectedPeer;
+        var has = peer != null;
+        _editButton.Enabled = has;
+        _removeButton.Enabled = has;
+        _testButton.Enabled = has;
+        _connectButton.Enabled = has;
+        _positionCombo.Enabled = has;
+
+        _suppressPositionChange = true;
+        _positionCombo.SelectedIndex = peer == null ? -1 : Array.IndexOf(PeerPositions.All, peer.Position);
+        _suppressPositionChange = false;
+
+        if (peer != null)
+            _connectButton.Text = _service.IsPeerConnected(peer.Id) ? "Disconnect" : "Connect";
+    }
+
+    private void OnQuickPositionChanged(object? sender, EventArgs e)
+    {
+        if (_suppressPositionChange || SelectedPeer is not PeerConfig peer || _positionCombo.SelectedItem is not PositionChoice choice)
+            return;
+
+        if (!PeerPositions.TrySet(_settings, peer, choice.Position, this))
+        {
+            // Declined swap or no change: put the combo back.
+            _suppressPositionChange = true;
+            _positionCombo.SelectedIndex = Array.IndexOf(PeerPositions.All, peer.Position);
+            _suppressPositionChange = false;
+            return;
+        }
+
+        RefreshPeersList();
+    }
+
+    private async void OnTestPeerClick(object? sender, EventArgs e)
+    {
+        if (SelectedPeer is not PeerConfig peer)
+            return;
+
+        _testButton.Enabled = false;
+        _testButton.Text = "Testing...";
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            var result = await _service.TestConnectionAsync(peer, cts.Token);
+            MessageBox.Show(this, result.Summary, $"Connection test: {peer.Name}",
+                MessageBoxButtons.OK, result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _testButton.Text = "Test Connection";
+            UpdatePeerButtons();
+        }
+    }
+
+    private async void OnConnectPeerClick(object? sender, EventArgs e)
+    {
+        if (SelectedPeer is not PeerConfig peer)
+            return;
+
+        _connectButton.Enabled = false;
+        try
+        {
+            if (_service.IsPeerConnected(peer.Id))
+            {
+                await _service.DisconnectFromPeerAsync(peer.Id);
+            }
+            else
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                await _service.ConnectToPeerAsync(peer, cts.Token);
+                _settings.Save();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            MessageBox.Show(this, $"Connecting to {peer.Address}:{peer.Port} timed out. Use Test Connection for details.",
+                "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not connect to {peer.Name}: {ex.Message}", "RoboMouse",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            RefreshPeersList();
+        }
+    }
+
+    private class PositionChoice
+    {
+        public ScreenPosition Position { get; }
+        public PositionChoice(ScreenPosition position) => Position = position;
+        public override string ToString() => PeerPositions.Describe(Position);
     }
 
     private void LoadSettings()
@@ -245,15 +517,6 @@ public partial class SettingsForm : Form
         _hotkeyTextBox.Text = _settings.ToggleHotkey ?? "";
 
         RefreshPeersList();
-    }
-
-    private void RefreshPeersList()
-    {
-        _peersListBox.Items.Clear();
-        foreach (var peer in _settings.Peers)
-        {
-            _peersListBox.Items.Add(new PeerListItem(peer));
-        }
     }
 
     private void OnSaveClick(object? sender, EventArgs e)
@@ -302,45 +565,48 @@ public partial class SettingsForm : Form
 
     private void OnAddPeerClick(object? sender, EventArgs e)
     {
-        using var dialog = new PeerSetupForm(null);
+        using var dialog = new PeerSetupForm(null, _service, _settings);
         if (dialog.ShowDialog(this) == DialogResult.OK && dialog.PeerConfig != null)
         {
             _settings.Peers.Add(dialog.PeerConfig);
+            _settings.Save();
             RefreshPeersList();
         }
     }
 
     private void OnEditPeerClick(object? sender, EventArgs e)
     {
-        if (_peersListBox.SelectedItem is PeerListItem item)
+        if (SelectedPeer is PeerConfig peer)
         {
-            using var dialog = new PeerSetupForm(item.Peer);
+            using var dialog = new PeerSetupForm(peer, _service, _settings);
             if (dialog.ShowDialog(this) == DialogResult.OK)
             {
+                _settings.Save();
                 RefreshPeersList();
             }
         }
     }
 
-    private void OnRemovePeerClick(object? sender, EventArgs e)
+    private async void OnRemovePeerClick(object? sender, EventArgs e)
     {
-        if (_peersListBox.SelectedItem is PeerListItem item)
+        if (SelectedPeer is PeerConfig peer)
         {
-            _settings.Peers.Remove(item.Peer);
+            if (_service.IsPeerConnected(peer.Id))
+            {
+                try { await _service.DisconnectFromPeerAsync(peer.Id); } catch { }
+            }
+            _settings.Peers.Remove(peer);
+            _settings.Save();
             RefreshPeersList();
         }
     }
 
-    private class PeerListItem
+    protected override void Dispose(bool disposing)
     {
-        public PeerConfig Peer { get; }
-        public string DisplayText => $"{Peer.Name} ({Peer.Address}) - {Peer.Position}";
-
-        public PeerListItem(PeerConfig peer)
+        if (disposing)
         {
-            Peer = peer;
+            _statusTimer?.Dispose();
         }
-
-        public override string ToString() => DisplayText;
+        base.Dispose(disposing);
     }
 }

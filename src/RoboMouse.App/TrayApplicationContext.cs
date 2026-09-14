@@ -18,6 +18,7 @@ public class TrayApplicationContext : ApplicationContext
     private ToolStripMenuItem _statusItem = null!;
     private ToolStripMenuItem _enableItem = null!;
     private ToolStripMenuItem _discoveredPeersItem = null!;
+    private ToolStripMenuItem _configuredPeersItem = null!;
 
     private SettingsForm? _settingsForm;
     private ScreenLayoutForm? _layoutForm;
@@ -87,8 +88,12 @@ public class TrayApplicationContext : ApplicationContext
 
         menu.Items.Add(new ToolStripSeparator());
 
+        // Configured peers submenu (status, position, test, connect)
+        _configuredPeersItem = new ToolStripMenuItem("Peers");
+        menu.Items.Add(_configuredPeersItem);
+
         // Discovered peers submenu
-        _discoveredPeersItem = new ToolStripMenuItem("Connect to...");
+        _discoveredPeersItem = new ToolStripMenuItem("Connect to discovered...");
         menu.Items.Add(_discoveredPeersItem);
 
         // Add peer by IP
@@ -133,10 +138,105 @@ public class TrayApplicationContext : ApplicationContext
         exitItem.Click += OnExit;
         menu.Items.Add(exitItem);
 
-        // Update discovered peers when menu opens
-        menu.Opening += (s, e) => UpdateDiscoveredPeersMenu();
+        // Update peer submenus when menu opens
+        menu.Opening += (s, e) =>
+        {
+            UpdateConfiguredPeersMenu();
+            UpdateDiscoveredPeersMenu();
+        };
 
         return menu;
+    }
+
+    private void UpdateConfiguredPeersMenu()
+    {
+        _configuredPeersItem.DropDownItems.Clear();
+
+        if (_settings.Peers.Count == 0)
+        {
+            _configuredPeersItem.DropDownItems.Add(new ToolStripMenuItem("No peers configured") { Enabled = false });
+            return;
+        }
+
+        foreach (var peer in _settings.Peers)
+        {
+            var connection = _service.GetConnection(peer.Id);
+            var status = connection == null
+                ? "not connected"
+                : connection.RoundTripMs >= 0 ? $"{connection.RoundTripMs} ms" : "connected";
+
+            var peerItem = new ToolStripMenuItem($"{peer.Name}  ({PeerPositions.Describe(peer.Position)}, {status})");
+
+            peerItem.DropDownItems.Add(new ToolStripMenuItem($"{peer.Address}:{peer.Port}") { Enabled = false });
+            peerItem.DropDownItems.Add(new ToolStripSeparator());
+
+            foreach (var position in PeerPositions.All)
+            {
+                var captured = position;
+                var positionItem = new ToolStripMenuItem($"{PeerPositions.Describe(position)} of this screen")
+                {
+                    Checked = peer.Position == position
+                };
+                positionItem.Click += (s, e) => PeerPositions.TrySet(_settings, peer, captured, null);
+                peerItem.DropDownItems.Add(positionItem);
+            }
+
+            peerItem.DropDownItems.Add(new ToolStripSeparator());
+
+            var testItem = new ToolStripMenuItem("Test Connection");
+            testItem.Click += (s, e) => TestPeer(peer);
+            peerItem.DropDownItems.Add(testItem);
+
+            var connectItem = new ToolStripMenuItem(connection == null ? "Connect" : "Disconnect");
+            connectItem.Click += (s, e) => ToggleConnection(peer);
+            peerItem.DropDownItems.Add(connectItem);
+
+            _configuredPeersItem.DropDownItems.Add(peerItem);
+        }
+    }
+
+    private async void TestPeer(PeerConfig peer)
+    {
+        ShowBalloon($"Testing connection to {peer.Name}...", ToolTipIcon.Info);
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            var result = await _service.TestConnectionAsync(peer, cts.Token);
+            MessageBox.Show(result.Summary, $"Connection test: {peer.Name}",
+                MessageBoxButtons.OK, result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Test failed: {ex.Message}", "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private async void ToggleConnection(PeerConfig peer)
+    {
+        try
+        {
+            if (_service.IsPeerConnected(peer.Id))
+            {
+                await _service.DisconnectFromPeerAsync(peer.Id);
+            }
+            else
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                await _service.ConnectToPeerAsync(peer, cts.Token);
+                _settings.Save();
+            }
+            UpdateStatus();
+        }
+        catch (OperationCanceledException)
+        {
+            MessageBox.Show($"Connecting to {peer.Address}:{peer.Port} timed out. Use Test Connection for details.",
+                "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not connect to {peer.Name}: {ex.Message}", "RoboMouse",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void UpdateDiscoveredPeersMenu()
@@ -196,7 +296,7 @@ public class TrayApplicationContext : ApplicationContext
 
     private async void OnAddPeerByIp(object? sender, EventArgs e)
     {
-        using var form = new PeerSetupForm(null);
+        using var form = new PeerSetupForm(null, _service, _settings);
         if (form.ShowDialog() == DialogResult.OK && form.PeerConfig != null)
         {
             var address = form.PeerConfig.Address;

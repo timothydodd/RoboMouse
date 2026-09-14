@@ -34,6 +34,12 @@ public class HandshakeMessage : Message
     /// </summary>
     public bool SupportsClipboard { get; set; } = true;
 
+    /// <summary>
+    /// True for a connection test. The receiver answers the handshake and pings but does not
+    /// treat the sender as a peer; the sender disconnects when the test completes.
+    /// </summary>
+    public bool IsProbe { get; set; }
+
     protected override byte[] SerializePayload()
     {
         var buffer = new List<byte>();
@@ -49,6 +55,7 @@ public class HandshakeMessage : Message
         buffer.AddRange(intBuffer);
 
         buffer.Add(SupportsClipboard ? (byte)1 : (byte)0);
+        buffer.Add(IsProbe ? (byte)1 : (byte)0);
 
         return buffer.ToArray();
     }
@@ -65,7 +72,8 @@ public class HandshakeMessage : Message
         offset += 4;
         message.ScreenHeight = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset));
         offset += 4;
-        message.SupportsClipboard = payload[offset] == 1;
+        message.SupportsClipboard = payload[offset++] == 1;
+        message.IsProbe = offset < payload.Length && payload[offset] == 1;
 
         return message;
     }
