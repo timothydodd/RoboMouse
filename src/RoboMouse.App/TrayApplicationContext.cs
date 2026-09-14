@@ -15,6 +15,10 @@ public class TrayApplicationContext : ApplicationContext
     private readonly RoboMouseService _service;
     private readonly ContextMenuStrip _contextMenu;
 
+    // Service callbacks arrive on network threads. A ContextMenuStrip has no window handle until it is first
+    // shown, so its InvokeRequired lies until then; this control has its handle forced at startup.
+    private readonly Control _uiMarshal;
+
     private ToolStripMenuItem _statusItem = null!;
     private ToolStripMenuItem _enableItem = null!;
     private ToolStripMenuItem _discoveredPeersItem = null!;
@@ -28,6 +32,10 @@ public class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext(AppSettings settings)
     {
         _settings = settings;
+        _uiMarshal = new Control();
+        _uiMarshal.CreateControl();
+        _ = _uiMarshal.Handle;
+
         _service = new RoboMouseService(settings);
 
         _service.PeerConnected += OnPeerConnected;
@@ -536,9 +544,12 @@ public class TrayApplicationContext : ApplicationContext
 
     private bool InvokeRequired(Action action)
     {
-        if (_contextMenu.InvokeRequired)
+        if (_uiMarshal.IsDisposed)
+            return true;
+
+        if (_uiMarshal.InvokeRequired)
         {
-            _contextMenu.Invoke(action);
+            _uiMarshal.BeginInvoke(action);
             return true;
         }
         return false;
@@ -583,6 +594,7 @@ public class TrayApplicationContext : ApplicationContext
         {
             _trayIcon.Dispose();
             _service.Dispose();
+            _uiMarshal.Dispose();
             _settingsForm?.Dispose();
             _layoutForm?.Dispose();
             _debugPanel?.Dispose();
