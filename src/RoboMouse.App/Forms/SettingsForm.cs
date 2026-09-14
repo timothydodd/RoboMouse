@@ -1,5 +1,6 @@
 using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Network;
 
 namespace RoboMouse.App.Forms;
 
@@ -16,6 +17,10 @@ public partial class SettingsForm : Form
     private NumericUpDown _portNumeric = null!;
     private NumericUpDown _discoveryPortNumeric = null!;
     private CheckBox _clipboardEnabledCheck = null!;
+    private CheckBox _borderHighlightCheck = null!;
+    private CheckBox _debugPanelCheck = null!;
+    private ListView _discoveredList = null!;
+    private Button _addDiscoveredButton = null!;
     private CheckBox _startWithWindowsCheck = null!;
     private CheckBox _startMinimizedCheck = null!;
     private TextBox _hotkeyTextBox = null!;
@@ -41,7 +46,7 @@ public partial class SettingsForm : Form
     private void InitializeComponent()
     {
         Text = "RoboMouse Settings";
-        Size = new Size(560, 520);
+        Size = new Size(560, 600);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -97,7 +102,7 @@ public partial class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 6
+            RowCount = 9
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -128,6 +133,25 @@ public partial class SettingsForm : Form
         layout.Controls.Add(new Label { Text = "Clipboard:", AutoSize = true }, 0, row);
         _clipboardEnabledCheck = new CheckBox { Text = "Enable clipboard sharing", AutoSize = true };
         layout.Controls.Add(_clipboardEnabledCheck, 1, row++);
+
+        // Border highlight
+        layout.Controls.Add(new Label { Text = "Screen border:", AutoSize = true }, 0, row);
+        _borderHighlightCheck = new CheckBox { Text = "Flash a border when the mouse arrives on this screen", AutoSize = true };
+        layout.Controls.Add(_borderHighlightCheck, 1, row++);
+
+        // Debug panel
+        layout.Controls.Add(new Label { Text = "Debug:", AutoSize = true }, 0, row);
+        _debugPanelCheck = new CheckBox { Text = "Show debug panel while controlling another screen", AutoSize = true };
+        layout.Controls.Add(_debugPanelCheck, 1, row++);
+
+        // Tray legend
+        layout.Controls.Add(new Label { Text = "Tray icon:", AutoSize = true }, 0, row);
+        layout.Controls.Add(new Label
+        {
+            Text = "Hollow = no peers connected, blue = connected,\ngreen = controlling another screen, orange = being controlled, grey = disabled.",
+            AutoSize = true,
+            ForeColor = Color.Gray
+        }, 1, row++);
 
         tab.Controls.Add(layout);
         return tab;
@@ -271,13 +295,15 @@ public partial class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 3
+            RowCount = 5
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
 
         _peersList = new ListView
         {
@@ -323,6 +349,17 @@ public partial class SettingsForm : Form
         _connectButton.Click += OnConnectPeerClick;
         buttonPanel.Controls.Add(_connectButton);
 
+        buttonPanel.Controls.Add(new Label { Height = 8 });
+
+        var layoutButton = new Button { Text = "Screen Layout...", Width = 110 };
+        layoutButton.Click += (s, e) =>
+        {
+            using var form = new ScreenLayoutForm(_settings, _service);
+            form.ShowDialog(this);
+            RefreshPeersList();
+        };
+        buttonPanel.Controls.Add(layoutButton);
+
         layout.Controls.Add(buttonPanel, 1, 0);
 
         // Quick position change
@@ -347,13 +384,120 @@ public partial class SettingsForm : Form
         layout.Controls.Add(_peerHintLabel, 0, 2);
         layout.SetColumnSpan(_peerHintLabel, 2);
 
+        // Discovered peers (same subnet only)
+        layout.Controls.Add(new Label
+        {
+            Text = "Found on this network (not yet configured):",
+            AutoSize = true,
+            Margin = new Padding(0, 10, 0, 2)
+        }, 0, 3);
+        layout.SetColumnSpan(layout.GetControlFromPosition(0, 3)!, 2);
+
+        _discoveredList = new ListView
+        {
+            Dock = DockStyle.Fill,
+            View = View.Details,
+            FullRowSelect = true,
+            MultiSelect = false,
+            HideSelection = false
+        };
+        _discoveredList.Columns.Add("Name", 140);
+        _discoveredList.Columns.Add("Address", 150);
+        _discoveredList.Columns.Add("Screen", 90);
+        _discoveredList.SelectedIndexChanged += (s, e) => _addDiscoveredButton.Enabled = _discoveredList.SelectedItems.Count > 0;
+        _discoveredList.DoubleClick += OnAddDiscoveredClick;
+        layout.Controls.Add(_discoveredList, 0, 4);
+
+        var discoveredButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown };
+        _addDiscoveredButton = new Button { Text = "Add...", Width = 110, Enabled = false };
+        _addDiscoveredButton.Click += OnAddDiscoveredClick;
+        discoveredButtons.Controls.Add(_addDiscoveredButton);
+        layout.Controls.Add(discoveredButtons, 1, 4);
+
         tab.Controls.Add(layout);
 
         _statusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
-        _statusTimer.Tick += (s, e) => RefreshPeerStatus();
+        _statusTimer.Tick += (s, e) =>
+        {
+            RefreshPeerStatus();
+            RefreshDiscoveredList();
+        };
         _statusTimer.Start();
 
         return tab;
+    }
+
+    private void RefreshDiscoveredList()
+    {
+        if (IsDisposed)
+            return;
+
+        var configuredIds = _settings.Peers.Select(p => p.Id).ToHashSet();
+        var configuredAddresses = _settings.Peers.Select(p => p.Address).ToHashSet();
+        var peers = _service.DiscoveredPeers
+            .Where(p => p.MachineId != _settings.MachineId
+                        && !configuredIds.Contains(p.MachineId)
+                        && !configuredAddresses.Contains(p.Address.ToString()))
+            .OrderBy(p => p.MachineName)
+            .ToList();
+
+        var current = _discoveredList.Items.Cast<ListViewItem>().Select(i => (i.Tag as DiscoveredPeer)?.MachineId).ToList();
+        if (current.SequenceEqual(peers.Select(p => p.MachineId)))
+            return;
+
+        var selectedId = (_discoveredList.SelectedItems.Count > 0 ? _discoveredList.SelectedItems[0].Tag as DiscoveredPeer : null)?.MachineId;
+        _discoveredList.BeginUpdate();
+        _discoveredList.Items.Clear();
+        foreach (var peer in peers)
+        {
+            var item = new ListViewItem(peer.MachineName) { Tag = peer };
+            item.SubItems.Add($"{peer.Address}:{peer.Port}");
+            item.SubItems.Add($"{peer.ScreenWidth}x{peer.ScreenHeight}");
+            _discoveredList.Items.Add(item);
+            if (peer.MachineId == selectedId)
+                item.Selected = true;
+        }
+        _discoveredList.EndUpdate();
+        _addDiscoveredButton.Enabled = _discoveredList.SelectedItems.Count > 0;
+    }
+
+    private async void OnAddDiscoveredClick(object? sender, EventArgs e)
+    {
+        if (_discoveredList.SelectedItems.Count == 0 || _discoveredList.SelectedItems[0].Tag is not DiscoveredPeer discovered)
+            return;
+
+        var draft = new PeerConfig
+        {
+            Id = discovered.MachineId,
+            Name = discovered.MachineName,
+            Address = discovered.Address.ToString(),
+            Port = discovered.Port,
+            ScreenWidth = discovered.ScreenWidth,
+            ScreenHeight = discovered.ScreenHeight,
+            Position = PeerPositions.All.FirstOrDefault(pos => _settings.Peers.All(p => p.Position != pos), ScreenPosition.Right)
+        };
+
+        using var dialog = new PeerSetupForm(draft, _service, _settings);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.PeerConfig == null)
+            return;
+
+        _settings.Peers.Add(dialog.PeerConfig);
+        _settings.Save();
+        RefreshPeersList();
+        RefreshDiscoveredList();
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            await _service.ConnectToPeerAsync(dialog.PeerConfig, cts.Token);
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Added {dialog.PeerConfig.Name}, but could not connect yet: {ex.Message}",
+                "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        RefreshPeersList();
     }
 
     private PeerConfig? SelectedPeer => _peersList.SelectedItems.Count > 0 ? _peersList.SelectedItems[0].Tag as PeerConfig : null;
@@ -512,6 +656,8 @@ public partial class SettingsForm : Form
         _portNumeric.Value = _settings.LocalPort;
         _discoveryPortNumeric.Value = _settings.DiscoveryPort;
         _clipboardEnabledCheck.Checked = _settings.Clipboard.Enabled;
+        _borderHighlightCheck.Checked = _settings.ShowBorderHighlight;
+        _debugPanelCheck.Checked = _settings.DebugPanelEnabled;
         _startWithWindowsCheck.Checked = _settings.StartWithWindows;
         _startMinimizedCheck.Checked = _settings.StartMinimized;
         _hotkeyTextBox.Text = _settings.ToggleHotkey ?? "";
@@ -525,6 +671,8 @@ public partial class SettingsForm : Form
         _settings.LocalPort = (int)_portNumeric.Value;
         _settings.DiscoveryPort = (int)_discoveryPortNumeric.Value;
         _settings.Clipboard.Enabled = _clipboardEnabledCheck.Checked;
+        _settings.ShowBorderHighlight = _borderHighlightCheck.Checked;
+        _settings.DebugPanelEnabled = _debugPanelCheck.Checked;
         _settings.StartWithWindows = _startWithWindowsCheck.Checked;
         _settings.StartMinimized = _startMinimizedCheck.Checked;
         _settings.ToggleHotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox.Text) ? null : _hotkeyTextBox.Text;

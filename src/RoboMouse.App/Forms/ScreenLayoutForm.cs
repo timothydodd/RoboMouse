@@ -81,7 +81,8 @@ public partial class ScreenLayoutForm : Form
     {
         _layoutPanel.SaveLayout();
         _settings.Save();
-        MessageBox.Show("Layout saved.", "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        DialogResult = DialogResult.OK;
+        Close();
     }
 }
 

@@ -1,19 +1,24 @@
-﻿using RoboMouse.App.Forms;
+using RoboMouse.App.Forms;
 using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network;
 
 namespace RoboMouse.App;
 
 /// <summary>
-/// Application context for the system tray application.
+/// Application context for the system tray application. The tray icon's colour reflects state;
+/// everything else lives in the Settings window.
 /// </summary>
 public class TrayApplicationContext : ApplicationContext
 {
+    private enum TrayState { Disabled, Disconnected, Connected, Controlling, Controlled }
+
     private readonly NotifyIcon _trayIcon;
     private readonly AppSettings _settings;
     private readonly RoboMouseService _service;
     private readonly ContextMenuStrip _contextMenu;
+    private readonly Dictionary<TrayState, Icon> _icons = new();
 
     // Service callbacks arrive on network threads. A ContextMenuStrip has no window handle until it is first
     // shown, so its InvokeRequired lies until then; this control has its handle forced at startup.
@@ -21,13 +26,11 @@ public class TrayApplicationContext : ApplicationContext
 
     private ToolStripMenuItem _statusItem = null!;
     private ToolStripMenuItem _enableItem = null!;
-    private ToolStripMenuItem _discoveredPeersItem = null!;
-    private ToolStripMenuItem _configuredPeersItem = null!;
 
     private SettingsForm? _settingsForm;
-    private ScreenLayoutForm? _layoutForm;
     private DebugPanelForm? _debugPanel;
     private BorderOverlayForm? _borderOverlay;
+    private bool _wasControllingRemote;
 
     public TrayApplicationContext(AppSettings settings)
     {
@@ -38,18 +41,20 @@ public class TrayApplicationContext : ApplicationContext
 
         _service = new RoboMouseService(settings);
 
-        _service.PeerConnected += OnPeerConnected;
-        _service.PeerDisconnected += OnPeerDisconnected;
-        _service.PeerDiscovered += OnPeerDiscovered;
-        _service.ControlStateChanged += OnControlStateChanged;
+        _service.PeerConnected += (s, e) => OnUi(UpdateStatus);
+        _service.PeerDisconnected += (s, e) => OnUi(UpdateStatus);
+        _service.ControlStateChanged += (s, e) => OnUi(OnControlStateChanged);
         _service.Error += OnServiceError;
         _service.MouseDebugUpdate += OnMouseDebugUpdate;
+
+        foreach (var state in Enum.GetValues<TrayState>())
+            _icons[state] = CreateIcon(state);
 
         _contextMenu = CreateContextMenu();
 
         _trayIcon = new NotifyIcon
         {
-            Icon = CreateDefaultIcon(),
+            Icon = _icons[TrayState.Disconnected],
             Text = "RoboMouse",
             Visible = true,
             ContextMenuStrip = _contextMenu
@@ -57,80 +62,37 @@ public class TrayApplicationContext : ApplicationContext
 
         _trayIcon.DoubleClick += (s, e) => ShowSettings();
 
-        // Start the service
         _service.Start();
         UpdateStatus();
 
-        // Auto-connect to configured peers
         _ = AutoConnectAsync();
     }
 
     private async Task AutoConnectAsync()
     {
-        // Small delay to let the UI initialize
         await Task.Delay(1000);
 
         try
         {
             await _service.ConnectToConfiguredPeersAsync();
-            if (InvokeRequired(() => UpdateStatus()))
-                return;
-            UpdateStatus();
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Auto-connect failed: {ex.Message}");
+            SimpleLogger.Log("Connect", $"Auto-connect failed: {ex.Message}");
         }
+
+        OnUi(UpdateStatus);
     }
 
     private ContextMenuStrip CreateContextMenu()
     {
         var menu = new ContextMenuStrip();
 
-        // Status item (disabled, just for display)
-        _statusItem = new ToolStripMenuItem("Status: Disconnected")
-        {
-            Enabled = false
-        };
+        _statusItem = new ToolStripMenuItem("Disconnected") { Enabled = false };
         menu.Items.Add(_statusItem);
 
         menu.Items.Add(new ToolStripSeparator());
 
-        // Configured peers submenu (status, position, test, connect)
-        _configuredPeersItem = new ToolStripMenuItem("Peers");
-        menu.Items.Add(_configuredPeersItem);
-
-        // Discovered peers submenu
-        _discoveredPeersItem = new ToolStripMenuItem("Connect to discovered...");
-        menu.Items.Add(_discoveredPeersItem);
-
-        // Add peer by IP
-        var addPeerItem = new ToolStripMenuItem("Add Peer by IP...");
-        addPeerItem.Click += OnAddPeerByIp;
-        menu.Items.Add(addPeerItem);
-
-        // Screen layout
-        var layoutItem = new ToolStripMenuItem("Screen Layout...");
-        layoutItem.Click += (s, e) => ShowScreenLayout();
-        menu.Items.Add(layoutItem);
-
-        // Settings
-        var settingsItem = new ToolStripMenuItem("Settings...");
-        settingsItem.Click += (s, e) => ShowSettings();
-        menu.Items.Add(settingsItem);
-
-        // Debug panel toggle
-        var debugItem = new ToolStripMenuItem("Debug Panel")
-        {
-            CheckOnClick = true,
-            Checked = _settings.DebugPanelEnabled
-        };
-        debugItem.CheckedChanged += OnDebugPanelToggled;
-        menu.Items.Add(debugItem);
-
-        menu.Items.Add(new ToolStripSeparator());
-
-        // Enable/Disable toggle
         _enableItem = new ToolStripMenuItem("Enabled")
         {
             Checked = _settings.Enabled,
@@ -139,235 +101,54 @@ public class TrayApplicationContext : ApplicationContext
         _enableItem.CheckedChanged += OnEnableToggled;
         menu.Items.Add(_enableItem);
 
+        var settingsItem = new ToolStripMenuItem("Settings...");
+        settingsItem.Click += (s, e) => ShowSettings();
+        menu.Items.Add(settingsItem);
+
         menu.Items.Add(new ToolStripSeparator());
 
-        // Exit
         var exitItem = new ToolStripMenuItem("Exit");
         exitItem.Click += OnExit;
         menu.Items.Add(exitItem);
 
-        // Update peer submenus when menu opens
-        menu.Opening += (s, e) =>
-        {
-            UpdateConfiguredPeersMenu();
-            UpdateDiscoveredPeersMenu();
-        };
+        menu.Opening += (s, e) => UpdateStatus();
 
         return menu;
-    }
-
-    private void UpdateConfiguredPeersMenu()
-    {
-        _configuredPeersItem.DropDownItems.Clear();
-
-        if (_settings.Peers.Count == 0)
-        {
-            _configuredPeersItem.DropDownItems.Add(new ToolStripMenuItem("No peers configured") { Enabled = false });
-            return;
-        }
-
-        foreach (var peer in _settings.Peers)
-        {
-            var connection = _service.GetConnection(peer.Id);
-            var status = connection == null
-                ? "not connected"
-                : connection.RoundTripMs >= 0 ? $"{connection.RoundTripMs} ms" : "connected";
-
-            var peerItem = new ToolStripMenuItem($"{peer.Name}  ({PeerPositions.Describe(peer.Position)}, {status})");
-
-            peerItem.DropDownItems.Add(new ToolStripMenuItem($"{peer.Address}:{peer.Port}") { Enabled = false });
-            peerItem.DropDownItems.Add(new ToolStripSeparator());
-
-            foreach (var position in PeerPositions.All)
-            {
-                var captured = position;
-                var positionItem = new ToolStripMenuItem($"{PeerPositions.Describe(position)} of this screen")
-                {
-                    Checked = peer.Position == position
-                };
-                positionItem.Click += (s, e) => PeerPositions.TrySet(_settings, peer, captured, null);
-                peerItem.DropDownItems.Add(positionItem);
-            }
-
-            peerItem.DropDownItems.Add(new ToolStripSeparator());
-
-            var testItem = new ToolStripMenuItem("Test Connection");
-            testItem.Click += (s, e) => TestPeer(peer);
-            peerItem.DropDownItems.Add(testItem);
-
-            var connectItem = new ToolStripMenuItem(connection == null ? "Connect" : "Disconnect");
-            connectItem.Click += (s, e) => ToggleConnection(peer);
-            peerItem.DropDownItems.Add(connectItem);
-
-            _configuredPeersItem.DropDownItems.Add(peerItem);
-        }
-    }
-
-    private async void TestPeer(PeerConfig peer)
-    {
-        ShowBalloon($"Testing connection to {peer.Name}...", ToolTipIcon.Info);
-        try
-        {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
-            var result = await _service.TestConnectionAsync(peer, cts.Token);
-            MessageBox.Show(result.Summary, $"Connection test: {peer.Name}",
-                MessageBoxButtons.OK, result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Test failed: {ex.Message}", "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
-
-    private async void ToggleConnection(PeerConfig peer)
-    {
-        try
-        {
-            if (_service.IsPeerConnected(peer.Id))
-            {
-                await _service.DisconnectFromPeerAsync(peer.Id);
-            }
-            else
-            {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-                await _service.ConnectToPeerAsync(peer, cts.Token);
-                _settings.Save();
-            }
-            UpdateStatus();
-        }
-        catch (OperationCanceledException)
-        {
-            MessageBox.Show($"Connecting to {peer.Address}:{peer.Port} timed out. Use Test Connection for details.",
-                "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Could not connect to {peer.Name}: {ex.Message}", "RoboMouse",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
-
-    private void UpdateDiscoveredPeersMenu()
-    {
-        _discoveredPeersItem.DropDownItems.Clear();
-
-        var peers = _service.DiscoveredPeers;
-
-        if (peers.Count == 0)
-        {
-            var noneItem = new ToolStripMenuItem("No peers found")
-            {
-                Enabled = false
-            };
-            _discoveredPeersItem.DropDownItems.Add(noneItem);
-            return;
-        }
-
-        foreach (var peer in peers)
-        {
-            var peerItem = new ToolStripMenuItem($"{peer.MachineName} ({peer.Address})")
-            {
-                Tag = peer
-            };
-
-            // Position submenu
-            var leftItem = new ToolStripMenuItem("Position on Left");
-            leftItem.Click += (s, e) => ConnectToPeer(peer, ScreenPosition.Left);
-
-            var rightItem = new ToolStripMenuItem("Position on Right");
-            rightItem.Click += (s, e) => ConnectToPeer(peer, ScreenPosition.Right);
-
-            var topItem = new ToolStripMenuItem("Position Above");
-            topItem.Click += (s, e) => ConnectToPeer(peer, ScreenPosition.Top);
-
-            var bottomItem = new ToolStripMenuItem("Position Below");
-            bottomItem.Click += (s, e) => ConnectToPeer(peer, ScreenPosition.Bottom);
-
-            peerItem.DropDownItems.AddRange(new ToolStripItem[] { leftItem, rightItem, topItem, bottomItem });
-            _discoveredPeersItem.DropDownItems.Add(peerItem);
-        }
-    }
-
-    private async void ConnectToPeer(DiscoveredPeer peer, ScreenPosition position)
-    {
-        try
-        {
-            await _service.ConnectToPeerAsync(peer, position);
-            UpdateStatus();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to connect: {ex.Message}", "Connection Error",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
-
-    private async void OnAddPeerByIp(object? sender, EventArgs e)
-    {
-        using var form = new PeerSetupForm(null, _service, _settings);
-        if (form.ShowDialog() == DialogResult.OK && form.PeerConfig != null)
-        {
-            var address = form.PeerConfig.Address;
-            var port = form.PeerConfig.Port;
-
-            ShowBalloon($"Connecting to {address}:{port}...", ToolTipIcon.Info);
-
-            try
-            {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-
-                var peer = await _service.ConnectToAddressAsync(
-                    address,
-                    port,
-                    form.PeerConfig.Position,
-                    cts.Token);
-
-                _settings.Save();
-                UpdateStatus();
-                ShowBalloon($"Connected to {peer.Name} ({address})", ToolTipIcon.Info);
-            }
-            catch (OperationCanceledException)
-            {
-                MessageBox.Show($"Connection to {address}:{port} timed out after 10 seconds.\n\nMake sure:\n- RoboMouse is running on the other computer\n- Firewall allows port {port}\n- The IP address is correct",
-                    "Connection Timeout", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to connect to {address}:{port}\n\n{ex.GetType().Name}: {ex.Message}",
-                    "Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
     }
 
     private void UpdateStatus()
     {
         var connectedPeers = _service.ConnectedPeers;
 
-        if (connectedPeers.Count == 0)
-        {
-            _statusItem.Text = "Status: Disconnected";
-            _trayIcon.Text = "RoboMouse - Disconnected";
-        }
+        string status;
+        if (!_service.Enabled)
+            status = "Disabled";
+        else if (connectedPeers.Count == 0)
+            status = "Not connected";
         else if (connectedPeers.Count == 1)
-        {
-            var peer = connectedPeers.First();
-            _statusItem.Text = $"Status: Connected to {peer.PeerName}";
-            _trayIcon.Text = $"RoboMouse - {peer.PeerName}";
-        }
+            status = $"Connected to {connectedPeers.First().PeerName}";
         else
-        {
-            _statusItem.Text = $"Status: Connected ({connectedPeers.Count} peers)";
-            _trayIcon.Text = $"RoboMouse - {connectedPeers.Count} peers";
-        }
+            status = $"Connected to {connectedPeers.Count} peers";
 
-        if (_service.IsControllingRemote)
+        TrayState state;
+        if (!_service.Enabled)
+            state = TrayState.Disabled;
+        else if (_service.IsControllingRemote)
         {
-            _trayIcon.Text += " [Controlling]";
+            state = TrayState.Controlling;
+            status += $" (controlling {_service.ActivePeer?.Name})";
         }
         else if (_service.IsControlledByRemote)
         {
-            _trayIcon.Text += " [Controlled]";
+            state = TrayState.Controlled;
+            status += " (being controlled)";
         }
+        else
+            state = connectedPeers.Count > 0 ? TrayState.Connected : TrayState.Disconnected;
+
+        _statusItem.Text = status;
+        _trayIcon.Icon = _icons[state];
+        _trayIcon.Text = $"RoboMouse - {status}".Length > 63 ? $"RoboMouse - {status}"[..63] : $"RoboMouse - {status}";
     }
 
     private void ShowSettings()
@@ -382,140 +163,62 @@ public class TrayApplicationContext : ApplicationContext
         _settingsForm.Activate();
     }
 
-    private void ShowScreenLayout()
-    {
-        if (_layoutForm == null || _layoutForm.IsDisposed)
-        {
-            _layoutForm = new ScreenLayoutForm(_settings, _service);
-        }
-
-        _layoutForm.Show();
-        _layoutForm.BringToFront();
-        _layoutForm.Activate();
-    }
-
     private void OnEnableToggled(object? sender, EventArgs e)
     {
         _settings.Enabled = _enableItem.Checked;
         _service.Enabled = _enableItem.Checked;
-    }
-
-    private void OnPeerConnected(object? sender, PeerConnection connection)
-    {
-        if (InvokeRequired(() => OnPeerConnected(sender, connection)))
-            return;
-
+        _settings.Save();
         UpdateStatus();
-        ShowBalloon($"Connected to {connection.PeerName}", ToolTipIcon.Info);
     }
 
-    private void OnPeerDisconnected(object? sender, string peerId)
+    private void OnControlStateChanged()
     {
-        if (InvokeRequired(() => OnPeerDisconnected(sender, peerId)))
-            return;
-
         UpdateStatus();
-        ShowBalloon("Peer disconnected", ToolTipIcon.Info);
-    }
 
-    private void OnPeerDiscovered(object? sender, DiscoveredPeer peer)
-    {
-        // Just update the menu when it opens
-    }
-
-    private void OnControlStateChanged(object? sender, EventArgs e)
-    {
-        if (InvokeRequired(() => OnControlStateChanged(sender, e)))
-            return;
-
-        UpdateStatus();
-        UpdateBorderOverlay();
-    }
-
-    private void UpdateBorderOverlay()
-    {
-        // Show border flash when mouse enters this screen (either from remote control, or returning from controlling remote)
-        bool wasControllingRemote = _borderOverlay?.Tag as string == "controlling";
-        bool isNowLocal = !_service.IsControlledByRemote && !_service.IsControllingRemote;
-
-        // Flash border when: entering from remote, OR returning from controlling remote
-        if (_service.IsControlledByRemote || (wasControllingRemote && isNowLocal))
+        // Flash the border when the mouse arrives on this screen: either a remote took control of it,
+        // or we just came back from controlling a remote.
+        var isLocalAgain = _wasControllingRemote && !_service.IsControllingRemote && !_service.IsControlledByRemote;
+        if (_settings.ShowBorderHighlight && (_service.IsControlledByRemote || isLocalAgain))
         {
             if (_borderOverlay == null || _borderOverlay.IsDisposed)
             {
                 _borderOverlay = new BorderOverlayForm();
             }
-            _borderOverlay.Tag = _service.IsControllingRemote ? "controlling" : null;
             _borderOverlay.ShowBorder();
-            _borderOverlay.HideBorder(fadeOut: true); // Immediately start fading
+            _borderOverlay.HideBorder(fadeOut: true);
         }
 
-        // Track if we're controlling remote for next state change
-        if (_service.IsControllingRemote)
-        {
-            if (_borderOverlay == null || _borderOverlay.IsDisposed)
-            {
-                _borderOverlay = new BorderOverlayForm();
-            }
-            _borderOverlay.Tag = "controlling";
-        }
+        _wasControllingRemote = _service.IsControllingRemote;
     }
 
     private void OnServiceError(object? sender, Exception e)
     {
-        if (InvokeRequired(() => OnServiceError(sender, e)))
-            return;
-
-        ShowBalloon($"Error: {e.Message}", ToolTipIcon.Error);
-    }
-
-    private void OnDebugPanelToggled(object? sender, EventArgs e)
-    {
-        var item = sender as ToolStripMenuItem;
-        _settings.DebugPanelEnabled = item?.Checked ?? false;
-        _settings.Save();
-
-        if (_settings.DebugPanelEnabled)
-        {
-            // Create panel if needed and show if currently controlling
-            if (_debugPanel == null || _debugPanel.IsDisposed)
-            {
-                _debugPanel = new DebugPanelForm();
-            }
-
-            if (_service.IsControllingRemote)
-            {
-                _debugPanel.ShowOnEdge(_service.ActivePeer?.Position.ToString());
-            }
-        }
-        else
-        {
-            _debugPanel?.Hide();
-        }
+        SimpleLogger.Log("Error", e.ToString());
     }
 
     private void OnMouseDebugUpdate(object? sender, MouseDebugEventArgs e)
     {
         if (!_settings.DebugPanelEnabled)
+        {
+            if (_debugPanel is { IsDisposed: false, Visible: true })
+                _debugPanel.Hide();
             return;
+        }
 
         if (_debugPanel == null || _debugPanel.IsDisposed)
         {
             _debugPanel = new DebugPanelForm();
         }
 
-        // Show panel if controlling and not visible
         if (e.IsControlling && !_debugPanel.Visible)
         {
             _debugPanel.ShowOnEdge(_service.ActivePeer?.Position.ToString());
         }
-        // Hide panel if no longer controlling
         else if (!e.IsControlling && _debugPanel.Visible)
         {
             _debugPanel.Hide();
         }
 
-        // Update the data
         _debugPanel.UpdateData(new MouseDebugData
         {
             IsControlling = e.IsControlling,
@@ -527,14 +230,6 @@ public class TrayApplicationContext : ApplicationContext
         });
     }
 
-    private void ShowBalloon(string message, ToolTipIcon icon)
-    {
-        _trayIcon.BalloonTipTitle = "RoboMouse";
-        _trayIcon.BalloonTipText = message;
-        _trayIcon.BalloonTipIcon = icon;
-        _trayIcon.ShowBalloonTip(3000);
-    }
-
     private void OnExit(object? sender, EventArgs e)
     {
         _trayIcon.Visible = false;
@@ -542,43 +237,53 @@ public class TrayApplicationContext : ApplicationContext
         Application.Exit();
     }
 
-    private bool InvokeRequired(Action action)
+    /// <summary>Runs an action on the UI thread, now if already there, otherwise queued.</summary>
+    private void OnUi(Action action)
     {
         if (_uiMarshal.IsDisposed)
-            return true;
+            return;
 
         if (_uiMarshal.InvokeRequired)
-        {
             _uiMarshal.BeginInvoke(action);
-            return true;
-        }
-        return false;
+        else
+            action();
     }
 
-    private static Icon CreateDefaultIcon()
+    /// <summary>
+    /// Draws the cursor-arrow tray icon in a colour for the given state:
+    /// grey = disabled, hollow = no peers, blue = connected, green = controlling a remote, orange = being controlled.
+    /// </summary>
+    private static Icon CreateIcon(TrayState state)
     {
-        // Create a simple icon programmatically
-        // In production, you'd use an actual icon file
-        var bitmap = new Bitmap(32, 32);
+        var (fill, outline, hollow) = state switch
+        {
+            TrayState.Disabled => (Color.FromArgb(130, 130, 130), Color.FromArgb(90, 90, 90), false),
+            TrayState.Disconnected => (Color.FromArgb(64, 158, 255), Color.FromArgb(64, 158, 255), true),
+            TrayState.Connected => (Color.FromArgb(64, 158, 255), Color.FromArgb(40, 120, 200), false),
+            TrayState.Controlling => (Color.FromArgb(70, 200, 110), Color.FromArgb(40, 150, 80), false),
+            TrayState.Controlled => (Color.FromArgb(255, 165, 50), Color.FromArgb(200, 120, 30), false),
+            _ => (Color.Gray, Color.DimGray, false)
+        };
+
+        using var bitmap = new Bitmap(32, 32);
         using (var g = Graphics.FromImage(bitmap))
         {
             g.Clear(Color.Transparent);
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
-            // Draw a mouse cursor shape
-            using var brush = new SolidBrush(Color.FromArgb(64, 158, 255));
-            using var pen = new Pen(Color.FromArgb(40, 120, 200), 2);
-
-            // Arrow shape
             var points = new Point[]
             {
-                new(4, 4),
-                new(4, 24),
-                new(10, 18),
-                new(16, 28),
-                new(20, 26),
-                new(14, 16),
-                new(22, 16),
+                new(6, 3),
+                new(6, 25),
+                new(11, 20),
+                new(16, 29),
+                new(20, 27),
+                new(15, 18),
+                new(23, 18),
             };
+
+            using var brush = new SolidBrush(hollow ? Color.FromArgb(40, 40, 40) : fill);
+            using var pen = new Pen(outline, 2.5f) { LineJoin = System.Drawing.Drawing2D.LineJoin.Round };
 
             g.FillPolygon(brush, points);
             g.DrawPolygon(pen, points);
@@ -596,9 +301,10 @@ public class TrayApplicationContext : ApplicationContext
             _service.Dispose();
             _uiMarshal.Dispose();
             _settingsForm?.Dispose();
-            _layoutForm?.Dispose();
             _debugPanel?.Dispose();
             _borderOverlay?.Dispose();
+            foreach (var icon in _icons.Values)
+                icon.Dispose();
         }
         base.Dispose(disposing);
     }

@@ -79,6 +79,11 @@ public class AppSettings
     public bool DebugPanelEnabled { get; set; } = false;
 
     /// <summary>
+    /// Whether to flash a border around the screen when the mouse arrives on it.
+    /// </summary>
+    public bool ShowBorderHighlight { get; set; } = true;
+
+    /// <summary>
     /// Loads settings from the default configuration file.
     /// </summary>
     public static AppSettings Load(string? path = null)
