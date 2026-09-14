@@ -1021,21 +1021,9 @@ public sealed class RoboMouseService : IDisposable
     /// </summary>
     private void MoveRemoteCursor(int dx, int dy)
     {
-        var (beforeX, beforeY) = InputSimulator.GetCursorPosition();
-        var accepted = InputSimulator.MoveRelative(dx, dy);
-
-        if (accepted)
-        {
-            // SendInput can also "succeed" and yet be ignored. A non-zero delta that leaves the cursor
-            // exactly where it was, when it is not pinned on a desktop edge, means input is being dropped.
-            var (afterX, afterY) = InputSimulator.GetCursorPosition();
-            var bounds = _screenInfo.VirtualBounds;
-            var onEdge = afterX <= bounds.Left || afterX >= bounds.Right - 1 || afterY <= bounds.Top || afterY >= bounds.Bottom - 1;
-            if (afterX == beforeX && afterY == beforeY && !onEdge && (Math.Abs(dx) > 1 || Math.Abs(dy) > 1))
-                accepted = false;
-        }
-
-        if (accepted)
+        // SendInput reports a UIPI block as a failed call. It is asynchronous, so the cursor position
+        // right after it is not evidence of anything and must not be used to second-guess it.
+        if (InputSimulator.MoveRelative(dx, dy))
         {
             if (_injectionBlocked)
             {
@@ -1051,7 +1039,8 @@ public sealed class RoboMouseService : IDisposable
             SimpleLogger.Log("Input", "Injected input is being blocked (elevated window in front?); moving cursor directly");
         }
 
-        InputSimulator.MoveTo(beforeX + dx, beforeY + dy);
+        var (x, y) = InputSimulator.GetCursorPosition();
+        InputSimulator.MoveTo(x + dx, y + dy);
     }
 
     /// <summary>
