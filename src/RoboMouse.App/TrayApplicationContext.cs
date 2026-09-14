@@ -29,7 +29,9 @@ public class TrayApplicationContext : ApplicationContext
     private ToolStripMenuItem _peersItem = null!;
 
     private SettingsForm? _settingsForm;
+#if DEBUG
     private DebugPanelForm? _debugPanel;
+#endif
     private BorderOverlayForm? _borderOverlay;
     private bool _wasControllingRemote;
 
@@ -46,7 +48,9 @@ public class TrayApplicationContext : ApplicationContext
         _service.PeerDisconnected += (s, e) => OnUi(UpdateStatus);
         _service.ControlStateChanged += (s, e) => OnUi(OnControlStateChanged);
         _service.Error += OnServiceError;
+#if DEBUG
         _service.MouseDebugUpdate += OnMouseDebugUpdate;
+#endif
 
         foreach (var state in Enum.GetValues<TrayState>())
             _icons[state] = CreateIcon(state);
@@ -324,6 +328,7 @@ public class TrayApplicationContext : ApplicationContext
         SimpleLogger.Log("Error", e.ToString());
     }
 
+#if DEBUG
     private void OnMouseDebugUpdate(object? sender, MouseDebugEventArgs e)
     {
         if (!_settings.DebugPanelEnabled)
@@ -357,6 +362,7 @@ public class TrayApplicationContext : ApplicationContext
             RoundTripMs = e.RoundTripMs
         });
     }
+#endif
 
     private void OnExit(object? sender, EventArgs e)
     {
@@ -429,7 +435,9 @@ public class TrayApplicationContext : ApplicationContext
             _service.Dispose();
             _uiMarshal.Dispose();
             _settingsForm?.Dispose();
+#if DEBUG
             _debugPanel?.Dispose();
+#endif
             _borderOverlay?.Dispose();
             foreach (var icon in _icons.Values)
                 icon.Dispose();

@@ -18,7 +18,9 @@ public partial class SettingsForm : Form
     private NumericUpDown _discoveryPortNumeric = null!;
     private CheckBox _clipboardEnabledCheck = null!;
     private CheckBox _borderHighlightCheck = null!;
+#if DEBUG
     private CheckBox _debugPanelCheck = null!;
+#endif
     private ListView _discoveredList = null!;
     private Button _addDiscoveredButton = null!;
     private CheckBox _startWithWindowsCheck = null!;
@@ -139,10 +141,12 @@ public partial class SettingsForm : Form
         _borderHighlightCheck = new CheckBox { Text = "Flash a border when the mouse arrives on this screen", AutoSize = true };
         layout.Controls.Add(_borderHighlightCheck, 1, row++);
 
-        // Debug panel
+#if DEBUG
+        // Debug panel (debug builds only)
         layout.Controls.Add(new Label { Text = "Debug:", AutoSize = true }, 0, row);
         _debugPanelCheck = new CheckBox { Text = "Show debug panel while controlling another screen", AutoSize = true };
         layout.Controls.Add(_debugPanelCheck, 1, row++);
+#endif
 
         // Tray legend
         layout.Controls.Add(new Label { Text = "Tray icon:", AutoSize = true }, 0, row);
@@ -657,7 +661,9 @@ public partial class SettingsForm : Form
         _discoveryPortNumeric.Value = _settings.DiscoveryPort;
         _clipboardEnabledCheck.Checked = _settings.Clipboard.Enabled;
         _borderHighlightCheck.Checked = _settings.ShowBorderHighlight;
+#if DEBUG
         _debugPanelCheck.Checked = _settings.DebugPanelEnabled;
+#endif
         _startWithWindowsCheck.Checked = _settings.StartWithWindows;
         _startMinimizedCheck.Checked = _settings.StartMinimized;
         _hotkeyTextBox.Text = _settings.ToggleHotkey ?? "";
@@ -672,7 +678,9 @@ public partial class SettingsForm : Form
         _settings.DiscoveryPort = (int)_discoveryPortNumeric.Value;
         _settings.Clipboard.Enabled = _clipboardEnabledCheck.Checked;
         _settings.ShowBorderHighlight = _borderHighlightCheck.Checked;
+#if DEBUG
         _settings.DebugPanelEnabled = _debugPanelCheck.Checked;
+#endif
         _settings.StartWithWindows = _startWithWindowsCheck.Checked;
         _settings.StartMinimized = _startMinimizedCheck.Checked;
         _settings.ToggleHotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox.Text) ? null : _hotkeyTextBox.Text;
