@@ -2,6 +2,7 @@ using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
+using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network.Protocol;
 
 namespace RoboMouse.Core.Input;
@@ -46,12 +47,19 @@ public sealed class ClipboardManager : IDisposable
     }
 
     /// <summary>
-    /// Sets the clipboard content from a received message.
+    /// Sets the clipboard content from a received message. Safe to call from any thread: the
+    /// clipboard can only be touched from the STA thread that owns the notification window.
     /// </summary>
     public void SetClipboard(ClipboardMessage message)
     {
         if (_disposed)
             return;
+
+        if (_notificationForm.InvokeRequired)
+        {
+            _notificationForm.BeginInvoke(() => SetClipboard(message));
+            return;
+        }
 
         _ignoreNextChange = true;
 
@@ -61,6 +69,7 @@ public sealed class ClipboardManager : IDisposable
             {
                 case ClipboardContentType.Text:
                     var text = Encoding.UTF8.GetString(message.Data);
+                    _lastTextHash = HashOf(message.Data);
                     SetClipboardText(text);
                     break;
 
@@ -81,9 +90,14 @@ public sealed class ClipboardManager : IDisposable
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Failed to set clipboard: {ex.Message}");
+            // Nothing was set, so no change notification will arrive to consume the flag.
+            _ignoreNextChange = false;
+            SimpleLogger.Log("Clipboard", $"Failed to set clipboard: {ex.Message}");
         }
     }
+
+    private static string HashOf(byte[] data) =>
+        Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(data));
 
     private void OnClipboardUpdated(object? sender, EventArgs e)
     {
@@ -101,8 +115,7 @@ public sealed class ClipboardManager : IDisposable
                 // Check for duplicate text content
                 if (message.ContentType == ClipboardContentType.Text)
                 {
-                    var hash = Convert.ToBase64String(
-                        System.Security.Cryptography.SHA256.HashData(message.Data));
+                    var hash = HashOf(message.Data);
                     if (hash == _lastTextHash)
                         return;
                     _lastTextHash = hash;
@@ -113,7 +126,7 @@ public sealed class ClipboardManager : IDisposable
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Failed to read clipboard: {ex.Message}");
+            SimpleLogger.Log("Clipboard", $"Failed to read clipboard: {ex.Message}");
         }
     }
 
@@ -122,7 +135,8 @@ public sealed class ClipboardManager : IDisposable
         if (!Clipboard.ContainsText() && !Clipboard.ContainsImage())
             return null;
 
-        // Try text first
+        // Plain text is what every application can paste, so it is what we send. Rich formats
+        // (HTML, RTF) would arrive without a plain-text fallback and be unpastable in most fields.
         if (Clipboard.ContainsText())
         {
             var text = Clipboard.GetText();
@@ -131,38 +145,6 @@ public sealed class ClipboardManager : IDisposable
                 var data = Encoding.UTF8.GetBytes(text);
                 if (data.Length <= _maxDataSize)
                 {
-                    // Check for HTML format
-                    if (Clipboard.ContainsText(TextDataFormat.Html))
-                    {
-                        var html = Clipboard.GetText(TextDataFormat.Html);
-                        var htmlData = Encoding.UTF8.GetBytes(html);
-                        if (htmlData.Length <= _maxDataSize)
-                        {
-                            return new ClipboardMessage
-                            {
-                                ContentType = ClipboardContentType.Html,
-                                Data = htmlData,
-                                FormatHint = "text/html"
-                            };
-                        }
-                    }
-
-                    // Check for RTF format
-                    if (Clipboard.ContainsText(TextDataFormat.Rtf))
-                    {
-                        var rtf = Clipboard.GetText(TextDataFormat.Rtf);
-                        var rtfData = Encoding.UTF8.GetBytes(rtf);
-                        if (rtfData.Length <= _maxDataSize)
-                        {
-                            return new ClipboardMessage
-                            {
-                                ContentType = ClipboardContentType.Rtf,
-                                Data = rtfData,
-                                FormatHint = "text/rtf"
-                            };
-                        }
-                    }
-
                     return new ClipboardMessage
                     {
                         ContentType = ClipboardContentType.Text,
@@ -247,6 +229,10 @@ public sealed class ClipboardManager : IDisposable
                     throw;
                 Thread.Sleep(100);
             }
+            catch (System.Threading.ThreadStateException)
+            {
+                throw new InvalidOperationException("Clipboard access must happen on the UI thread.");
+            }
         }
     }
 
@@ -276,6 +262,9 @@ internal class ClipboardNotificationForm : Form
         FormBorderStyle = FormBorderStyle.None;
         Size = new Size(1, 1);
         Location = new Point(-1000, -1000);
+
+        // Create the handle now so InvokeRequired/BeginInvoke work before monitoring starts.
+        CreateHandle();
     }
 
     public void StartMonitoring()

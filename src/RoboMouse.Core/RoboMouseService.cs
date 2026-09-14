@@ -923,6 +923,15 @@ public sealed class RoboMouseService : IDisposable
 
     #region Clipboard
 
+    /// <summary>Starts or stops clipboard monitoring to match the current setting.</summary>
+    public void ApplyClipboardSetting()
+    {
+        if (_settings.Clipboard.Enabled)
+            _clipboardManager.Start();
+        else
+            _clipboardManager.Stop();
+    }
+
     private void OnClipboardChanged(object? sender, ClipboardMessage message)
     {
         if (!_enabled || !_settings.Clipboard.Enabled)

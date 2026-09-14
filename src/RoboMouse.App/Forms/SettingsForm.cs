@@ -530,6 +530,7 @@ public partial class SettingsForm : Form
         _settings.ToggleHotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox.Text) ? null : _hotkeyTextBox.Text;
 
         _settings.Save();
+        _service.ApplyClipboardSetting();
 
         // Update startup registry
         UpdateStartupRegistry();
