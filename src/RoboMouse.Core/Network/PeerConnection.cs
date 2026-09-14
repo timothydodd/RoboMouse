@@ -21,6 +21,7 @@ public sealed class PeerConnection : IDisposable
     private const int HeaderSize = 16;
     private const int MaxMessageSize = 64 * 1024 * 1024;
     private const int PingIntervalMs = 1000;
+    private const int PongTimeoutMs = 5000;
 
     private readonly TcpClient _client;
     private Stream _stream;
@@ -54,6 +55,11 @@ public sealed class PeerConnection : IDisposable
 
     /// <summary>True when the remote side opened this connection only to test reachability.</summary>
     public bool IsProbe { get; private set; }
+
+    /// <summary>True when this machine initiated the connection.</summary>
+    public bool IsOutbound { get; private set; }
+
+    private long _lastPongTicks;
 
     /// <summary>Remote endpoint address.</summary>
     public IPEndPoint? RemoteEndPoint => _client.Client.RemoteEndPoint as IPEndPoint;
@@ -132,6 +138,7 @@ public sealed class PeerConnection : IDisposable
             IsProbe = probe
         };
         connection.IsProbe = probe;
+        connection.IsOutbound = true;
 
         await connection.WriteDirectAsync(handshake, ct);
         var response = await connection.ReadOneAsync(ct);
@@ -234,7 +241,24 @@ public sealed class PeerConnection : IDisposable
         _sendThread.Start();
         _receiveThread.Start();
 
-        _pingTimer = new System.Threading.Timer(_ => Post(new PingMessage()), null, PingIntervalMs, PingIntervalMs);
+        _lastPongTicks = Environment.TickCount64;
+        _pingTimer = new System.Threading.Timer(OnPingTimer, null, PingIntervalMs, PingIntervalMs);
+    }
+
+    private void OnPingTimer(object? state)
+    {
+        if (_disposed)
+            return;
+
+        if (Environment.TickCount64 - Interlocked.Read(ref _lastPongTicks) > PongTimeoutMs)
+        {
+            SimpleLogger.Log("Conn", $"{PeerName} stopped answering pings; dropping connection");
+            RaiseDisconnected(new TimeoutException($"{PeerName} did not respond for {PongTimeoutMs / 1000} seconds."));
+            Dispose();
+            return;
+        }
+
+        Post(new PingMessage());
     }
 
     /// <summary>
@@ -394,6 +418,7 @@ public sealed class PeerConnection : IDisposable
                 return true;
 
             case PongMessage pong:
+                Interlocked.Exchange(ref _lastPongTicks, Environment.TickCount64);
                 var rtt = (int)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pong.Timestamp);
                 if (rtt >= 0)
                 {

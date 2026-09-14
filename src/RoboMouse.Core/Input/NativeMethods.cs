@@ -299,6 +299,9 @@ internal static class NativeMethods
     public const uint SPI_SETCURSORS = 0x0057;
 
     [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll")]
     public static extern int GetSystemMetrics(int nIndex);
 
     public const int SM_CXSCREEN = 0;

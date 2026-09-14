@@ -47,6 +47,12 @@ public class TrayApplicationContext : ApplicationContext
         _service.PeerConnected += (s, e) => OnUi(UpdateStatus);
         _service.PeerDisconnected += (s, e) => OnUi(UpdateStatus);
         _service.ControlStateChanged += (s, e) => OnUi(OnControlStateChanged);
+        _service.EnabledChanged += (s, e) => OnUi(() =>
+        {
+            _enableItem.Checked = _service.Enabled;
+            _settings.Save();
+            UpdateStatus();
+        });
         _service.Error += OnServiceError;
 #if DEBUG
         _service.MouseDebugUpdate += OnMouseDebugUpdate;
@@ -297,6 +303,8 @@ public class TrayApplicationContext : ApplicationContext
 
     private void OnEnableToggled(object? sender, EventArgs e)
     {
+        if (_service.Enabled == _enableItem.Checked)
+            return;
         _settings.Enabled = _enableItem.Checked;
         _service.Enabled = _enableItem.Checked;
         _settings.Save();

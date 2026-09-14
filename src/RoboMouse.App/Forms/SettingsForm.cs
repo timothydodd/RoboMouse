@@ -128,9 +128,17 @@ public partial class SettingsForm : Form
         layout.Controls.Add(_startMinimizedCheck, 1, row++);
 
         // Toggle hotkey
-        layout.Controls.Add(new Label { Text = "Toggle Hotkey:", AutoSize = true }, 0, row);
-        _hotkeyTextBox = new TextBox { Dock = DockStyle.Fill };
-        layout.Controls.Add(_hotkeyTextBox, 1, row++);
+        layout.Controls.Add(new Label { Text = "Hotkey:", AutoSize = true }, 0, row);
+        var hotkeyPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown };
+        _hotkeyTextBox = new TextBox { Width = 200 };
+        hotkeyPanel.Controls.Add(_hotkeyTextBox);
+        hotkeyPanel.Controls.Add(new Label
+        {
+            Text = "Releases control of another screen if you are stuck there; otherwise turns sharing on or off.",
+            AutoSize = true,
+            ForeColor = Color.Gray
+        });
+        layout.Controls.Add(hotkeyPanel, 1, row++);
 
         // Clipboard sync
         layout.Controls.Add(new Label { Text = "Clipboard:", AutoSize = true }, 0, row);
@@ -715,6 +723,13 @@ public partial class SettingsForm : Form
         }
         _settings.PairingCode = code;
 
+        if (!string.IsNullOrWhiteSpace(_hotkeyTextBox.Text) && RoboMouse.Core.Input.Hotkey.Parse(_hotkeyTextBox.Text) == null)
+        {
+            MessageBox.Show(this, "The hotkey must be a key with at least one modifier, for example Ctrl+Alt+M.", "RoboMouse",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         _settings.MachineName = _machineNameTextBox.Text;
         _settings.LocalPort = (int)_portNumeric.Value;
         _settings.DiscoveryPort = (int)_discoveryPortNumeric.Value;
@@ -729,6 +744,7 @@ public partial class SettingsForm : Form
 
         _settings.Save();
         _service.ApplyClipboardSetting();
+        _service.ApplyHotkeySetting();
 
         // Update startup registry
         UpdateStartupRegistry();
