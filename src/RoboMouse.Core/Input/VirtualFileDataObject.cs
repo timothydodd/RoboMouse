@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network.Protocol;
 
 namespace RoboMouse.Core.Input;
@@ -44,13 +46,17 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
             return;
         }
 
-        if (format.cfFormat == CfFileContents && (format.tymed & TYMED.TYMED_ISTREAM) != 0
-            && format.lindex >= 0 && format.lindex < _entries.Count && !_entries[format.lindex].IsDirectory)
+        if (format.cfFormat == CfFileContents && (format.tymed & TYMED.TYMED_ISTREAM) != 0)
         {
-            var stream = new PullStream(_entries[format.lindex], format.lindex, _read);
-            medium.tymed = TYMED.TYMED_ISTREAM;
-            medium.unionmember = Marshal.GetComInterfaceForObject(stream, typeof(IStream));
-            return;
+            // lindex -1 means "no particular item"; some callers probe with it. Serve the first file.
+            var index = format.lindex >= 0 ? format.lindex : FirstFileIndex();
+            if (index >= 0 && index < _entries.Count && !_entries[index].IsDirectory)
+            {
+                var stream = new PullStream(_entries[index], index, _read);
+                medium.tymed = TYMED.TYMED_ISTREAM;
+                medium.unionmember = Marshal.GetComInterfaceForObject(stream, typeof(IStream));
+                return;
+            }
         }
 
         if (format.cfFormat == CfPreferredDropEffect && (format.tymed & TYMED.TYMED_HGLOBAL) != 0)
@@ -64,7 +70,24 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
             return;
         }
 
+        SimpleLogger.Log("Files", $"GetData refused: {Describe(format)}");
         throw new COMException("Format not supported.", Native.DV_E_FORMATETC);
+    }
+
+    private int FirstFileIndex()
+    {
+        for (var i = 0; i < _entries.Count; i++)
+            if (!_entries[i].IsDirectory)
+                return i;
+        return -1;
+    }
+
+    private static string Describe(FORMATETC format)
+    {
+        var name = new StringBuilder(256);
+        var length = Native.GetClipboardFormatName((uint)(ushort)format.cfFormat, name, name.Capacity);
+        var formatName = length > 0 ? name.ToString() : $"CF #{(ushort)format.cfFormat}";
+        return $"{formatName} tymed={format.tymed} lindex={format.lindex} aspect={format.dwAspect}";
     }
 
     public void GetDataHere(ref FORMATETC format, ref STGMEDIUM medium)
@@ -287,6 +310,9 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         public static extern uint RegisterClipboardFormat(string lpszFormat);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetClipboardFormatName(uint format, StringBuilder lpszFormatName, int cchMaxCount);
 
         [DllImport("kernel32.dll")]
         public static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
