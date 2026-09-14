@@ -759,36 +759,9 @@ public partial class SettingsForm : Form
         _service.ApplyClipboardSetting();
         _service.ApplyHotkeySetting();
 
-        // Update startup registry
-        UpdateStartupRegistry();
+        _ = StartupRegistration.ApplyAsync(_settings.StartWithWindows);
 
         Close();
-    }
-
-    private void UpdateStartupRegistry()
-    {
-        try
-        {
-            var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
-
-            if (key != null)
-            {
-                if (_settings.StartWithWindows)
-                {
-                    key.SetValue("RoboMouse", $"\"{Application.ExecutablePath}\"");
-                }
-                else
-                {
-                    key.DeleteValue("RoboMouse", false);
-                }
-                key.Close();
-            }
-        }
-        catch
-        {
-            // Ignore registry errors
-        }
     }
 
     private void OnAddPeerClick(object? sender, EventArgs e)

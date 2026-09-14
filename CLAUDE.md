@@ -66,6 +66,11 @@ The keyboard hook checks the toggle hotkey (`Hotkey`) before anything else: whil
 
 Never do per-event file logging on the input path: the hook callback has a system timeout and file I/O at 1000 Hz adds visible latency.
 
+### Distribution
+
+- `packaging/` holds the MSIX manifest (`runFullTrust` + `allowElevation`, startup task), Store assets, and `Build-Msix.ps1`. `StartupRegistration` picks the startup task when packaged and the Run key otherwise.
+- `.github/workflows/build.yml` builds/tests on every push, publishes a single-file zip and (with Store secrets set) the MSIX on `v*` tags.
+
 ### Windows-Specific
 
 - Target framework: `net10.0-windows`

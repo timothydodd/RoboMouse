@@ -28,6 +28,17 @@ Every push to `main` is built and tested on GitHub Actions (see the Actions tab 
 `RoboMouse-win-x64` artifact). Pushing a tag such as `v1.0.0` publishes a zipped single-file
 build as a GitHub Release automatically.
 
+### Microsoft Store Package
+
+`packaging/Build-Msix.ps1` produces the MSIX for Store submission (self-contained, unsigned;
+Partner Center signs it). It needs the identity values from Partner Center > Product identity,
+supplied as parameters or as the `STORE_PACKAGE_NAME`, `STORE_PUBLISHER` and
+`STORE_PUBLISHER_DISPLAY` environment variables. The release workflow builds it on every tag when
+those are set as repository secrets. For a local sideload test run it with `-Sign`, which creates
+a self-signed certificate and prints the two commands to install it.
+
+The privacy policy required by the Store listing is in `docs/privacy.md`.
+
 ### Publishing a Release Build
 
 ```bash

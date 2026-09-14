@@ -49,3 +49,6 @@ Desktop.ini
 # macOS
 .DS_Store
 /.github/copilot-instructions.md
+
+# Local Claude Code settings
+.claude/
