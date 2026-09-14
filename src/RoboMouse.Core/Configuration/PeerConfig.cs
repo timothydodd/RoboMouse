@@ -41,12 +41,6 @@ public class PeerConfig
     public int OffsetX { get; set; } = 0;
 
     /// <summary>
-    /// Multiplier applied to mouse motion sent to this peer. 1.0 forwards hardware counts unchanged,
-    /// so the peer's own pointer speed setting decides how fast the cursor moves there.
-    /// </summary>
-    public double SpeedMultiplier { get; set; } = 1.0;
-
-    /// <summary>
     /// The peer's screen width in pixels (received during handshake).
     /// </summary>
     [JsonIgnore]
