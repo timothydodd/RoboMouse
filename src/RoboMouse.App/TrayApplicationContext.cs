@@ -384,47 +384,27 @@ public class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>
-    /// Draws the cursor-arrow tray icon in a colour for the given state:
-    /// grey = disabled, hollow = no peers, blue = connected, green = controlling a remote, orange = being controlled.
+    /// Loads the embedded tray icon for a state. The tray uses the small sizes; Windows picks the
+    /// best match from the multi-size .ico for the current DPI.
     /// </summary>
     private static Icon CreateIcon(TrayState state)
     {
-        var (fill, outline, hollow) = state switch
+        var name = state switch
         {
-            TrayState.Disabled => (Color.FromArgb(130, 130, 130), Color.FromArgb(90, 90, 90), false),
-            TrayState.Disconnected => (Color.FromArgb(64, 158, 255), Color.FromArgb(64, 158, 255), true),
-            TrayState.Connected => (Color.FromArgb(64, 158, 255), Color.FromArgb(40, 120, 200), false),
-            TrayState.Controlling => (Color.FromArgb(70, 200, 110), Color.FromArgb(40, 150, 80), false),
-            TrayState.Controlled => (Color.FromArgb(255, 165, 50), Color.FromArgb(200, 120, 30), false),
-            _ => (Color.Gray, Color.DimGray, false)
+            TrayState.Disabled => "disabled",
+            TrayState.Disconnected => "offline",
+            TrayState.Connected => "online",
+            TrayState.Controlling => "controlling",
+            TrayState.Controlled => "controlled",
+            _ => "offline"
         };
 
-        using var bitmap = new Bitmap(32, 32);
-        using (var g = Graphics.FromImage(bitmap))
-        {
-            g.Clear(Color.Transparent);
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using var stream = typeof(TrayApplicationContext).Assembly
+            .GetManifestResourceStream($"RoboMouse.App.Assets.{name}.ico")
+            ?? throw new InvalidOperationException($"Missing embedded icon '{name}'.");
 
-            var points = new Point[]
-            {
-                new(6, 3),
-                new(6, 25),
-                new(11, 20),
-                new(16, 29),
-                new(20, 27),
-                new(15, 18),
-                new(23, 18),
-            };
-
-            using var brush = new SolidBrush(hollow ? Color.FromArgb(40, 40, 40) : fill);
-            using var pen = new Pen(outline, 2.5f) { LineJoin = System.Drawing.Drawing2D.LineJoin.Round };
-
-            g.FillPolygon(brush, points);
-            g.DrawPolygon(pen, points);
-        }
-
-        var handle = bitmap.GetHicon();
-        return Icon.FromHandle(handle);
+        var size = SystemInformation.SmallIconSize;
+        return new Icon(stream, size.Width, size.Height);
     }
 
     protected override void Dispose(bool disposing)

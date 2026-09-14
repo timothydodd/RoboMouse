@@ -9,7 +9,16 @@
     <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>RoboMouse.App</RootNamespace>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\offline.ico" LogicalName="RoboMouse.App.Assets.offline.ico" />
+    <EmbeddedResource Include="Assets\online.ico" LogicalName="RoboMouse.App.Assets.online.ico" />
+    <EmbeddedResource Include="Assets\controlling.ico" LogicalName="RoboMouse.App.Assets.controlling.ico" />
+    <EmbeddedResource Include="Assets\controlled.ico" LogicalName="RoboMouse.App.Assets.controlled.ico" />
+    <EmbeddedResource Include="Assets\disabled.ico" LogicalName="RoboMouse.App.Assets.disabled.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\RoboMouse.Core\RoboMouse.Core.csproj" />

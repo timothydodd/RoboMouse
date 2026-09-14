@@ -152,7 +152,7 @@ public partial class SettingsForm : Form
         layout.Controls.Add(new Label { Text = "Tray icon:", AutoSize = true }, 0, row);
         layout.Controls.Add(new Label
         {
-            Text = "Hollow = no peers connected, blue = connected,\ngreen = controlling another screen, orange = being controlled, grey = disabled.",
+            Text = "Grey signal = no peers connected, green = connected,\nblue = controlling another screen, orange = being controlled, faded = disabled.",
             AutoSize = true,
             ForeColor = Color.Gray
         }, 1, row++);

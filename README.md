@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/icon-banner.png" alt="RoboMouse" width="420">
+</p>
+
 # RoboMouse
 
 A Windows application that lets you share your mouse and keyboard across multiple computers on the same network. Move your cursor to the edge of one screen and it seamlessly transitions to control another computer.
@@ -8,7 +12,7 @@ A Windows application that lets you share your mouse and keyboard across multipl
 - **Automatic Peer Discovery** - Computers on the same network find each other automatically via UDP broadcast
 - **Clipboard Synchronization** - Copy on one machine, paste on another
 - **Visual Screen Layout Editor** - Drag and drop to arrange your screens
-- **System Tray Application** - Runs quietly in the background
+- **System Tray Application** - Runs quietly in the background; the icon's signal colour shows state (grey = no peers, green = connected, blue = controlling another screen, orange = being controlled)
 
 ## Requirements
 
