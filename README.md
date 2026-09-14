@@ -138,12 +138,11 @@ other machine has stopped responding. Otherwise it turns sharing on or off.
 
 ## Known Limitations
 
-- **Elevated windows.** Windows does not let a normal process send input to programs running
-  as administrator, or to UAC prompts. While such a window is in front on the controlled machine,
-  clicks and keys from the other machine are dropped. Mouse movement still works (RoboMouse falls
-  back to moving the cursor directly), so you can move away or return to your own screen; and the
-  hotkey always brings control back. To operate those windows remotely, run RoboMouse as
-  administrator on the controlled machine.
+- **Elevated windows.** Windows only lets an elevated process send input to programs running as
+  administrator, so RoboMouse asks for administrator rights when it starts (see its manifest). If
+  you run it without elevation, clicks and keys aimed at such windows on the controlled machine are
+  dropped; movement still works and the hotkey always brings control back. UAC prompts themselves
+  are on a secure desktop that no application can drive.
 - **Keyboard layouts.** Keys are forwarded as virtual key codes, so with different layouts on the
   two machines some symbol keys will produce different characters on the remote.
 - **Different subnets.** Automatic discovery uses broadcast and never crosses subnets; add such

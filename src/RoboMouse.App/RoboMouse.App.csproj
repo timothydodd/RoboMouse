@@ -13,6 +13,7 @@
     <Authors>Tim Dodd</Authors>
     <Product>RoboMouse</Product>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>
