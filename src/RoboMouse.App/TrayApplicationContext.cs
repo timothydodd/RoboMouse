@@ -26,6 +26,7 @@ public class TrayApplicationContext : ApplicationContext
 
     private ToolStripMenuItem _statusItem = null!;
     private ToolStripMenuItem _enableItem = null!;
+    private ToolStripMenuItem _peersItem = null!;
 
     private SettingsForm? _settingsForm;
     private DebugPanelForm? _debugPanel;
@@ -101,6 +102,9 @@ public class TrayApplicationContext : ApplicationContext
         _enableItem.CheckedChanged += OnEnableToggled;
         menu.Items.Add(_enableItem);
 
+        _peersItem = new ToolStripMenuItem("Peers");
+        menu.Items.Add(_peersItem);
+
         var settingsItem = new ToolStripMenuItem("Settings...");
         settingsItem.Click += (s, e) => ShowSettings();
         menu.Items.Add(settingsItem);
@@ -111,9 +115,133 @@ public class TrayApplicationContext : ApplicationContext
         exitItem.Click += OnExit;
         menu.Items.Add(exitItem);
 
-        menu.Opening += (s, e) => UpdateStatus();
+        menu.Opening += (s, e) =>
+        {
+            UpdateStatus();
+            UpdatePeersMenu();
+        };
 
         return menu;
+    }
+
+    /// <summary>
+    /// Configured peers (click to connect or disconnect; checked when connected), then any machine
+    /// discovered on the network that is not configured yet (pick an edge to add and connect).
+    /// </summary>
+    private void UpdatePeersMenu()
+    {
+        _peersItem.DropDownItems.Clear();
+
+        foreach (var peer in _settings.Peers)
+        {
+            var connection = _service.GetConnection(peer.Id);
+            var detail = connection == null
+                ? "not connected"
+                : connection.RoundTripMs >= 0 ? $"{connection.RoundTripMs} ms" : "connected";
+
+            var item = new ToolStripMenuItem($"{peer.Name}  ({PeerPositions.Describe(peer.Position)}, {detail})")
+            {
+                Checked = connection != null,
+                ToolTipText = connection == null ? $"Connect to {peer.Address}:{peer.Port}" : "Disconnect"
+            };
+            item.Click += (s, e) => ToggleConnection(peer);
+            _peersItem.DropDownItems.Add(item);
+        }
+
+        var configuredIds = _settings.Peers.Select(p => p.Id).ToHashSet();
+        var configuredAddresses = _settings.Peers.Select(p => p.Address).ToHashSet();
+        var discovered = _service.DiscoveredPeers
+            .Where(p => p.MachineId != _settings.MachineId
+                        && !configuredIds.Contains(p.MachineId)
+                        && !configuredAddresses.Contains(p.Address.ToString()))
+            .OrderBy(p => p.MachineName)
+            .ToList();
+
+        if (_settings.Peers.Count > 0 && discovered.Count > 0)
+            _peersItem.DropDownItems.Add(new ToolStripSeparator());
+
+        foreach (var found in discovered)
+        {
+            var item = new ToolStripMenuItem($"{found.MachineName}  ({found.Address}, new)");
+            foreach (var position in PeerPositions.All)
+            {
+                var captured = position;
+                var taken = _settings.Peers.FirstOrDefault(p => p.Position == position);
+                var positionItem = new ToolStripMenuItem(
+                    taken == null
+                        ? $"Add {PeerPositions.Describe(position).ToLower()} of this screen"
+                        : $"{PeerPositions.Describe(position)} of this screen (used by {taken.Name})")
+                {
+                    Enabled = taken == null
+                };
+                positionItem.Click += (s, e) => AddDiscoveredPeer(found, captured);
+                item.DropDownItems.Add(positionItem);
+            }
+            _peersItem.DropDownItems.Add(item);
+        }
+
+        if (_peersItem.DropDownItems.Count == 0)
+        {
+            _peersItem.DropDownItems.Add(new ToolStripMenuItem("No peers configured or found") { Enabled = false });
+        }
+    }
+
+    private async void ToggleConnection(PeerConfig peer)
+    {
+        try
+        {
+            if (_service.IsPeerConnected(peer.Id))
+            {
+                await _service.DisconnectFromPeerAsync(peer.Id);
+            }
+            else
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                await _service.ConnectToPeerAsync(peer, cts.Token);
+                _settings.Save();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            MessageBox.Show($"Connecting to {peer.Address}:{peer.Port} timed out. Use Test Connection in Settings for details.",
+                "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not connect to {peer.Name}: {ex.Message}", "RoboMouse",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        UpdateStatus();
+    }
+
+    private async void AddDiscoveredPeer(DiscoveredPeer found, ScreenPosition position)
+    {
+        try
+        {
+            await _service.ConnectToPeerAsync(found, position);
+
+            var config = _settings.Peers.FirstOrDefault(p => p.Id == found.MachineId);
+            if (config == null)
+            {
+                _settings.Peers.Add(new PeerConfig
+                {
+                    Id = found.MachineId,
+                    Name = found.MachineName,
+                    Address = found.Address.ToString(),
+                    Port = found.Port,
+                    Position = position,
+                    ScreenWidth = found.ScreenWidth,
+                    ScreenHeight = found.ScreenHeight
+                });
+            }
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not connect to {found.MachineName}: {ex.Message}", "RoboMouse",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        UpdateStatus();
     }
 
     private void UpdateStatus()
