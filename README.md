@@ -22,6 +22,12 @@ A Windows application that lets you share your mouse and keyboard across multipl
 
 ## Getting Started
 
+### Releases
+
+Every push to `main` is built and tested on GitHub Actions (see the Actions tab for the
+`RoboMouse-win-x64` artifact). Pushing a tag such as `v1.0.0` publishes a zipped single-file
+build as a GitHub Release automatically.
+
 ### Publishing a Release Build
 
 ```bash
