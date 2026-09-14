@@ -5,38 +5,51 @@ using RoboMouse.Core.Network;
 namespace RoboMouse.App.Forms;
 
 /// <summary>
-/// Settings configuration form.
+/// Settings window: a header with the live status, a navigation rail on the left and one page per
+/// area (General, Network, Peers).
 /// </summary>
 public partial class SettingsForm : Form
 {
     private readonly AppSettings _settings;
     private readonly RoboMouseService _service;
 
-    // Controls
+    // Header
+    private Label _statusLabel = null!;
+    private Panel _statusDot = null!;
+    private Color _statusColor = Ui.Grey;
+
+    // Navigation
+    private readonly List<(Button button, Panel page)> _pages = new();
+
+    // General
     private TextBox _machineNameTextBox = null!;
-    private NumericUpDown _portNumeric = null!;
-    private NumericUpDown _discoveryPortNumeric = null!;
-    private TextBox _pairingCodeTextBox = null!;
-    private CheckBox _clipboardEnabledCheck = null!;
-    private CheckBox _shareFilesCheck = null!;
-    private CheckBox _borderHighlightCheck = null!;
-#if DEBUG
-    private CheckBox _debugPanelCheck = null!;
-#endif
-    private ListView _discoveredList = null!;
-    private Button _addDiscoveredButton = null!;
     private CheckBox _startWithWindowsCheck = null!;
     private CheckBox _startMinimizedCheck = null!;
     private TextBox _hotkeyTextBox = null!;
+    private CheckBox _clipboardEnabledCheck = null!;
+    private CheckBox _shareFilesCheck = null!;
+    private ComboBox _highlightCombo = null!;
+#if DEBUG
+    private CheckBox _debugPanelCheck = null!;
+#endif
+
+    // Network
+    private NumericUpDown _portNumeric = null!;
+    private NumericUpDown _discoveryPortNumeric = null!;
+    private TextBox _pairingCodeTextBox = null!;
+
+    // Peers
     private ListView _peersList = null!;
-    private Button _testButton = null!;
-    private Button _connectButton = null!;
+    private ListView _discoveredList = null!;
+    private Button _addDiscoveredButton = null!;
     private Button _editButton = null!;
     private Button _removeButton = null!;
-    private ComboBox _positionCombo = null!;
-    private Label _peerHintLabel = null!;
+    private Button _enableButton = null!;
+    private bool _suppressItemCheck;
+
+    // Layout
+    private ScreenLayoutPanel _layoutPanel = null!;
     private System.Windows.Forms.Timer _statusTimer = null!;
-    private bool _suppressPositionChange;
 
     public SettingsForm(AppSettings settings, RoboMouseService service)
     {
@@ -49,250 +62,339 @@ public partial class SettingsForm : Form
 
     private void InitializeComponent()
     {
-        Text = $"RoboMouse Settings  (v{typeof(SettingsForm).Assembly.GetName().Version?.ToString(3)})";
-        Size = new Size(560, 600);
+        Ui.Style(this);
+        Text = "RoboMouse";
+        Icon = Ui.AppIcon();
+        ClientSize = new Size(940, 720);
+        MinimumSize = new Size(800, 600);
         StartPosition = FormStartPosition.CenterScreen;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
-        MinimizeBox = false;
 
-        var tabControl = new TabControl
-        {
-            Dock = DockStyle.Fill
-        };
-
-        tabControl.TabPages.Add(CreateGeneralTab());
-        tabControl.TabPages.Add(CreateNetworkTab());
-        tabControl.TabPages.Add(CreatePeersTab());
-
-        Controls.Add(tabControl);
-
-        // Buttons panel
-        var buttonPanel = new Panel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 50
-        };
-
-        var saveButton = new Button
-        {
-            Text = "Save",
-            Width = 80,
-            Height = 30,
-            Location = new Point(Width - 200, 10)
-        };
+        var saveButton = Ui.PrimaryButton("Save", 100);
         saveButton.Click += OnSaveClick;
-
-        var cancelButton = new Button
-        {
-            Text = "Cancel",
-            Width = 80,
-            Height = 30,
-            Location = new Point(Width - 100, 10)
-        };
+        var cancelButton = Ui.Button("Cancel", 100);
         cancelButton.Click += (s, e) => Close();
+        CancelButton = cancelButton;
 
-        buttonPanel.Controls.Add(saveButton);
-        buttonPanel.Controls.Add(cancelButton);
-        Controls.Add(buttonPanel);
+        Controls.Add(CreateHeader());
+        Controls.Add(Ui.ActionBar(saveButton, cancelButton));
+
+        var body = new Panel { Dock = DockStyle.Fill };
+        var rail = CreateNavRail();
+        var content = new Panel { Dock = DockStyle.Fill, Padding = new Padding(Ui.Pad + 4, Ui.Pad, Ui.Pad, Ui.Pad) };
+        body.Controls.Add(content);
+        body.Controls.Add(rail);
+        Controls.Add(body);
+        body.BringToFront();
+
+        AddPage("General", CreateGeneralPage(), rail, content);
+        AddPage("Network", CreateNetworkPage(), rail, content);
+        AddPage("Peers", CreatePeersPage(), rail, content);
+        AddPage("Layout", CreateLayoutPage(), rail, content);
+        ShowPage(0);
+
+        _statusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _statusTimer.Tick += (s, e) =>
+        {
+            RefreshStatus();
+            RefreshPeerStatus();
+            RefreshDiscoveredList();
+        };
+        _statusTimer.Start();
     }
 
-    private TabPage CreateGeneralTab()
+    // ------------------------------------------------------------------ chrome
+
+    private Control CreateHeader()
     {
-        var tab = new TabPage("General");
-        tab.Padding = new Padding(10);
+        var header = new Panel { Dock = DockStyle.Top, Height = 72, BackColor = Ui.Card, Padding = new Padding(Ui.Pad, 0, Ui.Pad, 0) };
+        header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Ui.Border });
 
-        var layout = new TableLayoutPanel
+        var logo = new PictureBox
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 9
+            Image = Ui.AppImage(40),
+            SizeMode = PictureBoxSizeMode.Zoom,
+            Size = new Size(40, 40),
+            Location = new Point(Ui.Pad, 16)
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.Controls.Add(logo);
 
-        var row = 0;
+        var title = new Label { Text = "RoboMouse", Font = Ui.Title, AutoSize = true, ForeColor = Ui.Text, Location = new Point(Ui.Pad + 52, 14) };
+        header.Controls.Add(title);
 
-        // Machine name
-        layout.Controls.Add(new Label { Text = "Machine Name:", AutoSize = true }, 0, row);
-        _machineNameTextBox = new TextBox { Dock = DockStyle.Fill };
-        layout.Controls.Add(_machineNameTextBox, 1, row++);
-
-        // Start with Windows
-        layout.Controls.Add(new Label { Text = "Startup:", AutoSize = true }, 0, row);
-        _startWithWindowsCheck = new CheckBox { Text = "Start with Windows", AutoSize = true };
-        layout.Controls.Add(_startWithWindowsCheck, 1, row++);
-
-        // Start minimized
-        layout.Controls.Add(new Label(), 0, row);
-        _startMinimizedCheck = new CheckBox { Text = "Start minimized to tray", AutoSize = true };
-        layout.Controls.Add(_startMinimizedCheck, 1, row++);
-
-        // Toggle hotkey
-        layout.Controls.Add(new Label { Text = "Hotkey:", AutoSize = true }, 0, row);
-        var hotkeyPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown };
-        _hotkeyTextBox = new TextBox { Width = 200 };
-        hotkeyPanel.Controls.Add(_hotkeyTextBox);
-        hotkeyPanel.Controls.Add(new Label
+        var version = new Label
         {
-            Text = "Releases control of another screen if you are stuck there; otherwise turns sharing on or off.",
+            Text = $"Version {typeof(SettingsForm).Assembly.GetName().Version?.ToString(3)}  ·  {_settings.MachineName}",
+            Font = Ui.Small,
             AutoSize = true,
-            ForeColor = Color.Gray
-        });
-        layout.Controls.Add(hotkeyPanel, 1, row++);
+            ForeColor = Ui.Muted,
+            Location = new Point(Ui.Pad + 54, 44)
+        };
+        header.Controls.Add(version);
 
-        // Clipboard sync
-        layout.Controls.Add(new Label { Text = "Clipboard:", AutoSize = true }, 0, row);
-        var clipboardPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown };
-        _clipboardEnabledCheck = new CheckBox { Text = "Share text and images", AutoSize = true };
-        clipboardPanel.Controls.Add(_clipboardEnabledCheck);
-        _shareFilesCheck = new CheckBox { Text = "Share copied files (paste them in Explorer on the other machine)", AutoSize = true };
-        clipboardPanel.Controls.Add(_shareFilesCheck);
-        clipboardPanel.Controls.Add(new Label
+        // Status pill, right-aligned.
+        var pill = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right | AnchorStyles.Top, Padding = new Padding(0), Margin = new Padding(0) };
+        _statusDot = new Panel { Width = 10, Height = 10, Margin = new Padding(0, 8, 8, 0) };
+        _statusDot.Paint += (s, e) =>
         {
-            Text = "Files transfer only when you paste, straight from the machine you copied them on.",
-            AutoSize = true,
-            ForeColor = Color.Gray
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using var brush = new SolidBrush(_statusColor);
+            e.Graphics.FillEllipse(brush, 0, 0, 9, 9);
+        };
+        _statusLabel = new Label { Text = "Not connected", AutoSize = true, ForeColor = Ui.Muted, Margin = new Padding(0, 4, 0, 0) };
+        pill.Controls.Add(_statusDot);
+        pill.Controls.Add(_statusLabel);
+        header.Controls.Add(pill);
+        header.Resize += (s, e) => pill.Location = new Point(header.ClientSize.Width - pill.Width - Ui.Pad, 26);
+        pill.SizeChanged += (s, e) => pill.Location = new Point(header.ClientSize.Width - pill.Width - Ui.Pad, 26);
+
+        return header;
+    }
+
+    private Panel CreateNavRail()
+    {
+        var rail = new Panel { Dock = DockStyle.Left, Width = 168, BackColor = Ui.Sidebar, Padding = new Padding(12, 16, 12, 12) };
+        rail.Controls.Add(new Panel { Dock = DockStyle.Right, Width = 1, BackColor = Ui.Border });
+        return rail;
+    }
+
+    private void AddPage(string name, Panel page, Panel rail, Panel content)
+    {
+        var index = _pages.Count;
+        var button = new Button
+        {
+            Text = "   " + name,
+            TextAlign = ContentAlignment.MiddleLeft,
+            FlatStyle = FlatStyle.Flat,
+            Height = 36,
+            Dock = DockStyle.Top,
+            BackColor = Ui.Sidebar,
+            ForeColor = Ui.Text,
+            Cursor = Cursors.Hand,
+            TabStop = false
+        };
+        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(230, 235, 243);
+        button.Click += (s, e) => ShowPage(index);
+        button.Paint += (s, e) =>
+        {
+            if (page.Visible)
+            {
+                using var brush = new SolidBrush(Ui.Accent);
+                e.Graphics.FillRectangle(brush, 0, 8, 3, button.Height - 16);
+            }
+        };
+
+        page.Dock = DockStyle.Fill;
+        page.Visible = false;
+        content.Controls.Add(page);
+
+        // Docked Top controls stack in reverse order of addition; insert at 0 keeps declaration order.
+        rail.Controls.Add(button);
+        button.BringToFront();
+        _pages.Add((button, page));
+    }
+
+    private void ShowPage(int index)
+    {
+        for (var i = 0; i < _pages.Count; i++)
+        {
+            var (button, page) = _pages[i];
+            var active = i == index;
+            page.Visible = active;
+            if (active && page == _layoutPanel.Parent?.Parent)
+                _layoutPanel.Reload();
+            button.BackColor = active ? Ui.Card : Ui.Sidebar;
+            button.Font = active ? Ui.Strong : Ui.Body;
+            button.Invalidate();
+        }
+    }
+
+    /// <summary>A settings page: scrolls vertically when its sections do not fit the window.</summary>
+    private static Panel Page()
+    {
+        var page = new Panel { AutoScroll = true, Padding = new Padding(0, 0, Ui.Pad, 0) };
+        // Never scroll sideways: the sections are laid out to the page width.
+        page.HorizontalScroll.Enabled = false;
+        page.HorizontalScroll.Visible = false;
+        return page;
+    }
+
+    /// <summary>Stacks docked-top controls so they appear in the given order.</summary>
+    private static void Fill(Panel page, params Control[] controls)
+    {
+        foreach (var c in controls.Reverse())
+        {
+            if (c.Dock == DockStyle.None)
+                c.Dock = DockStyle.Top;
+            if (c is Label heading && !heading.AutoSize)
+            {
+                // Docked controls ignore Margin: fold the heading's spacing into its own height.
+                heading.Padding = new Padding(0, heading.Margin.Top, 0, heading.Margin.Bottom);
+                heading.Height += heading.Margin.Top + heading.Margin.Bottom;
+                heading.Margin = Padding.Empty;
+            }
+            page.Controls.Add(c);
+        }
+    }
+
+    private void RefreshStatus()
+    {
+        if (IsDisposed)
+            return;
+
+        var connected = _service.ConnectedPeers.Count;
+        string text;
+        Color color;
+        if (!_service.Enabled) { text = "Sharing off"; color = Ui.Grey; }
+        else if (_service.IsControllingRemote) { text = $"Controlling {_service.ActivePeer?.Name}"; color = Ui.Accent; }
+        else if (_service.IsControlledByRemote) { text = "Being controlled"; color = Ui.Orange; }
+        else if (connected == 0) { text = "Not connected"; color = Ui.Grey; }
+        else if (connected == 1) { text = $"Connected to {_service.ConnectedPeers.First().PeerName}"; color = Ui.Green; }
+        else { text = $"Connected to {connected} peers"; color = Ui.Green; }
+
+        if (_statusLabel.Text != text)
+            _statusLabel.Text = text;
+        if (_statusColor != color)
+        {
+            _statusColor = color;
+            _statusDot.Invalidate();
+        }
+    }
+
+    // ------------------------------------------------------------------ General
+
+    private Panel CreateGeneralPage()
+    {
+        var page = Page();
+
+        var identity = Ui.FormGrid();
+        _machineNameTextBox = Ui.TextBox(260);
+        Ui.Row(identity, "Machine name", _machineNameTextBox);
+        Ui.Row(identity, "", Ui.Hint("How this computer appears on the other machines."));
+
+        var startup = Ui.Stack();
+        _startWithWindowsCheck = Ui.Check("Start with Windows");
+        _startMinimizedCheck = Ui.Check("Start minimized to the tray");
+        startup.Controls.Add(_startWithWindowsCheck);
+        startup.Controls.Add(_startMinimizedCheck);
+
+        var hotkey = Ui.FormGrid();
+        _hotkeyTextBox = Ui.TextBox(200);
+        Ui.Row(hotkey, "Toggle hotkey", _hotkeyTextBox);
+        Ui.Row(hotkey, "", Ui.Hint("For example Ctrl+Alt+M. Releases control of another screen if you are stuck there; otherwise turns sharing on or off.", 460));
+
+        var clipboard = Ui.Stack();
+        _clipboardEnabledCheck = Ui.Check("Share text and images");
+        _shareFilesCheck = Ui.Check("Share copied files (paste them in Explorer on the other machine)");
+        clipboard.Controls.Add(_clipboardEnabledCheck);
+        clipboard.Controls.Add(_shareFilesCheck);
+        clipboard.Controls.Add(Ui.Hint("Files transfer only when you paste, straight from the machine you copied them on.", 460));
+
+        var display = Ui.Stack();
+        var highlightRow = Ui.Inline();
+        highlightRow.Controls.Add(Ui.Label("When the mouse arrives on this screen"));
+        _highlightCombo = Ui.Combo(200);
+        _highlightCombo.Items.AddRange(new object[]
+        {
+            new HighlightChoice(EdgeHighlightStyle.None, "Show nothing"),
+            new HighlightChoice(EdgeHighlightStyle.Border, "Flash a border around the screen"),
+            new HighlightChoice(EdgeHighlightStyle.Fade, "Glow along the edge it came in on"),
         });
-        layout.Controls.Add(clipboardPanel, 1, row++);
-
-        // Border highlight
-        layout.Controls.Add(new Label { Text = "Screen border:", AutoSize = true }, 0, row);
-        _borderHighlightCheck = new CheckBox { Text = "Flash a border when the mouse arrives on this screen", AutoSize = true };
-        layout.Controls.Add(_borderHighlightCheck, 1, row++);
-
+        highlightRow.Controls.Add(_highlightCombo);
+        display.Controls.Add(highlightRow);
 #if DEBUG
-        // Debug panel (debug builds only)
-        layout.Controls.Add(new Label { Text = "Debug:", AutoSize = true }, 0, row);
-        _debugPanelCheck = new CheckBox { Text = "Show debug panel while controlling another screen", AutoSize = true };
-        layout.Controls.Add(_debugPanelCheck, 1, row++);
+        _debugPanelCheck = Ui.Check("Show the debug panel while controlling another screen");
+        display.Controls.Add(_debugPanelCheck);
 #endif
 
-        // Tray legend
-        layout.Controls.Add(new Label { Text = "Tray icon:", AutoSize = true }, 0, row);
-        layout.Controls.Add(new Label
+        var legend = Ui.Stack();
+        legend.Controls.Add(Ui.Hint("The border colour of the tray icon shows what RoboMouse is doing:"));
+        foreach (var (color, text) in new[]
         {
-            Text = "Grey signal = no peers connected, green = connected,\nblue = controlling another screen, orange = being controlled, faded = disabled.",
-            AutoSize = true,
-            ForeColor = Color.Gray
-        }, 1, row++);
+            (Ui.Grey, "No peers connected"),
+            (Ui.Green, "Connected"),
+            (Ui.Accent, "Controlling another screen"),
+            (Ui.Orange, "Being controlled"),
+        })
+        {
+            var row = Ui.Inline();
+            row.Margin = new Padding(0, 0, 0, 2);
+            row.Controls.Add(Ui.Dot(color));
+            row.Controls.Add(new Label { Text = text, AutoSize = true, ForeColor = Ui.Text, Margin = new Padding(0, 2, 0, 0) });
+            legend.Controls.Add(row);
+        }
+        legend.Controls.Add(Ui.Hint("A faded icon means sharing is switched off."));
 
-        tab.Controls.Add(layout);
-        return tab;
+        Fill(page,
+            Ui.SectionHeading("This computer", first: true), identity,
+            Ui.SectionHeading("Startup"), startup,
+            Ui.SectionHeading("Hotkey"), hotkey,
+            Ui.SectionHeading("Clipboard"), clipboard,
+            Ui.SectionHeading("Display"), display,
+            Ui.SectionHeading("Tray icon"), legend);
+        return page;
     }
 
-    private TabPage CreateNetworkTab()
+    // ------------------------------------------------------------------ Network
+
+    private Panel CreateNetworkPage()
     {
-        var tab = new TabPage("Network");
-        tab.Padding = new Padding(10);
+        var page = Page();
 
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 7
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-        var row = 0;
-
-        // Pairing code
-        layout.Controls.Add(new Label { Text = "Pairing code:", AutoSize = true, Margin = new Padding(3, 8, 3, 0) }, 0, row);
-        var pairingPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true };
-        pairingPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        pairingPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        pairingPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _pairingCodeTextBox = new TextBox { Dock = DockStyle.Fill, Font = new Font("Consolas", 11), CharacterCasing = CharacterCasing.Upper };
-        pairingPanel.Controls.Add(_pairingCodeTextBox, 0, 0);
-        var copyCodeButton = new Button { Text = "Copy", AutoSize = true };
+        var pairing = Ui.Stack();
+        var codeRow = Ui.Inline();
+        _pairingCodeTextBox = Ui.TextBox(230);
+        _pairingCodeTextBox.Font = Ui.Mono;
+        _pairingCodeTextBox.CharacterCasing = CharacterCasing.Upper;
+        codeRow.Controls.Add(_pairingCodeTextBox);
+        var copyCodeButton = Ui.Button("Copy");
+        copyCodeButton.Margin = new Padding(Ui.Gap, 3, 0, 3);
         copyCodeButton.Click += (s, e) => { try { Clipboard.SetText(_pairingCodeTextBox.Text); } catch { } };
-        pairingPanel.Controls.Add(copyCodeButton, 1, 0);
-        var newCodeButton = new Button { Text = "New", AutoSize = true };
+        codeRow.Controls.Add(copyCodeButton);
+        var newCodeButton = Ui.Button("Generate new");
+        newCodeButton.Margin = new Padding(Ui.Gap, 3, 0, 3);
         newCodeButton.Click += (s, e) =>
         {
             if (MessageBox.Show(this, "Generate a new pairing code? Every other machine will need the new code before it can connect again.",
                     "RoboMouse", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                _pairingCodeTextBox.Text = RoboMouse.Core.Network.SecureChannel.GeneratePairingCode();
+                _pairingCodeTextBox.Text = SecureChannel.GeneratePairingCode();
         };
-        pairingPanel.Controls.Add(newCodeButton, 2, 0);
-        layout.Controls.Add(pairingPanel, 1, row++);
+        codeRow.Controls.Add(newCodeButton);
+        pairing.Controls.Add(codeRow);
+        pairing.Controls.Add(Ui.Hint(
+            "Enter the same code on every machine. It authenticates peers and encrypts all traffic; a machine with a " +
+            "different code cannot connect. Existing connections keep their session until they reconnect.", 480));
 
-        layout.Controls.Add(new Label(), 0, row);
-        layout.Controls.Add(new Label
-        {
-            Text = "Enter the same code on every machine. It authenticates peers and encrypts all traffic;\n" +
-                   "a machine with a different code cannot connect. Existing connections keep their session until they reconnect.",
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Margin = new Padding(3, 0, 3, 10)
-        }, 1, row++);
+        var ports = Ui.FormGrid();
+        _portNumeric = Ui.Number(1024, 65535);
+        Ui.Row(ports, "Listen port", _portNumeric);
+        _discoveryPortNumeric = Ui.Number(1024, 65535);
+        Ui.Row(ports, "Discovery port", _discoveryPortNumeric);
+        var idTextBox = Ui.TextBox(300);
+        idTextBox.Text = _settings.MachineId;
+        idTextBox.ReadOnly = true;
+        idTextBox.BackColor = Ui.Window;
+        idTextBox.ForeColor = Ui.Muted;
+        Ui.Row(ports, "Machine ID", idTextBox);
+        Ui.Row(ports, "", Ui.Hint("Port changes take effect after RoboMouse is restarted."));
 
-        // Local port
-        layout.Controls.Add(new Label { Text = "Listen Port:", AutoSize = true }, 0, row);
-        _portNumeric = new NumericUpDown
-        {
-            Minimum = 1024,
-            Maximum = 65535,
-            Width = 100
-        };
-        layout.Controls.Add(_portNumeric, 1, row++);
-
-        // Discovery port
-        layout.Controls.Add(new Label { Text = "Discovery Port:", AutoSize = true }, 0, row);
-        _discoveryPortNumeric = new NumericUpDown
-        {
-            Minimum = 1024,
-            Maximum = 65535,
-            Width = 100
-        };
-        layout.Controls.Add(_discoveryPortNumeric, 1, row++);
-
-        // Machine ID (read-only)
-        layout.Controls.Add(new Label { Text = "Machine ID:", AutoSize = true }, 0, row);
-        var idTextBox = new TextBox
-        {
-            Text = _settings.MachineId,
-            ReadOnly = true,
-            Dock = DockStyle.Fill,
-            BackColor = SystemColors.Control
-        };
-        layout.Controls.Add(idTextBox, 1, row++);
-
-        // Info label
-        var infoLabel = new Label
-        {
-            Text = "Note: Port changes require restart to take effect.",
-            AutoSize = true,
-            ForeColor = Color.Gray
-        };
-        layout.Controls.Add(infoLabel, 0, row++);
-        layout.SetColumnSpan(infoLabel, 2);
-
-        // Firewall
-        layout.Controls.Add(new Label { Text = "Firewall:", AutoSize = true, Margin = new Padding(0, 12, 0, 0) }, 0, row);
-        var firewallPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown, Margin = new Padding(0, 8, 0, 0) };
-        var firewallButton = new Button { Text = "Allow RoboMouse through Windows Firewall...", AutoSize = true };
+        var firewall = Ui.Stack();
+        var firewallButton = Ui.Button("Allow RoboMouse through Windows Firewall…");
         firewallButton.Click += OnFirewallClick;
-        firewallPanel.Controls.Add(firewallButton);
-        firewallPanel.Controls.Add(new Label
-        {
-            Text = "Adds inbound rules for the ports above from any address, on all network profiles.\n" +
-                   "Needed when the other machine is on a different subnet: the rule Windows creates\n" +
-                   "automatically is often limited to the local subnet. Requires administrator approval.",
-            AutoSize = true,
-            ForeColor = Color.Gray
-        });
-        firewallPanel.Controls.Add(new Label
-        {
-            Text = "Automatic discovery uses broadcast and never crosses subnets; add such peers by IP.",
-            AutoSize = true,
-            ForeColor = Color.Gray
-        });
-        layout.Controls.Add(firewallPanel, 1, row++);
+        firewall.Controls.Add(firewallButton);
+        firewall.Controls.Add(Ui.Hint(
+            "Adds inbound rules for the ports above from any address, on all network profiles. Needed when the other " +
+            "machine is on a different subnet: the rule Windows creates automatically is often limited to the local " +
+            "subnet. Requires administrator approval.", 480));
+        firewall.Controls.Add(Ui.Hint("Automatic discovery uses broadcast and never crosses subnets; add such peers by IP address.", 480));
 
-        tab.Controls.Add(layout);
-        return tab;
+        Fill(page,
+            Ui.SectionHeading("Pairing code", first: true), pairing,
+            Ui.SectionHeading("Ports"), ports,
+            Ui.SectionHeading("Firewall"), firewall);
+        return page;
     }
 
     private void OnFirewallClick(object? sender, EventArgs e)
@@ -341,145 +443,115 @@ public partial class SettingsForm : Form
         }
     }
 
-    private TabPage CreatePeersTab()
+    // ------------------------------------------------------------------ Peers
+
+    private Panel CreatePeersPage()
     {
-        var tab = new TabPage("Configured Peers");
-        tab.Padding = new Padding(10);
+        var page = Page();
 
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 5
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
+        // Configured peers: the list takes the spare height, everything else is auto-sized.
+        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, Margin = new Padding(0) };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // heading
+        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 62)); // peers list
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // toolbar
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // hint
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // discovered heading
+        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 38)); // discovered list
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // discovered toolbar
 
-        _peersList = new ListView
-        {
-            Dock = DockStyle.Fill,
-            View = View.Details,
-            FullRowSelect = true,
-            MultiSelect = false,
-            HideSelection = false
-        };
-        _peersList.Columns.Add("Name", 110);
-        _peersList.Columns.Add("Address", 120);
-        _peersList.Columns.Add("Position", 60);
-        _peersList.Columns.Add("Status", 100);
+        var heading = Ui.SectionHeading("Configured peers", first: true);
+        grid.Controls.Add(heading, 0, 0);
+
+        _peersList = Ui.List();
+        _peersList.CheckBoxes = true;
+        _peersList.Columns.Add("Name", 170);
+        _peersList.Columns.Add("Address", 150);
+        _peersList.Columns.Add("Position", 80);
+        _peersList.Columns.Add("Status", 150);
         _peersList.SelectedIndexChanged += (s, e) => UpdatePeerButtons();
         _peersList.DoubleClick += OnEditPeerClick;
-        layout.Controls.Add(_peersList, 0, 0);
+        _peersList.ItemCheck += OnPeerItemCheck;
+        _peersList.Resize += (s, e) => StretchLastColumn(_peersList);
+        grid.Controls.Add(_peersList, 0, 1);
 
-        var buttonPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown
-        };
-
-        var addButton = new Button { Text = "Add...", Width = 110 };
+        var toolbar = Ui.Inline();
+        toolbar.Margin = new Padding(0, Ui.Gap, 0, 0);
+        var addButton = Ui.Button("Add…");
         addButton.Click += OnAddPeerClick;
-        buttonPanel.Controls.Add(addButton);
-
-        _editButton = new Button { Text = "Edit...", Width = 110 };
+        _editButton = Ui.Button("Edit…");
         _editButton.Click += OnEditPeerClick;
-        buttonPanel.Controls.Add(_editButton);
-
-        _removeButton = new Button { Text = "Remove", Width = 110 };
+        _enableButton = Ui.Button("Disable");
+        _enableButton.Click += OnToggleEnabledClick;
+        _removeButton = Ui.DangerButton("Remove");
         _removeButton.Click += OnRemovePeerClick;
-        buttonPanel.Controls.Add(_removeButton);
+        foreach (var b in new[] { addButton, _editButton, _enableButton, _removeButton })
+            toolbar.Controls.Add(b);
+        grid.Controls.Add(toolbar, 0, 2);
 
-        buttonPanel.Controls.Add(new Label { Height = 8 });
+        grid.Controls.Add(Ui.Hint("Untick a peer to switch it off: it keeps its settings but is never connected to and cannot take control of this screen. " +
+                                  "Change which edge a peer sits on under Layout, or by editing it.", 560), 0, 3);
 
-        _testButton = new Button { Text = "Test Connection", Width = 110 };
-        _testButton.Click += OnTestPeerClick;
-        buttonPanel.Controls.Add(_testButton);
+        grid.Controls.Add(Ui.SectionHeading("Found on this network"), 0, 4);
 
-        _connectButton = new Button { Text = "Connect", Width = 110 };
-        _connectButton.Click += OnConnectPeerClick;
-        buttonPanel.Controls.Add(_connectButton);
-
-        buttonPanel.Controls.Add(new Label { Height = 8 });
-
-        var layoutButton = new Button { Text = "Screen Layout...", Width = 110 };
-        layoutButton.Click += (s, e) =>
-        {
-            using var form = new ScreenLayoutForm(_settings, _service);
-            form.ShowDialog(this);
-            RefreshPeersList();
-        };
-        buttonPanel.Controls.Add(layoutButton);
-
-        layout.Controls.Add(buttonPanel, 1, 0);
-
-        // Quick position change
-        var positionPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
-        positionPanel.Controls.Add(new Label { Text = "Selected peer is:", AutoSize = true, Margin = new Padding(0, 6, 6, 0) });
-        _positionCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 };
-        foreach (var position in PeerPositions.All)
-            _positionCombo.Items.Add(new PositionChoice(position));
-        _positionCombo.SelectedIndexChanged += OnQuickPositionChanged;
-        positionPanel.Controls.Add(_positionCombo);
-        positionPanel.Controls.Add(new Label { Text = "of this screen", AutoSize = true, Margin = new Padding(6, 6, 0, 0) });
-        layout.Controls.Add(positionPanel, 0, 1);
-        layout.SetColumnSpan(positionPanel, 2);
-
-        _peerHintLabel = new Label
-        {
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Margin = new Padding(0, 4, 0, 0),
-            Text = "Position changes apply immediately. Peers on another subnet must be added by IP."
-        };
-        layout.Controls.Add(_peerHintLabel, 0, 2);
-        layout.SetColumnSpan(_peerHintLabel, 2);
-
-        // Discovered peers (same subnet only)
-        layout.Controls.Add(new Label
-        {
-            Text = "Found on this network (not yet configured):",
-            AutoSize = true,
-            Margin = new Padding(0, 10, 0, 2)
-        }, 0, 3);
-        layout.SetColumnSpan(layout.GetControlFromPosition(0, 3)!, 2);
-
-        _discoveredList = new ListView
-        {
-            Dock = DockStyle.Fill,
-            View = View.Details,
-            FullRowSelect = true,
-            MultiSelect = false,
-            HideSelection = false
-        };
-        _discoveredList.Columns.Add("Name", 140);
+        _discoveredList = Ui.List();
+        _discoveredList.Columns.Add("Name", 170);
         _discoveredList.Columns.Add("Address", 150);
-        _discoveredList.Columns.Add("Screen", 90);
+        _discoveredList.Columns.Add("Screen", 110);
         _discoveredList.SelectedIndexChanged += (s, e) => _addDiscoveredButton.Enabled = _discoveredList.SelectedItems.Count > 0;
         _discoveredList.DoubleClick += OnAddDiscoveredClick;
-        layout.Controls.Add(_discoveredList, 0, 4);
+        _discoveredList.Resize += (s, e) => StretchLastColumn(_discoveredList);
+        grid.Controls.Add(_discoveredList, 0, 5);
 
-        var discoveredButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown };
-        _addDiscoveredButton = new Button { Text = "Add...", Width = 110, Enabled = false };
+        var discoveredBar = Ui.Inline();
+        discoveredBar.Margin = new Padding(0, Ui.Gap, 0, 0);
+        _addDiscoveredButton = Ui.Button("Add selected…");
+        _addDiscoveredButton.Enabled = false;
         _addDiscoveredButton.Click += OnAddDiscoveredClick;
-        discoveredButtons.Controls.Add(_addDiscoveredButton);
-        layout.Controls.Add(discoveredButtons, 1, 4);
+        discoveredBar.Controls.Add(_addDiscoveredButton);
+        discoveredBar.Controls.Add(Ui.Hint("Machines running RoboMouse on this subnet that are not configured yet. Peers elsewhere must be added by IP address."));
+        grid.Controls.Add(discoveredBar, 0, 6);
 
-        tab.Controls.Add(layout);
+        page.Controls.Add(grid);
+        return page;
+    }
 
-        _statusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
-        _statusTimer.Tick += (s, e) =>
-        {
-            RefreshPeerStatus();
-            RefreshDiscoveredList();
-        };
-        _statusTimer.Start();
+    private static Control Spacer() => new Panel { Width = 12, Height = 1, Margin = new Padding(0) };
 
-        return tab;
+    // ------------------------------------------------------------------ Layout
+
+    private Panel CreateLayoutPage()
+    {
+        var page = Page();
+
+        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = new Padding(0) };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        grid.Controls.Add(Ui.SectionHeading("Screen layout", first: true), 0, 0);
+        grid.Controls.Add(Ui.Hint("Drag a peer screen to the edge of this screen where that computer sits. Its position along the edge is kept too. " +
+                                  "Faded screens are disabled peers. Changes are applied when you click Save.", 560), 0, 1);
+
+        _layoutPanel = new ScreenLayoutPanel(_settings) { Dock = DockStyle.Fill, Margin = new Padding(0, Ui.Gap, 0, 0) };
+        grid.Controls.Add(_layoutPanel, 0, 2);
+
+        page.Controls.Add(grid);
+        return page;
+    }
+
+    private static void StretchLastColumn(ListView list)
+    {
+        if (list.Columns.Count == 0)
+            return;
+        var used = 0;
+        for (var i = 0; i < list.Columns.Count - 1; i++)
+            used += list.Columns[i].Width;
+        var last = list.Columns[^1];
+        var target = list.ClientSize.Width - used - 4;
+        if (target > 60 && last.Width != target)
+            last.Width = target;
     }
 
     private void RefreshDiscoveredList()
@@ -507,7 +579,7 @@ public partial class SettingsForm : Form
         {
             var item = new ListViewItem(peer.MachineName) { Tag = peer };
             item.SubItems.Add($"{peer.Address}:{peer.Port}");
-            item.SubItems.Add($"{peer.ScreenWidth}x{peer.ScreenHeight}");
+            item.SubItems.Add($"{peer.ScreenWidth} × {peer.ScreenHeight}");
             _discoveredList.Items.Add(item);
             if (peer.MachineId == selectedId)
                 item.Selected = true;
@@ -541,6 +613,9 @@ public partial class SettingsForm : Form
         RefreshPeersList();
         RefreshDiscoveredList();
 
+        if (!dialog.PeerConfig.Enabled)
+            return;
+
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
@@ -560,11 +635,12 @@ public partial class SettingsForm : Form
     private void RefreshPeersList()
     {
         var selected = SelectedPeer;
+        _suppressItemCheck = true;
         _peersList.BeginUpdate();
         _peersList.Items.Clear();
         foreach (var peer in _settings.Peers)
         {
-            var item = new ListViewItem(peer.Name) { Tag = peer };
+            var item = new ListViewItem(peer.Name) { Tag = peer, Checked = peer.Enabled };
             item.SubItems.Add($"{peer.Address}:{peer.Port}");
             item.SubItems.Add(PeerPositions.Describe(peer.Position));
             item.SubItems.Add(string.Empty);
@@ -573,6 +649,9 @@ public partial class SettingsForm : Form
                 item.Selected = true;
         }
         _peersList.EndUpdate();
+        _suppressItemCheck = false;
+        StretchLastColumn(_peersList);
+        _layoutPanel?.Reload();
         RefreshPeerStatus();
         UpdatePeerButtons();
     }
@@ -588,23 +667,33 @@ public partial class SettingsForm : Form
                 continue;
 
             var connection = _service.GetConnection(peer.Id);
-            var status = connection == null
-                ? "Not connected"
-                : connection.RoundTripMs >= 0 ? $"Connected, {connection.RoundTripMs} ms" : "Connected";
+            string status;
+            Color color;
+            if (!peer.Enabled) { status = "Disabled"; color = Ui.Grey; }
+            else if (connection == null) { status = "Not connected"; color = Ui.Muted; }
+            else if (connection.RoundTripMs >= 0) { status = $"Connected · {connection.RoundTripMs} ms"; color = Ui.Green; }
+            else { status = "Connected"; color = Ui.Green; }
 
             if (item.SubItems[3].Text != status)
             {
+                item.UseItemStyleForSubItems = false;
                 item.SubItems[3].Text = status;
-                item.ForeColor = connection == null ? SystemColors.GrayText : SystemColors.WindowText;
+                item.SubItems[3].ForeColor = color;
+                item.ForeColor = peer.Enabled ? Ui.Text : Ui.Grey;
+                foreach (ListViewItem.ListViewSubItem sub in item.SubItems)
+                    if (sub != item.SubItems[3])
+                        sub.ForeColor = item.ForeColor;
             }
             var position = PeerPositions.Describe(peer.Position);
             if (item.SubItems[2].Text != position)
                 item.SubItems[2].Text = position;
+            if (item.Checked != peer.Enabled)
+            {
+                _suppressItemCheck = true;
+                item.Checked = peer.Enabled;
+                _suppressItemCheck = false;
+            }
         }
-
-        var selected = SelectedPeer;
-        if (selected != null)
-            _connectButton.Text = _service.IsPeerConnected(selected.Id) ? "Disconnect" : "Connect";
     }
 
     private void UpdatePeerButtons()
@@ -613,97 +702,48 @@ public partial class SettingsForm : Form
         var has = peer != null;
         _editButton.Enabled = has;
         _removeButton.Enabled = has;
-        _testButton.Enabled = has;
-        _connectButton.Enabled = has;
-        _positionCombo.Enabled = has;
-
-        _suppressPositionChange = true;
-        _positionCombo.SelectedIndex = peer == null ? -1 : Array.IndexOf(PeerPositions.All, peer.Position);
-        _suppressPositionChange = false;
-
-        if (peer != null)
-            _connectButton.Text = _service.IsPeerConnected(peer.Id) ? "Disconnect" : "Connect";
+        _enableButton.Enabled = has;
+        _enableButton.Text = peer is { Enabled: false } ? "Enable" : "Disable";
     }
 
-    private void OnQuickPositionChanged(object? sender, EventArgs e)
+    private void OnPeerItemCheck(object? sender, ItemCheckEventArgs e)
     {
-        if (_suppressPositionChange || SelectedPeer is not PeerConfig peer || _positionCombo.SelectedItem is not PositionChoice choice)
+        if (_suppressItemCheck)
             return;
-
-        if (!PeerPositions.TrySet(_settings, peer, choice.Position, this))
-        {
-            // Declined swap or no change: put the combo back.
-            _suppressPositionChange = true;
-            _positionCombo.SelectedIndex = Array.IndexOf(PeerPositions.All, peer.Position);
-            _suppressPositionChange = false;
-            return;
-        }
-
-        RefreshPeersList();
+        if (_peersList.Items[e.Index].Tag is PeerConfig peer)
+            _ = SetPeerEnabledAsync(peer, e.NewValue == CheckState.Checked);
     }
 
-    private async void OnTestPeerClick(object? sender, EventArgs e)
+    private void OnToggleEnabledClick(object? sender, EventArgs e)
     {
-        if (SelectedPeer is not PeerConfig peer)
-            return;
+        if (SelectedPeer is PeerConfig peer)
+            _ = SetPeerEnabledAsync(peer, !peer.Enabled);
+    }
 
-        _testButton.Enabled = false;
-        _testButton.Text = "Testing...";
+    private async Task SetPeerEnabledAsync(PeerConfig peer, bool enabled)
+    {
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
-            var result = await _service.TestConnectionAsync(peer, cts.Token);
-            MessageBox.Show(this, result.Summary, $"Connection test: {peer.Name}",
-                MessageBoxButtons.OK, result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            await _service.SetPeerEnabledAsync(peer, enabled);
         }
-        finally
+        catch (Exception ex)
         {
-            _testButton.Text = "Test Connection";
+            MessageBox.Show(this, $"Could not {(enabled ? "enable" : "disable")} {peer.Name}: {ex.Message}", "RoboMouse",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        if (!IsDisposed)
+        {
+            RefreshPeerStatus();
             UpdatePeerButtons();
         }
     }
 
-    private async void OnConnectPeerClick(object? sender, EventArgs e)
+    private sealed record HighlightChoice(EdgeHighlightStyle Style, string Text)
     {
-        if (SelectedPeer is not PeerConfig peer)
-            return;
-
-        _connectButton.Enabled = false;
-        try
-        {
-            if (_service.IsPeerConnected(peer.Id))
-            {
-                await _service.DisconnectFromPeerAsync(peer.Id);
-            }
-            else
-            {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-                await _service.ConnectToPeerAsync(peer, cts.Token);
-                _settings.Save();
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            MessageBox.Show(this, $"Connecting to {peer.Address}:{peer.Port} timed out. Use Test Connection for details.",
-                "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Could not connect to {peer.Name}: {ex.Message}", "RoboMouse",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            RefreshPeersList();
-        }
+        public override string ToString() => Text;
     }
 
-    private class PositionChoice
-    {
-        public ScreenPosition Position { get; }
-        public PositionChoice(ScreenPosition position) => Position = position;
-        public override string ToString() => PeerPositions.Describe(Position);
-    }
+    // ------------------------------------------------------------------ load / save
 
     private void LoadSettings()
     {
@@ -713,7 +753,7 @@ public partial class SettingsForm : Form
         _pairingCodeTextBox.Text = _settings.PairingCode;
         _clipboardEnabledCheck.Checked = _settings.Clipboard.Enabled;
         _shareFilesCheck.Checked = _settings.Clipboard.SyncFiles;
-        _borderHighlightCheck.Checked = _settings.ShowBorderHighlight;
+        _highlightCombo.SelectedIndex = Math.Max(0, _highlightCombo.Items.Cast<HighlightChoice>().ToList().FindIndex(c => c.Style == _settings.EdgeHighlight));
 #if DEBUG
         _debugPanelCheck.Checked = _settings.DebugPanelEnabled;
 #endif
@@ -721,6 +761,7 @@ public partial class SettingsForm : Form
         _startMinimizedCheck.Checked = _settings.StartMinimized;
         _hotkeyTextBox.Text = _settings.ToggleHotkey ?? "";
 
+        RefreshStatus();
         RefreshPeersList();
     }
 
@@ -747,13 +788,14 @@ public partial class SettingsForm : Form
         _settings.DiscoveryPort = (int)_discoveryPortNumeric.Value;
         _settings.Clipboard.Enabled = _clipboardEnabledCheck.Checked;
         _settings.Clipboard.SyncFiles = _shareFilesCheck.Checked;
-        _settings.ShowBorderHighlight = _borderHighlightCheck.Checked;
+        _settings.EdgeHighlight = (_highlightCombo.SelectedItem as HighlightChoice)?.Style ?? EdgeHighlightStyle.Fade;
 #if DEBUG
         _settings.DebugPanelEnabled = _debugPanelCheck.Checked;
 #endif
         _settings.StartWithWindows = _startWithWindowsCheck.Checked;
         _settings.StartMinimized = _startMinimizedCheck.Checked;
         _settings.ToggleHotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox.Text) ? null : _hotkeyTextBox.Text;
+        _layoutPanel.SaveLayout();
 
         _settings.Save();
         _service.ApplyClipboardSetting();
@@ -779,10 +821,19 @@ public partial class SettingsForm : Form
     {
         if (SelectedPeer is PeerConfig peer)
         {
+            var wasEnabled = peer.Enabled;
             using var dialog = new PeerSetupForm(peer, _service, _settings);
             if (dialog.ShowDialog(this) == DialogResult.OK)
             {
                 _settings.Save();
+                if (wasEnabled != peer.Enabled)
+                {
+                    // The dialog wrote the flag directly; put it back and go through the service so the
+                    // connection follows the new state.
+                    var wanted = peer.Enabled;
+                    peer.Enabled = wasEnabled;
+                    _ = SetPeerEnabledAsync(peer, wanted);
+                }
                 RefreshPeersList();
             }
         }
@@ -792,6 +843,8 @@ public partial class SettingsForm : Form
     {
         if (SelectedPeer is PeerConfig peer)
         {
+            if (MessageBox.Show(this, $"Remove {peer.Name}?", "RoboMouse", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
             if (_service.IsPeerConnected(peer.Id))
             {
                 try { await _service.DisconnectFromPeerAsync(peer.Id); } catch { }

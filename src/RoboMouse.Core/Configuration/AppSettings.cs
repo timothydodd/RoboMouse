@@ -80,9 +80,21 @@ public class AppSettings
     public bool DebugPanelEnabled { get; set; } = false;
 
     /// <summary>
-    /// Whether to flash a border around the screen when the mouse arrives on it.
+    /// Visual cue shown when the mouse arrives on this screen from another machine.
     /// </summary>
-    public bool ShowBorderHighlight { get; set; } = true;
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public EdgeHighlightStyle EdgeHighlight { get; set; } = EdgeHighlightStyle.Fade;
+
+    /// <summary>
+    /// Legacy on/off switch for the highlight, kept so an old settings file that turned it off
+    /// still maps to <see cref="EdgeHighlightStyle.None"/>. Never written.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ShowBorderHighlight
+    {
+        get => null;
+        set { if (value == false) EdgeHighlight = EdgeHighlightStyle.None; }
+    }
 
     /// <summary>
     /// Loads settings from the default configuration file.

@@ -23,6 +23,7 @@ public partial class PeerSetupForm : Form
     private NumericUpDown _offsetYNumeric = null!;
     private Button _testButton = null!;
     private Label _testResultLabel = null!;
+    private CheckBox _enabledCheck = null!;
 
     public PeerSetupForm(PeerConfig? existingPeer, RoboMouseService? service = null, AppSettings? settings = null)
     {
@@ -39,72 +40,52 @@ public partial class PeerSetupForm : Form
 
     private void InitializeComponent()
     {
-        Text = PeerConfig == null ? "Add Peer" : "Edit Peer";
-        Size = new Size(420, 360);
+        Ui.Style(this);
+        Text = PeerConfig == null ? "Add peer" : "Edit peer";
+        Icon = Ui.AppIcon();
+        ClientSize = new Size(460, 440);
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
+        ShowInTaskbar = false;
 
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(10),
-            ColumnCount = 2,
-            RowCount = 9
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(Ui.Pad) };
 
-        var row = 0;
+        var grid = Ui.FormGrid(110);
+        grid.Dock = DockStyle.Top;
 
-        // Name
-        layout.Controls.Add(new Label { Text = "Name:", AutoSize = true }, 0, row);
-        _nameTextBox = new TextBox { Dock = DockStyle.Fill };
-        layout.Controls.Add(_nameTextBox, 1, row++);
+        _nameTextBox = Ui.TextBox();
+        Ui.Row(grid, "Name", _nameTextBox);
 
-        // Address + Test
-        layout.Controls.Add(new Label { Text = "Address:", AutoSize = true }, 0, row);
-        var addressPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
-        addressPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        addressPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _addressTextBox = new TextBox { Dock = DockStyle.Fill };
-        addressPanel.Controls.Add(_addressTextBox, 0, 0);
-        _testButton = new Button { Text = "Test", Width = 60, Enabled = _service != null };
+        var addressRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, Margin = new Padding(0) };
+        addressRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        addressRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _addressTextBox = Ui.TextBox();
+        addressRow.Controls.Add(_addressTextBox, 0, 0);
+        _testButton = Ui.Button("Test");
+        _testButton.Enabled = _service != null;
+        _testButton.Margin = new Padding(Ui.Gap, 3, 0, 3);
         _testButton.Click += OnTestClick;
-        addressPanel.Controls.Add(_testButton, 1, 0);
-        layout.Controls.Add(addressPanel, 1, row++);
+        addressRow.Controls.Add(_testButton, 1, 0);
+        Ui.Row(grid, "Address", addressRow);
 
-        // Port
-        layout.Controls.Add(new Label { Text = "Port:", AutoSize = true }, 0, row);
-        _portNumeric = new NumericUpDown
-        {
-            Minimum = 1024,
-            Maximum = 65535,
-            Value = 24800,
-            Width = 100
-        };
-        layout.Controls.Add(_portNumeric, 1, row++);
+        _portNumeric = Ui.Number(1024, 65535);
+        _portNumeric.Value = 24800;
+        Ui.Row(grid, "Port", _portNumeric);
 
-        // Test result
-        layout.Controls.Add(new Label(), 0, row);
         _testResultLabel = new Label
         {
-            AutoSize = false,
-            Dock = DockStyle.Fill,
-            Height = 36,
-            ForeColor = Color.Gray,
+            AutoSize = true,
+            MaximumSize = new Size(300, 0),
+            Font = Ui.Small,
+            ForeColor = Ui.Muted,
+            Margin = new Padding(0, 2, 0, Ui.Gap),
             Text = _service != null ? "Click Test to check the machine answers on this address and port." : ""
         };
-        layout.Controls.Add(_testResultLabel, 1, row++);
+        Ui.Row(grid, "", _testResultLabel);
 
-        // Position
-        layout.Controls.Add(new Label { Text = "Position:", AutoSize = true }, 0, row);
-        _positionCombo = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 150
-        };
+        _positionCombo = Ui.Combo(170);
         _positionCombo.Items.AddRange(new object[]
         {
             new PositionItem(ScreenPosition.Left, "Left of my screen"),
@@ -113,46 +94,34 @@ public partial class PeerSetupForm : Form
             new PositionItem(ScreenPosition.Bottom, "Below my screen")
         });
         _positionCombo.SelectedIndex = 1; // Default to Right
-        layout.Controls.Add(_positionCombo, 1, row++);
+        Ui.Row(grid, "Position", _positionCombo);
 
-        // Offset X
-        layout.Controls.Add(new Label { Text = "Offset X:", AutoSize = true }, 0, row);
-        _offsetXNumeric = new NumericUpDown
-        {
-            Minimum = -10000,
-            Maximum = 10000,
-            Value = 0,
-            Width = 100
-        };
-        layout.Controls.Add(_offsetXNumeric, 1, row++);
+        var offsets = Ui.Inline();
+        _offsetXNumeric = Ui.Number(-10000, 10000, 90);
+        _offsetYNumeric = Ui.Number(-10000, 10000, 90);
+        offsets.Controls.Add(Ui.Label("X"));
+        offsets.Controls.Add(_offsetXNumeric);
+        var yLabel = Ui.Label("Y");
+        yLabel.Margin = new Padding(Ui.Gap + 4, 5, Ui.Gap, 0);
+        offsets.Controls.Add(yLabel);
+        offsets.Controls.Add(_offsetYNumeric);
+        Ui.Row(grid, "Offset", offsets);
+        Ui.Row(grid, "", Ui.Hint("Pixels to shift the other screen along the shared edge. Easier to set by dragging in Screen layout.", 300));
 
-        // Offset Y
-        layout.Controls.Add(new Label { Text = "Offset Y:", AutoSize = true }, 0, row);
-        _offsetYNumeric = new NumericUpDown
-        {
-            Minimum = -10000,
-            Maximum = 10000,
-            Value = 0,
-            Width = 100
-        };
-        layout.Controls.Add(_offsetYNumeric, 1, row++);
+        _enabledCheck = Ui.Check("Enabled");
+        Ui.Row(grid, "", _enabledCheck);
+        Ui.Row(grid, "", Ui.Hint("A disabled peer keeps its settings but is never connected to and cannot take control of this screen.", 300));
 
-        // Buttons
-        var buttonPanel = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.RightToLeft,
-            Dock = DockStyle.Fill
-        };
+        body.Controls.Add(grid);
 
-        var cancelButton = new Button { Text = "Cancel", Width = 80, DialogResult = DialogResult.Cancel };
-        var okButton = new Button { Text = "OK", Width = 80 };
+        var cancelButton = Ui.Button("Cancel", 100);
+        cancelButton.DialogResult = DialogResult.Cancel;
+        var okButton = Ui.PrimaryButton(PeerConfig == null ? "Add" : "Save", 100);
         okButton.Click += OnOkClick;
 
-        buttonPanel.Controls.Add(cancelButton);
-        buttonPanel.Controls.Add(okButton);
-        layout.Controls.Add(buttonPanel, 1, row++);
-
-        Controls.Add(layout);
+        Controls.Add(body);
+        Controls.Add(Ui.ActionBar(okButton, cancelButton));
+        body.BringToFront();
         AcceptButton = okButton;
         CancelButton = cancelButton;
     }
@@ -164,6 +133,7 @@ public partial class PeerSetupForm : Form
         _portNumeric.Value = peer.Port;
         _offsetXNumeric.Value = peer.OffsetX;
         _offsetYNumeric.Value = peer.OffsetY;
+        _enabledCheck.Checked = peer.Enabled;
 
         for (int i = 0; i < _positionCombo.Items.Count; i++)
         {
@@ -183,13 +153,13 @@ public partial class PeerSetupForm : Form
         var address = _addressTextBox.Text.Trim();
         if (string.IsNullOrEmpty(address))
         {
-            _testResultLabel.ForeColor = Color.DarkOrange;
+            _testResultLabel.ForeColor = Ui.Orange;
             _testResultLabel.Text = "Enter an address first.";
             return;
         }
 
         _testButton.Enabled = false;
-        _testResultLabel.ForeColor = Color.Gray;
+        _testResultLabel.ForeColor = Ui.Muted;
         _testResultLabel.Text = $"Testing {address}:{(int)_portNumeric.Value}...";
 
         try
@@ -199,7 +169,7 @@ public partial class PeerSetupForm : Form
 
             if (result.Success)
             {
-                _testResultLabel.ForeColor = Color.Green;
+                _testResultLabel.ForeColor = Ui.Green;
                 _testResultLabel.Text = $"OK: {result.PeerName} ({result.PeerScreenWidth}x{result.PeerScreenHeight}), round trip {result.RoundTripMs} ms";
 
                 if (string.IsNullOrWhiteSpace(_nameTextBox.Text) && !string.IsNullOrEmpty(result.PeerName))
@@ -207,7 +177,7 @@ public partial class PeerSetupForm : Form
             }
             else
             {
-                _testResultLabel.ForeColor = Color.Firebrick;
+                _testResultLabel.ForeColor = Ui.Red;
                 _testResultLabel.Text = result.Error ?? "Failed.";
             }
         }
@@ -221,14 +191,14 @@ public partial class PeerSetupForm : Form
     {
         if (string.IsNullOrWhiteSpace(_nameTextBox.Text))
         {
-            MessageBox.Show("Please enter a name.", "Validation Error",
+            MessageBox.Show(this, "Please enter a name.", "RoboMouse",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
         if (string.IsNullOrWhiteSpace(_addressTextBox.Text))
         {
-            MessageBox.Show("Please enter an address.", "Validation Error",
+            MessageBox.Show(this, "Please enter an address.", "RoboMouse",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
@@ -261,6 +231,7 @@ public partial class PeerSetupForm : Form
         PeerConfig.Position = position;
         PeerConfig.OffsetX = (int)_offsetXNumeric.Value;
         PeerConfig.OffsetY = (int)_offsetYNumeric.Value;
+        PeerConfig.Enabled = _enabledCheck.Checked;
 
         DialogResult = DialogResult.OK;
         Close();

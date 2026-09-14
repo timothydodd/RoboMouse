@@ -53,6 +53,12 @@ public class PeerConfig
     public int ScreenHeight { get; set; } = 1080;
 
     /// <summary>
+    /// Whether this peer takes part at all. A disabled peer keeps its configuration but is never
+    /// connected to, never accepted when it connects to us, and its edge acts as a normal screen edge.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
     /// Unique identifier for this peer (generated or received).
     /// </summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");

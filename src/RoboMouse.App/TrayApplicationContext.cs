@@ -32,8 +32,9 @@ public class TrayApplicationContext : ApplicationContext
 #if DEBUG
     private DebugPanelForm? _debugPanel;
 #endif
-    private BorderOverlayForm? _borderOverlay;
+    private EdgeHighlightForm? _highlight;
     private bool _wasControllingRemote;
+    private ScreenPosition _lastControlledEdge = ScreenPosition.Right;
 
     public TrayApplicationContext(AppSettings settings)
     {
@@ -135,7 +136,7 @@ public class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>
-    /// Configured peers (click to connect or disconnect; checked when connected), then any machine
+    /// Configured peers (ticked when enabled; click to switch one off or on), then any machine
     /// discovered on the network that is not configured yet (pick an edge to add and connect).
     /// </summary>
     private void UpdatePeersMenu()
@@ -145,16 +146,24 @@ public class TrayApplicationContext : ApplicationContext
         foreach (var peer in _settings.Peers)
         {
             var connection = _service.GetConnection(peer.Id);
-            var detail = connection == null
-                ? "not connected"
-                : connection.RoundTripMs >= 0 ? $"{connection.RoundTripMs} ms" : "connected";
+            var detail = !peer.Enabled
+                ? "disabled"
+                : connection == null
+                    ? "not connected"
+                    : connection.RoundTripMs >= 0 ? $"{connection.RoundTripMs} ms" : "connected";
 
             var item = new ToolStripMenuItem($"{peer.Name}  ({PeerPositions.Describe(peer.Position)}, {detail})")
             {
-                Checked = connection != null,
-                ToolTipText = connection == null ? $"Connect to {peer.Address}:{peer.Port}" : "Disconnect"
+                Checked = peer.Enabled,
+                ToolTipText = peer.Enabled ? "Click to disable this peer" : "Click to enable this peer",
+                ForeColor = connection != null || !peer.Enabled ? SystemColors.ControlText : SystemColors.GrayText
             };
-            item.Click += (s, e) => ToggleConnection(peer);
+            item.Click += async (s, e) =>
+            {
+                try { await _service.SetPeerEnabledAsync(peer, !peer.Enabled); }
+                catch (Exception ex) { SimpleLogger.Log("Peers", $"Toggle {peer.Name}: {ex.Message}"); }
+                OnUi(UpdateStatus);
+            };
             _peersItem.DropDownItems.Add(item);
         }
 
@@ -194,34 +203,6 @@ public class TrayApplicationContext : ApplicationContext
         {
             _peersItem.DropDownItems.Add(new ToolStripMenuItem("No peers configured or found") { Enabled = false });
         }
-    }
-
-    private async void ToggleConnection(PeerConfig peer)
-    {
-        try
-        {
-            if (_service.IsPeerConnected(peer.Id))
-            {
-                await _service.DisconnectFromPeerAsync(peer.Id);
-            }
-            else
-            {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-                await _service.ConnectToPeerAsync(peer, cts.Token);
-                _settings.Save();
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            MessageBox.Show($"Connecting to {peer.Address}:{peer.Port} timed out. Use Test Connection in Settings for details.",
-                "RoboMouse", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Could not connect to {peer.Name}: {ex.Message}", "RoboMouse",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        UpdateStatus();
     }
 
     private async void AddDiscoveredPeer(DiscoveredPeer found, ScreenPosition position)
@@ -315,17 +296,17 @@ public class TrayApplicationContext : ApplicationContext
     {
         UpdateStatus();
 
-        // Flash the border when the mouse arrives on this screen: either a remote took control of it,
-        // or we just came back from controlling a remote.
+        // Mark where the mouse arrived on this screen: either a remote took control of it (it came in
+        // on the entry edge), or we just came back from controlling a remote (it came in on that peer's edge).
+        if (_service.IsControllingRemote && _service.ActivePeer != null)
+            _lastControlledEdge = _service.ActivePeer.Position;
+
         var isLocalAgain = _wasControllingRemote && !_service.IsControllingRemote && !_service.IsControlledByRemote;
-        if (_settings.ShowBorderHighlight && (_service.IsControlledByRemote || isLocalAgain))
+        if (_settings.EdgeHighlight != EdgeHighlightStyle.None && (_service.IsControlledByRemote || isLocalAgain))
         {
-            if (_borderOverlay == null || _borderOverlay.IsDisposed)
-            {
-                _borderOverlay = new BorderOverlayForm();
-            }
-            _borderOverlay.ShowBorder();
-            _borderOverlay.HideBorder(fadeOut: true);
+            if (_highlight == null || _highlight.IsDisposed)
+                _highlight = new EdgeHighlightForm();
+            _highlight.Flash(_settings.EdgeHighlight, _service.IsControlledByRemote ? _service.EntryEdge : _lastControlledEdge);
         }
 
         _wasControllingRemote = _service.IsControllingRemote;
@@ -426,7 +407,7 @@ public class TrayApplicationContext : ApplicationContext
 #if DEBUG
             _debugPanel?.Dispose();
 #endif
-            _borderOverlay?.Dispose();
+            _highlight?.Dispose();
             foreach (var icon in _icons.Values)
                 icon.Dispose();
         }

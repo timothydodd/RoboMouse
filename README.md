@@ -12,7 +12,7 @@ A Windows application that lets you share your mouse and keyboard across multipl
 - **Automatic Peer Discovery** - Computers on the same network find each other automatically via UDP broadcast
 - **Clipboard Synchronization** - Copy text, images or files on one machine, paste on another
 - **Visual Screen Layout Editor** - Drag and drop to arrange your screens
-- **System Tray Application** - Runs quietly in the background; the icon's signal colour shows state (grey = no peers, green = connected, blue = controlling another screen, orange = being controlled)
+- **System Tray Application** - Runs quietly in the background; the icon's border colour shows state (grey = no peers, green = connected, blue = controlling another screen, orange = being controlled, faded = disabled)
 
 ## Requirements
 
@@ -68,13 +68,17 @@ Or build and run the executable directly from `bin/Debug/net10.0-windows/`.
 
 1. Run RoboMouse on each computer you want to share
 2. Right-click the system tray icon to access the menu
-3. Use **Connect to...** to see discovered peers and select their position relative to your screen
+3. Open **Peers** in the tray menu to see machines found on the network and pick which edge of your screen they sit on, or add them by address under **Settings > Peers**
 4. Move your mouse to the configured edge to start controlling the other computer
 5. Move back to the opposite edge to return control to your local machine
 
 ### Screen Layout
 
-Use **Screen Layout...** from the tray menu to visually arrange peer screens by dragging them to the desired position relative to your local screen.
+Use **Screen layout…** under **Settings > Peers** to arrange peer screens by dragging them to the edge of your local screen where that computer sits.
+
+### Disabling a peer
+
+Untick a peer under **Settings > Peers** (or use **Enabled** in its tray submenu) to switch it off without removing it. A disabled peer keeps its settings but is never connected to, cannot take control of your screen, and its edge behaves like a normal screen edge.
 
 ### Settings
 
@@ -125,7 +129,7 @@ pairing code, AES-256-GCM per frame). A machine with a different code cannot con
 nobody on the network can read or inject input.
 
 The code is stored in plain text in `%AppData%\RoboMouse\settings.json`, so protect that
-file as you would a password. Use **New** in Settings to rotate it; other machines then need
+file as you would a password. Use **Generate new** in Settings to rotate it; other machines then need
 the new code.
 
 ## Network Protocol

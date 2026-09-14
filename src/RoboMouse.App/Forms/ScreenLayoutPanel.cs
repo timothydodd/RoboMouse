@@ -1,90 +1,6 @@
-using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
 
 namespace RoboMouse.App.Forms;
-
-/// <summary>
-/// Visual screen layout editor.
-/// </summary>
-public partial class ScreenLayoutForm : Form
-{
-    private readonly AppSettings _settings;
-    private readonly RoboMouseService _service;
-    private readonly ScreenLayoutPanel _layoutPanel;
-
-    public ScreenLayoutForm(AppSettings settings, RoboMouseService service)
-    {
-        _settings = settings;
-        _service = service;
-        _layoutPanel = new ScreenLayoutPanel(settings);
-
-        InitializeComponent();
-    }
-
-    private void InitializeComponent()
-    {
-        Text = "Screen Layout";
-        Size = new Size(800, 600);
-        StartPosition = FormStartPosition.CenterScreen;
-
-        // Instructions
-        var instructionLabel = new Label
-        {
-            Text = "Drag peer screens to position them relative to your local screen. " +
-                   "Click a peer to select it and view/edit its settings.",
-            Dock = DockStyle.Top,
-            Height = 40,
-            Padding = new Padding(10),
-            BackColor = Color.FromArgb(240, 240, 240)
-        };
-        Controls.Add(instructionLabel);
-
-        // Layout panel
-        _layoutPanel.Dock = DockStyle.Fill;
-        _layoutPanel.BackColor = Color.FromArgb(30, 30, 30);
-        Controls.Add(_layoutPanel);
-
-        // Buttons
-        var buttonPanel = new Panel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 50
-        };
-
-        var saveButton = new Button
-        {
-            Text = "Save Layout",
-            Width = 100,
-            Height = 30,
-            Location = new Point(Width - 230, 10)
-        };
-        saveButton.Click += OnSaveClick;
-
-        var closeButton = new Button
-        {
-            Text = "Close",
-            Width = 80,
-            Height = 30,
-            Location = new Point(Width - 110, 10)
-        };
-        closeButton.Click += (s, e) => Close();
-
-        buttonPanel.Controls.Add(saveButton);
-        buttonPanel.Controls.Add(closeButton);
-        Controls.Add(buttonPanel);
-
-        // Bring layout panel to front (above instruction label)
-        _layoutPanel.BringToFront();
-    }
-
-    private void OnSaveClick(object? sender, EventArgs e)
-    {
-        _layoutPanel.SaveLayout();
-        _settings.Save();
-        DialogResult = DialogResult.OK;
-        Close();
-    }
-}
 
 /// <summary>
 /// Custom panel for visual screen layout editing.
@@ -98,24 +14,37 @@ public class ScreenLayoutPanel : Panel
     private ScreenRect? _draggingScreen;
     private Point _dragOffset;
 
-    private const int ScaleFactor = 8; // ScaleFactor down screens for display
+    // Real pixels per canvas pixel. Chosen on each rebuild so the whole arrangement fits the canvas.
+    private int ScaleFactor = 8;
+    private const int CanvasMargin = 36;
 
     public ScreenLayoutPanel(AppSettings settings)
     {
         _settings = settings;
         DoubleBuffered = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
+        BackColor = Color.FromArgb(24, 30, 44);
 
         InitializeScreens();
+    }
+
+    /// <summary>Rebuilds the canvas from the current peer list (after peers are added, edited or removed).</summary>
+    public void Reload()
+    {
+        _selectedScreen = null;
+        _draggingScreen = null;
+        InitializeScreens();
+        Invalidate();
     }
 
     private void InitializeScreens()
     {
         _screens.Clear();
 
-        // Add local screen at center
         // The whole desktop (all monitors), since edges are detected on the virtual screen.
         var localBounds = SystemInformation.VirtualScreen;
+        ScaleFactor = FitScale(localBounds);
+
         _localScreen = new ScreenRect
         {
             Name = "This PC",
@@ -125,7 +54,6 @@ public class ScreenLayoutPanel : Panel
         };
         _screens.Add(_localScreen);
 
-        // Add configured peers
         foreach (var peer in _settings.Peers)
         {
             var peerRect = new ScreenRect
@@ -141,6 +69,35 @@ public class ScreenLayoutPanel : Panel
         }
 
         CenterScreens();
+    }
+
+    /// <summary>
+    /// Smallest scale divisor at which the local screen plus every peer (at its configured edge and
+    /// offset) fits inside the canvas with a margin. Never larger than 1:1.
+    /// </summary>
+    private int FitScale(Rectangle local)
+    {
+        var minX = 0; var minY = 0; var maxX = local.Width; var maxY = local.Height;
+        foreach (var peer in _settings.Peers)
+        {
+            Rectangle r = peer.Position switch
+            {
+                ScreenPosition.Left => new Rectangle(-peer.ScreenWidth, peer.OffsetY, peer.ScreenWidth, peer.ScreenHeight),
+                ScreenPosition.Right => new Rectangle(local.Width, peer.OffsetY, peer.ScreenWidth, peer.ScreenHeight),
+                ScreenPosition.Top => new Rectangle(peer.OffsetX, -peer.ScreenHeight, peer.ScreenWidth, peer.ScreenHeight),
+                _ => new Rectangle(peer.OffsetX, local.Height, peer.ScreenWidth, peer.ScreenHeight)
+            };
+            minX = Math.Min(minX, r.Left); minY = Math.Min(minY, r.Top);
+            maxX = Math.Max(maxX, r.Right); maxY = Math.Max(maxY, r.Bottom);
+        }
+
+        // Leave room on every side so a screen can be dragged to an empty edge.
+        var extentW = (maxX - minX) + local.Width;
+        var extentH = (maxY - minY) + local.Height;
+        var availW = Math.Max(100, Width - CanvasMargin * 2);
+        var availH = Math.Max(100, Height - CanvasMargin * 2);
+        var scale = Math.Max((double)extentW / availW, (double)extentH / availH);
+        return Math.Max(1, (int)Math.Ceiling(scale));
     }
 
     private void PositionPeerScreen(ScreenRect peer, ScreenPosition position, int offsetX, int offsetY)
@@ -219,6 +176,15 @@ public class ScreenLayoutPanel : Panel
     {
         base.OnPaint(e);
         var g = e.Graphics;
+
+        // Dotted grid so the canvas reads as a workspace.
+        using (var dotBrush = new SolidBrush(Color.FromArgb(48, 56, 74)))
+        {
+            for (var y = 12; y < Height; y += 24)
+                for (var x = 12; x < Width; x += 24)
+                    g.FillRectangle(dotBrush, x, y, 2, 2);
+        }
+
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
         foreach (var screen in _screens)
@@ -230,43 +196,66 @@ public class ScreenLayoutPanel : Panel
     private void DrawScreen(Graphics g, ScreenRect screen)
     {
         var rect = screen.DisplayBounds;
+        var disabled = screen.PeerConfig is { Enabled: false };
+        var selected = screen == _selectedScreen;
 
-        // Background
-        Color bgColor;
+        Color fill, edge;
         if (screen.IsLocal)
-            bgColor = Color.FromArgb(40, 100, 160);
-        else if (screen == _selectedScreen)
-            bgColor = Color.FromArgb(100, 140, 180);
+        {
+            fill = Color.FromArgb(30, 100, 230);
+            edge = Color.FromArgb(120, 170, 255);
+        }
+        else if (disabled)
+        {
+            fill = Color.FromArgb(52, 58, 70);
+            edge = Color.FromArgb(90, 98, 112);
+        }
         else
-            bgColor = Color.FromArgb(60, 80, 100);
+        {
+            fill = selected ? Color.FromArgb(70, 96, 140) : Color.FromArgb(56, 72, 104);
+            edge = selected ? Color.White : Color.FromArgb(120, 140, 175);
+        }
 
-        using var brush = new SolidBrush(bgColor);
-        g.FillRectangle(brush, rect);
+        using var path = RoundedRect(rect, 8);
+        using (var brush = new SolidBrush(fill))
+            g.FillPath(brush, path);
+        using (var pen = new Pen(edge, selected ? 2 : 1))
+            g.DrawPath(pen, path);
 
-        // Border
-        var borderColor = screen == _selectedScreen ? Color.White : Color.FromArgb(100, 130, 160);
-        using var pen = new Pen(borderColor, screen == _selectedScreen ? 2 : 1);
-        g.DrawRectangle(pen, rect);
+        // Bezel line to hint "screen"
+        using (var pen = new Pen(Color.FromArgb(40, 255, 255, 255)))
+            g.DrawLine(pen, rect.Left + 10, rect.Top + 6, rect.Right - 10, rect.Top + 6);
 
-        // Label
-        using var font = new Font("Segoe UI", 10, FontStyle.Bold);
-        using var textBrush = new SolidBrush(Color.White);
-        var text = screen.Name;
-        if (screen.IsLocal)
-            text += " (Local)";
-
+        var textColor = disabled ? Color.FromArgb(170, 176, 188) : Color.White;
+        using var font = new Font("Segoe UI Semibold", 10);
+        using var textBrush = new SolidBrush(textColor);
+        var text = screen.IsLocal ? "This PC" : screen.Name;
         var textSize = g.MeasureString(text, font);
         var textX = rect.X + (rect.Width - textSize.Width) / 2;
-        var textY = rect.Y + (rect.Height - textSize.Height) / 2;
+        var textY = rect.Y + (rect.Height - textSize.Height) / 2 - 8;
         g.DrawString(text, font, textBrush, textX, textY);
 
-        // Resolution
-        using var smallFont = new Font("Segoe UI", 8);
-        var resText = $"{screen.OriginalBounds.Width}x{screen.OriginalBounds.Height}";
-        var resSize = g.MeasureString(resText, smallFont);
-        g.DrawString(resText, smallFont, textBrush,
-            rect.X + (rect.Width - resSize.Width) / 2,
+        using var smallFont = new Font("Segoe UI", 8.5f);
+        using var subBrush = new SolidBrush(Color.FromArgb(200, textColor));
+        var sub = $"{screen.OriginalBounds.Width} × {screen.OriginalBounds.Height}";
+        if (disabled)
+            sub += "  ·  disabled";
+        var subSize = g.MeasureString(sub, smallFont);
+        g.DrawString(sub, smallFont, subBrush,
+            rect.X + (rect.Width - subSize.Width) / 2,
             textY + textSize.Height + 2);
+    }
+
+    private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle r, int radius)
+    {
+        var d = radius * 2;
+        var path = new System.Drawing.Drawing2D.GraphicsPath();
+        path.AddArc(r.Left, r.Top, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -410,7 +399,14 @@ public class ScreenLayoutPanel : Panel
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        CenterScreens();
+        if (_draggingScreen != null || Width <= 0 || Height <= 0)
+            return;
+
+        // Keep any unsaved drags, then rebuild at a scale that fits the new size.
+        SaveLayout();
+        var selected = _selectedScreen?.PeerConfig;
+        InitializeScreens();
+        _selectedScreen = _screens.FirstOrDefault(s => s.PeerConfig == selected);
         Invalidate();
     }
 

@@ -105,6 +105,9 @@ public sealed class RoboMouseService : IDisposable
     /// <summary>Whether we are currently being controlled by a remote machine.</summary>
     public bool IsControlledByRemote => _isControlledByRemote;
 
+    /// <summary>The local edge the remote cursor came in on while <see cref="IsControlledByRemote"/>.</summary>
+    public ScreenPosition EntryEdge => _entryEdge;
+
     /// <summary>The currently active peer configuration.</summary>
     public PeerConfig? ActivePeer => _activePeer;
 
@@ -284,7 +287,8 @@ public sealed class RoboMouseService : IDisposable
         lock (_connectionLock)
         {
             candidates = _settings.Peers
-                .Where(p => !string.IsNullOrEmpty(p.Address)
+                .Where(p => p.Enabled
+                            && !string.IsNullOrEmpty(p.Address)
                             && !(_connections.TryGetValue(p.Id, out var c) && c.IsConnected)
                             && !_connectsInFlight.Contains($"{p.Address}:{p.Port}"))
                 .ToList();
@@ -351,7 +355,7 @@ public sealed class RoboMouseService : IDisposable
     /// <summary>Connects to all configured peers that have addresses.</summary>
     public async Task ConnectToConfiguredPeersAsync(CancellationToken ct = default)
     {
-        var peersToConnect = _settings.Peers.Where(p => !string.IsNullOrEmpty(p.Address)).ToList();
+        var peersToConnect = _settings.Peers.Where(p => p.Enabled && !string.IsNullOrEmpty(p.Address)).ToList();
 
         foreach (var peer in peersToConnect)
         {
@@ -499,7 +503,47 @@ public sealed class RoboMouseService : IDisposable
                 return;
         }
 
+        // A peer the user has switched off must not be able to take control of this screen either.
+        var config = _settings.Peers.FirstOrDefault(p => p.Id == connection.PeerId);
+        if (config is { Enabled: false })
+        {
+            SimpleLogger.Log("Accept", $"Refusing connection from disabled peer {connection.PeerName}");
+            connection.Disconnected += (s, e) => connection.Dispose();
+            _ = connection.DisconnectAsync();
+            return;
+        }
+
         AddConnection(connection);
+    }
+
+    /// <summary>
+    /// Turns a configured peer on or off and saves. Disabling drops any live connection to it;
+    /// enabling connects again in the background.
+    /// </summary>
+    public async Task SetPeerEnabledAsync(PeerConfig peer, bool enabled)
+    {
+        if (peer.Enabled == enabled)
+            return;
+
+        peer.Enabled = enabled;
+        _settings.Save();
+
+        if (!enabled)
+        {
+            // Dropping the connection also ends remote control if we were on that screen.
+            await DisconnectFromPeerAsync(peer.Id);
+            return;
+        }
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+            await ConnectToPeerAsync(peer, cts.Token);
+        }
+        catch (Exception ex)
+        {
+            SimpleLogger.Log("Connect", $"Cannot reach {peer.Name} after enabling; will keep retrying. {ex.GetBaseException().Message}");
+        }
     }
 
     /// <summary>Whether a live connection to the given peer exists.</summary>
@@ -642,7 +686,7 @@ public sealed class RoboMouseService : IDisposable
 
     private PeerConfig? GetPeerAtEdge(ScreenPosition edge)
     {
-        var peer = _settings.Peers.FirstOrDefault(p => p.Position == edge);
+        var peer = _settings.Peers.FirstOrDefault(p => p.Position == edge && p.Enabled);
         if (peer == null)
             return null;
 
