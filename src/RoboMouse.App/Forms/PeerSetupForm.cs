@@ -21,6 +21,8 @@ public partial class PeerSetupForm : Form
     private ComboBox _positionCombo = null!;
     private NumericUpDown _offsetXNumeric = null!;
     private NumericUpDown _offsetYNumeric = null!;
+    private TrackBar _speedTrack = null!;
+    private Label _speedLabel = null!;
     private Button _testButton = null!;
     private Label _testResultLabel = null!;
 
@@ -40,7 +42,7 @@ public partial class PeerSetupForm : Form
     private void InitializeComponent()
     {
         Text = PeerConfig == null ? "Add Peer" : "Edit Peer";
-        Size = new Size(420, 360);
+        Size = new Size(420, 430);
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -51,7 +53,7 @@ public partial class PeerSetupForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(10),
             ColumnCount = 2,
-            RowCount = 9
+            RowCount = 10
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -137,6 +139,39 @@ public partial class PeerSetupForm : Form
         };
         layout.Controls.Add(_offsetYNumeric, 1, row++);
 
+        // Speed
+        layout.Controls.Add(new Label { Text = "Mouse speed:", AutoSize = true, Margin = new Padding(3, 8, 3, 0) }, 0, row);
+        var speedPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
+        speedPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        speedPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 50));
+        _speedTrack = new TrackBar
+        {
+            Minimum = 25,     // 0.25x
+            Maximum = 400,    // 4.0x
+            Value = 100,
+            TickFrequency = 25,
+            SmallChange = 5,
+            LargeChange = 25,
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            Height = 32
+        };
+        _speedLabel = new Label { Text = "1.00x", AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
+        _speedTrack.ValueChanged += (s, e) => _speedLabel.Text = $"{_speedTrack.Value / 100.0:0.00}x";
+        speedPanel.Controls.Add(_speedTrack, 0, 0);
+        speedPanel.Controls.Add(_speedLabel, 1, 0);
+        layout.Controls.Add(speedPanel, 1, row++);
+
+        layout.Controls.Add(new Label(), 0, row);
+        layout.Controls.Add(new Label
+        {
+            Text = "1.00x sends motion unchanged; the other machine's own pointer speed applies. Double-click the slider to reset.",
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            MaximumSize = new Size(280, 0)
+        }, 1, row++);
+        _speedTrack.MouseDoubleClick += (s, e) => _speedTrack.Value = 100;
+
         // Buttons
         var buttonPanel = new FlowLayoutPanel
         {
@@ -164,6 +199,8 @@ public partial class PeerSetupForm : Form
         _portNumeric.Value = peer.Port;
         _offsetXNumeric.Value = peer.OffsetX;
         _offsetYNumeric.Value = peer.OffsetY;
+        _speedTrack.Value = Math.Clamp((int)Math.Round(peer.SpeedMultiplier * 100), _speedTrack.Minimum, _speedTrack.Maximum);
+        _speedLabel.Text = $"{_speedTrack.Value / 100.0:0.00}x";
 
         for (int i = 0; i < _positionCombo.Items.Count; i++)
         {
@@ -261,6 +298,7 @@ public partial class PeerSetupForm : Form
         PeerConfig.Position = position;
         PeerConfig.OffsetX = (int)_offsetXNumeric.Value;
         PeerConfig.OffsetY = (int)_offsetYNumeric.Value;
+        PeerConfig.SpeedMultiplier = _speedTrack.Value / 100.0;
 
         DialogResult = DialogResult.OK;
         Close();

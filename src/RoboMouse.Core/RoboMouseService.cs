@@ -44,6 +44,8 @@ public sealed class RoboMouseService : IDisposable
     private PeerConnection? _activeConnection;
     private volatile bool _isControllingRemote;
     private long _returnCooldownUntil;
+    private double _speedCarryX; // Fractional motion not yet sent when a speed multiplier is in effect
+    private double _speedCarryY;
 
     // Controlled state (a remote machine drives this screen)
     private volatile bool _isControlledByRemote;
@@ -523,6 +525,20 @@ public sealed class RoboMouseService : IDisposable
         if (connection == null)
             return;
 
+        var speed = _activePeer?.SpeedMultiplier ?? 1.0;
+        if (speed > 0 && Math.Abs(speed - 1.0) > 0.001)
+        {
+            // Scale, keeping the fractional remainder so slow movement still adds up instead of rounding to zero.
+            _speedCarryX += dx * speed;
+            _speedCarryY += dy * speed;
+            dx = (int)Math.Truncate(_speedCarryX);
+            dy = (int)Math.Truncate(_speedCarryY);
+            _speedCarryX -= dx;
+            _speedCarryY -= dy;
+            if (dx == 0 && dy == 0)
+                return;
+        }
+
         connection.Post(MouseMessage.Motion(dx, dy));
 
         var debug = MouseDebugUpdate;
@@ -613,6 +629,8 @@ public sealed class RoboMouseService : IDisposable
 
         _activePeer = peer;
         _activeConnection = connection;
+        _speedCarryX = 0;
+        _speedCarryY = 0;
         _isControllingRemote = true;
 
         try
