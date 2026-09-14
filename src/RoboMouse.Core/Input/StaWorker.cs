@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace RoboMouse.Core.Input;
@@ -24,12 +25,31 @@ public sealed class StaWorker : IDisposable
 
     private void Run()
     {
-        _pump = new Control();
-        _pump.CreateControl();
-        _ = _pump.Handle;
-        _ready.Set();
-        Application.Run();
+        // SetApartmentState only calls CoInitialize. The OLE clipboard (OleSetClipboard) needs OleInitialize,
+        // which the main WinForms thread gets implicitly but a hand-made thread does not.
+        var hr = OleInitialize(IntPtr.Zero);
+        if (hr < 0)
+            Marshal.ThrowExceptionForHR(hr);
+
+        try
+        {
+            _pump = new Control();
+            _pump.CreateControl();
+            _ = _pump.Handle;
+            _ready.Set();
+            Application.Run();
+        }
+        finally
+        {
+            OleUninitialize();
+        }
     }
+
+    [DllImport("ole32.dll")]
+    private static extern int OleInitialize(IntPtr pvReserved);
+
+    [DllImport("ole32.dll")]
+    private static extern void OleUninitialize();
 
     /// <summary>Runs <paramref name="action"/> on the STA thread and waits for it.</summary>
     public void Invoke(Action action)
