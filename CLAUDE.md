@@ -35,26 +35,31 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 - Handles cursor transitions when mouse hits screen edges
 
 **Input Layer** (`src/RoboMouse.Core/Input/`):
-- `MouseHook` / `KeyboardHook` - Low-level Windows hooks via SetWindowsHookEx
-- `InputSimulator` - Generates synthetic input via SendInput API
+- `MouseHook` / `KeyboardHook` - Low-level Windows hooks via SetWindowsHookEx. Used to detect edge hits and to freeze/swallow local input while controlling a remote. Events carry `IsInjected` so software-generated input is never acted on.
+- `RawMouseInput` - Raw Input (WM_INPUT) receiver giving unaccelerated hardware motion counts; this is the only source of motion forwarded to a remote.
+- `InputSimulator` - Generates synthetic input via SendInput API. Remote motion is injected as relative `MOUSEEVENTF_MOVE` so the local pointer settings apply.
 - `ClipboardManager` - Monitors and syncs clipboard changes
 
 **Network Layer** (`src/RoboMouse.Core/Network/`):
 - `PeerDiscovery` - UDP broadcast for automatic peer finding
 - `ConnectionListener` - TCP server for incoming connections
-- `PeerConnection` - Manages individual TCP connection with message framing
+- `PeerConnection` - One TCP connection with a dedicated sender thread (outbound queue, consecutive motion messages merged) and receiver thread (buffered frame parsing). `Post()` is non-blocking and safe from hooks. Sends a ping each second and exposes `RoundTripMs`.
 
 **Protocol** (`src/RoboMouse.Core/Network/Protocol/`):
-- Binary message format with 4-byte magic header, message type, and length prefix
-- Message types: Handshake, Mouse, Keyboard, Clipboard, CursorEnter/Leave, Ping/Pong
+- Binary message format with 2-byte magic, version, type, length prefix, and timestamp (16-byte header)
+- Message types: Handshake, Mouse (relative deltas), Keyboard, Clipboard, CursorEnter/Leave, Ping/Pong
+- Protocol version 2; both peers must run the same version
 
 ### Control Flow
 
-1. Mouse reaches screen edge → `ScreenInfo.GetEdgeAt()` detects it
-2. `RoboMouseService` finds peer configured at that edge
-3. Sends `CursorEnterMessage` to peer, starts forwarding input
-4. Remote peer receives enter message, begins accepting input simulation
-5. When cursor returns to opposite edge, sends `CursorLeaveMessage`
+1. Mouse reaches screen edge → `ScreenInfo.GetEdgeAt()` detects it (from the hook)
+2. `RoboMouseService` finds the peer configured at that edge, hides the local cursor, starts `RawMouseInput`, sends `CursorEnterMessage`
+3. While controlling: the hook swallows all local mouse/keyboard events; raw motion deltas and button/wheel/key events are posted to the peer
+4. Controlled peer places its cursor on the entry edge and injects each delta relatively; it tracks whether its cursor is pinned on the entry edge while the controller keeps pushing into it
+5. When pushed through the entry edge, the controlled peer sends `CursorLeaveMessage` with the normalized edge position and releases any held keys/buttons
+6. Controller restores its cursor one pixel inside the matching local edge and resumes local control (short cooldown prevents immediate re-entry)
+
+Never do per-event file logging on the input path: the hook callback has a system timeout and file I/O at 1000 Hz adds visible latency.
 
 ### Windows-Specific
 

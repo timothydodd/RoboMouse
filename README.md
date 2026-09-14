@@ -76,10 +76,17 @@ RoboMouse.sln
 RoboMouse uses a custom binary protocol over TCP for low-latency input transmission:
 
 - **Handshake** - Exchange machine info and screen dimensions
-- **Mouse Events** - Position, clicks, and scroll
+- **Mouse Events** - Relative motion in raw hardware counts, clicks, and scroll
 - **Keyboard Events** - Key presses with scan codes
 - **Clipboard** - Text and file clipboard data
 - **Cursor Control** - Enter/leave notifications
+
+Motion is captured on the controlling machine with the Raw Input API and injected on the
+controlled machine as relative movement, so the controlled machine applies its own pointer
+speed and acceleration exactly as it would for a directly attached mouse. The controlled
+machine hands control back when its cursor is pushed through the edge it entered from.
+Consecutive motion messages are merged while waiting to send, and a ping every second
+measures round-trip time (shown in the Debug Panel).
 
 Peer discovery uses UDP broadcast on the local network.
 
