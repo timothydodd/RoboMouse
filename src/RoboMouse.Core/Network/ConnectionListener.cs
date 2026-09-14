@@ -14,6 +14,7 @@ public sealed class ConnectionListener : IDisposable
     private readonly string _machineName;
     private readonly int _screenWidth;
     private readonly int _screenHeight;
+    private readonly Func<byte[]> _pairingKey;
     private CancellationTokenSource? _cts;
     private Task? _acceptTask;
     private bool _disposed;
@@ -40,12 +41,14 @@ public sealed class ConnectionListener : IDisposable
 
     public ConnectionListener(
         int port,
+        Func<byte[]> pairingKey,
         string machineId,
         string machineName,
         int screenWidth,
         int screenHeight)
     {
         Port = port;
+        _pairingKey = pairingKey;
         _machineId = machineId;
         _machineName = machineName;
         _screenWidth = screenWidth;
@@ -121,6 +124,7 @@ public sealed class ConnectionListener : IDisposable
         {
             var connection = await PeerConnection.AcceptAsync(
                 client,
+                _pairingKey(),
                 _machineId,
                 _machineName,
                 _screenWidth,

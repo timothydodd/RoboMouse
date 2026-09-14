@@ -75,6 +75,18 @@ RoboMouse.sln
     └── RoboMouse.Core.Tests/  # Unit tests
 ```
 
+## Pairing and Security
+
+Every machine has a **pairing code** (Settings > Network). RoboMouse generates one on first
+run; enter the same code on each machine you want to link. Connections are authenticated
+against the code and all traffic is encrypted (ECDH key exchange authenticated with the
+pairing code, AES-256-GCM per frame). A machine with a different code cannot connect, and
+nobody on the network can read or inject input.
+
+The code is stored in plain text in `%AppData%\RoboMouse\settings.json`, so protect that
+file as you would a password. Use **New** in Settings to rotate it; other machines then need
+the new code.
+
 ## Network Protocol
 
 RoboMouse uses a custom binary protocol over TCP for low-latency input transmission:

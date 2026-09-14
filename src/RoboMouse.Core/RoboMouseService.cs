@@ -56,6 +56,23 @@ public sealed class RoboMouseService : IDisposable
     private bool _enabled;
     private bool _disposed;
 
+    private string? _pairingKeySource;
+    private byte[]? _pairingKey;
+
+    /// <summary>
+    /// The key derived from the pairing code. Derivation is deliberately slow, so it is cached until the code changes.
+    /// </summary>
+    private byte[] GetPairingKey()
+    {
+        var code = _settings.PairingCode;
+        if (_pairingKey == null || _pairingKeySource != code)
+        {
+            _pairingKey = SecureChannel.DerivePairingKey(code);
+            _pairingKeySource = code;
+        }
+        return _pairingKey;
+    }
+
     /// <summary>Whether the service is enabled.</summary>
     public bool Enabled
     {
@@ -134,6 +151,7 @@ public sealed class RoboMouseService : IDisposable
 
         _listener = new ConnectionListener(
             _settings.LocalPort,
+            GetPairingKey,
             _settings.MachineId,
             _settings.MachineName,
             width,
@@ -186,6 +204,7 @@ public sealed class RoboMouseService : IDisposable
         var connection = await PeerConnection.ConnectAsync(
             peerConfig.Address,
             peerConfig.Port,
+            GetPairingKey(),
             _settings.MachineId,
             _settings.MachineName,
             width,
@@ -392,7 +411,7 @@ public sealed class RoboMouseService : IDisposable
         {
             var (width, height) = InputSimulator.GetPrimaryScreenSize();
             probe = await PeerConnection.ConnectAsync(
-                address, port, _settings.MachineId, _settings.MachineName, width, height, ct, probe: true);
+                address, port, GetPairingKey(), _settings.MachineId, _settings.MachineName, width, height, ct, probe: true);
 
             result.ConnectMs = (int)sw.ElapsedMilliseconds;
             result.PeerName = probe.PeerName;
@@ -406,6 +425,10 @@ public sealed class RoboMouseService : IDisposable
         catch (OperationCanceledException)
         {
             result.Error = "Timed out. Is RoboMouse running there, and is the port open in the firewall?";
+        }
+        catch (PairingException ex)
+        {
+            result.Error = ex.Message + " Enter the same pairing code on both machines (Settings > Network).";
         }
         catch (System.Net.Sockets.SocketException ex)
         {

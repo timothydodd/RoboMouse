@@ -34,9 +34,10 @@ public class AppSettings
     public int DiscoveryPort { get; set; } = 24801;
 
     /// <summary>
-    /// Whether TLS encryption is enabled.
+    /// Shared pairing code. Every machine must use the same code; it authenticates connections and
+    /// keys the encryption. Generated on first run.
     /// </summary>
-    public bool EncryptionEnabled { get; set; } = false;
+    public string PairingCode { get; set; } = string.Empty;
 
     /// <summary>
     /// Whether the application is enabled (capturing/sending input).
@@ -90,22 +91,35 @@ public class AppSettings
     {
         var configPath = path ?? DefaultConfigPath;
 
+        AppSettings settings;
         if (!File.Exists(configPath))
         {
-            var settings = new AppSettings();
-            settings.Save(configPath);
-            return settings;
+            settings = new AppSettings();
+        }
+        else
+        {
+            try
+            {
+                var json = File.ReadAllText(configPath);
+                settings = JsonSerializer.Deserialize<AppSettings>(json, GetJsonOptions()) ?? new AppSettings();
+            }
+            catch
+            {
+                settings = new AppSettings();
+            }
         }
 
-        try
+        if (string.IsNullOrWhiteSpace(settings.PairingCode))
         {
-            var json = File.ReadAllText(configPath);
-            return JsonSerializer.Deserialize<AppSettings>(json, GetJsonOptions()) ?? new AppSettings();
+            settings.PairingCode = Network.SecureChannel.GeneratePairingCode();
+            settings.Save(configPath);
         }
-        catch
+        else if (!File.Exists(configPath))
         {
-            return new AppSettings();
+            settings.Save(configPath);
         }
+
+        return settings;
     }
 
     /// <summary>

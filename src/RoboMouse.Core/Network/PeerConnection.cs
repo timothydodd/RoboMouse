@@ -23,7 +23,7 @@ public sealed class PeerConnection : IDisposable
     private const int PingIntervalMs = 1000;
 
     private readonly TcpClient _client;
-    private readonly NetworkStream _stream;
+    private Stream _stream;
     private readonly CancellationTokenSource _cts = new();
 
     private readonly object _sendLock = new();
@@ -80,11 +80,25 @@ public sealed class PeerConnection : IDisposable
     }
 
     /// <summary>
+    /// Replaces the raw socket stream with an authenticated, encrypted channel. Must run before any
+    /// protocol message is exchanged.
+    /// </summary>
+    private async Task SecureAsync(byte[] pairingKey, bool isClient, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        _stream = isClient
+            ? await SecureChannel.ConnectAsync(_stream, pairingKey, timeout.Token)
+            : await SecureChannel.AcceptAsync(_stream, pairingKey, timeout.Token);
+    }
+
+    /// <summary>
     /// Creates a connection by connecting to a remote peer.
     /// </summary>
     public static async Task<PeerConnection> ConnectAsync(
         string host,
         int port,
+        byte[] pairingKey,
         string localMachineId,
         string localMachineName,
         int localScreenWidth,
@@ -98,6 +112,15 @@ public sealed class PeerConnection : IDisposable
         await client.ConnectAsync(host, port, ct);
 
         var connection = new PeerConnection(client);
+        try
+        {
+            await connection.SecureAsync(pairingKey, isClient: true, ct);
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
 
         var handshake = new HandshakeMessage
         {
@@ -144,6 +167,7 @@ public sealed class PeerConnection : IDisposable
     /// </summary>
     public static async Task<PeerConnection> AcceptAsync(
         TcpClient client,
+        byte[] pairingKey,
         string localMachineId,
         string localMachineName,
         int localScreenWidth,
@@ -152,6 +176,16 @@ public sealed class PeerConnection : IDisposable
     {
         var remoteEp = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
         var connection = new PeerConnection(client);
+        try
+        {
+            await connection.SecureAsync(pairingKey, isClient: false, ct);
+        }
+        catch (Exception ex)
+        {
+            SimpleLogger.Log("Accept", $"Rejected {remoteEp}: {ex.Message}");
+            connection.Dispose();
+            throw;
+        }
 
         var message = await connection.ReadOneAsync(ct);
 

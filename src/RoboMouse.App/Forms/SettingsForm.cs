@@ -16,6 +16,7 @@ public partial class SettingsForm : Form
     private TextBox _machineNameTextBox = null!;
     private NumericUpDown _portNumeric = null!;
     private NumericUpDown _discoveryPortNumeric = null!;
+    private TextBox _pairingCodeTextBox = null!;
     private CheckBox _clipboardEnabledCheck = null!;
     private CheckBox _borderHighlightCheck = null!;
 #if DEBUG
@@ -170,12 +171,43 @@ public partial class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 4
+            RowCount = 7
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         var row = 0;
+
+        // Pairing code
+        layout.Controls.Add(new Label { Text = "Pairing code:", AutoSize = true, Margin = new Padding(3, 8, 3, 0) }, 0, row);
+        var pairingPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true };
+        pairingPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        pairingPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        pairingPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _pairingCodeTextBox = new TextBox { Dock = DockStyle.Fill, Font = new Font("Consolas", 11), CharacterCasing = CharacterCasing.Upper };
+        pairingPanel.Controls.Add(_pairingCodeTextBox, 0, 0);
+        var copyCodeButton = new Button { Text = "Copy", AutoSize = true };
+        copyCodeButton.Click += (s, e) => { try { Clipboard.SetText(_pairingCodeTextBox.Text); } catch { } };
+        pairingPanel.Controls.Add(copyCodeButton, 1, 0);
+        var newCodeButton = new Button { Text = "New", AutoSize = true };
+        newCodeButton.Click += (s, e) =>
+        {
+            if (MessageBox.Show(this, "Generate a new pairing code? Every other machine will need the new code before it can connect again.",
+                    "RoboMouse", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                _pairingCodeTextBox.Text = RoboMouse.Core.Network.SecureChannel.GeneratePairingCode();
+        };
+        pairingPanel.Controls.Add(newCodeButton, 2, 0);
+        layout.Controls.Add(pairingPanel, 1, row++);
+
+        layout.Controls.Add(new Label(), 0, row);
+        layout.Controls.Add(new Label
+        {
+            Text = "Enter the same code on every machine. It authenticates peers and encrypts all traffic;\n" +
+                   "a machine with a different code cannot connect. Existing connections keep their session until they reconnect.",
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Margin = new Padding(3, 0, 3, 10)
+        }, 1, row++);
 
         // Local port
         layout.Controls.Add(new Label { Text = "Listen Port:", AutoSize = true }, 0, row);
@@ -659,6 +691,7 @@ public partial class SettingsForm : Form
         _machineNameTextBox.Text = _settings.MachineName;
         _portNumeric.Value = _settings.LocalPort;
         _discoveryPortNumeric.Value = _settings.DiscoveryPort;
+        _pairingCodeTextBox.Text = _settings.PairingCode;
         _clipboardEnabledCheck.Checked = _settings.Clipboard.Enabled;
         _borderHighlightCheck.Checked = _settings.ShowBorderHighlight;
 #if DEBUG
@@ -673,6 +706,15 @@ public partial class SettingsForm : Form
 
     private void OnSaveClick(object? sender, EventArgs e)
     {
+        var code = _pairingCodeTextBox.Text.Trim();
+        if (code.Replace("-", "").Replace(" ", "").Length < 8)
+        {
+            MessageBox.Show(this, "The pairing code must be at least 8 characters.", "RoboMouse",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        _settings.PairingCode = code;
+
         _settings.MachineName = _machineNameTextBox.Text;
         _settings.LocalPort = (int)_portNumeric.Value;
         _settings.DiscoveryPort = (int)_discoveryPortNumeric.Value;
