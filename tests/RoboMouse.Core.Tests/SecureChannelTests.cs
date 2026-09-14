@@ -74,7 +74,7 @@ public class SecureChannelTests
             {
                 client.Write(payload, 0, payload.Length);
                 client.Write(payload, 0, 10);
-            });
+            }, TestContext.Current.CancellationToken);
             var received = ReadExactly(server, payload.Length + 10);
             await writer;
 
@@ -106,7 +106,7 @@ public class SecureChannelTests
             await c.ConnectAsync(IPAddress.Loopback, port);
             return c;
         });
-        var serverTcp = await listener.AcceptTcpClientAsync();
+        var serverTcp = await listener.AcceptTcpClientAsync(TestContext.Current.CancellationToken);
         var clientTcp = await clientTask;
         listener.Stop();
 
