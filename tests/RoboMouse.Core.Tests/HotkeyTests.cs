@@ -35,6 +35,27 @@ public class HotkeyTests
     }
 
     [Fact]
+    public void Matches_UsesHookTrackedModifiers()
+    {
+        var hotkey = Hotkey.Parse("Ctrl+Alt+M")!;
+        var modifiers = new ModifierState();
+
+        Assert.False(hotkey.Matches(Keys.M, modifiers));
+
+        modifiers.Update(Keys.LControlKey, isDown: true);
+        modifiers.Update(Keys.LMenu, isDown: true);
+        Assert.True(hotkey.Matches(Keys.M, modifiers));
+        Assert.False(hotkey.Matches(Keys.N, modifiers));
+
+        modifiers.Update(Keys.LShiftKey, isDown: true); // Extra modifier must not match
+        Assert.False(hotkey.Matches(Keys.M, modifiers));
+
+        modifiers.Update(Keys.LShiftKey, isDown: false);
+        modifiers.Update(Keys.LControlKey, isDown: false);
+        Assert.False(hotkey.Matches(Keys.M, modifiers));
+    }
+
+    [Fact]
     public void ToString_RoundTrips()
     {
         var hotkey = Hotkey.Parse("Shift+Ctrl+Alt+Win+K")!;

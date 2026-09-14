@@ -25,10 +25,10 @@ public static class InputSimulator
     /// through the normal input pipeline, so Windows applies this machine's pointer
     /// speed and acceleration settings exactly as it would for a physical mouse.
     /// </summary>
-    public static void MoveRelative(int deltaX, int deltaY)
+    public static bool MoveRelative(int deltaX, int deltaY)
     {
         if (deltaX == 0 && deltaY == 0)
-            return;
+            return true;
 
         var input = new NativeMethods.INPUT
         {
@@ -44,13 +44,13 @@ public static class InputSimulator
             }
         };
 
-        SendInputs(input);
+        return SendInputs(input);
     }
 
     /// <summary>
     /// Simulates a mouse event.
     /// </summary>
-    public static void SimulateMouseEvent(MouseEventType eventType, int x = 0, int y = 0, int wheelDelta = 0)
+    public static bool SimulateMouseEvent(MouseEventType eventType, int x = 0, int y = 0, int wheelDelta = 0)
     {
         var input = new NativeMethods.INPUT
         {
@@ -84,7 +84,7 @@ public static class InputSimulator
             input.u.mi.mouseData = NativeMethods.XBUTTON2;
         }
 
-        SendInputs(input);
+        return SendInputs(input);
     }
 
     /// <summary>
@@ -158,7 +158,7 @@ public static class InputSimulator
     /// <summary>
     /// Simulates a keyboard event.
     /// </summary>
-    public static void SimulateKeyboardEvent(Keys keyCode, uint scanCode, KeyboardEventType eventType, bool isExtended)
+    public static bool SimulateKeyboardEvent(Keys keyCode, uint scanCode, KeyboardEventType eventType, bool isExtended)
     {
         var input = new NativeMethods.INPUT
         {
@@ -176,7 +176,7 @@ public static class InputSimulator
             }
         };
 
-        SendInputs(input);
+        return SendInputs(input);
     }
 
     /// <summary>
@@ -410,13 +410,13 @@ public static class InputSimulator
 
     #endregion
 
-    private static void SendInputs(params NativeMethods.INPUT[] inputs)
+    /// <summary>
+    /// Returns false when Windows did not accept the input. UIPI blocking (an elevated window in the
+    /// foreground) shows up here as a zero return with no error code.
+    /// </summary>
+    private static bool SendInputs(params NativeMethods.INPUT[] inputs)
     {
         var result = NativeMethods.SendInput((uint)inputs.Length, inputs, InputSize);
-        if (result != inputs.Length)
-        {
-            var error = Marshal.GetLastWin32Error();
-            System.Diagnostics.Debug.WriteLine($"SendInput failed. Expected {inputs.Length}, sent {result}. Error: {error}");
-        }
+        return result == inputs.Length;
     }
 }

@@ -46,20 +46,18 @@ public sealed record Hotkey(Keys Key, bool Ctrl, bool Alt, bool Shift, bool Win)
     }
 
     /// <summary>
-    /// True when <paramref name="pressed"/> is this chord's key and the required modifiers are currently held.
+    /// True when <paramref name="pressed"/> is this chord's key and <paramref name="modifiers"/> holds exactly
+    /// the required modifiers. Modifier state comes from the hook, not from Windows: while controlling a
+    /// remote the hook swallows modifier presses, so Windows never sees them as held.
     /// </summary>
-    public bool Matches(Keys pressed)
+    public bool Matches(Keys pressed, ModifierState modifiers)
     {
-        if (pressed != Key)
-            return false;
-
-        return IsDown(Keys.ControlKey) == Ctrl
-            && IsDown(Keys.Menu) == Alt
-            && IsDown(Keys.ShiftKey) == Shift
-            && (IsDown(Keys.LWin) || IsDown(Keys.RWin)) == Win;
+        return pressed == Key
+            && modifiers.Ctrl == Ctrl
+            && modifiers.Alt == Alt
+            && modifiers.Shift == Shift
+            && modifiers.Win == Win;
     }
-
-    private static bool IsDown(Keys key) => (NativeMethods.GetAsyncKeyState((int)key) & 0x8000) != 0;
 
     public override string ToString()
     {
@@ -70,5 +68,39 @@ public sealed record Hotkey(Keys Key, bool Ctrl, bool Alt, bool Shift, bool Win)
         if (Win) parts.Add("Win");
         parts.Add(Key.ToString());
         return string.Join("+", parts);
+    }
+}
+
+/// <summary>
+/// Which modifier keys are physically held, maintained from low-level hook events.
+/// </summary>
+public sealed class ModifierState
+{
+    public bool Ctrl { get; private set; }
+    public bool Alt { get; private set; }
+    public bool Shift { get; private set; }
+    public bool Win { get; private set; }
+
+    /// <summary>Updates state from a hook event. Returns true if the key was a modifier.</summary>
+    public bool Update(Keys key, bool isDown)
+    {
+        switch (key)
+        {
+            case Keys.ControlKey or Keys.LControlKey or Keys.RControlKey:
+                Ctrl = isDown; return true;
+            case Keys.Menu or Keys.LMenu or Keys.RMenu:
+                Alt = isDown; return true;
+            case Keys.ShiftKey or Keys.LShiftKey or Keys.RShiftKey:
+                Shift = isDown; return true;
+            case Keys.LWin or Keys.RWin:
+                Win = isDown; return true;
+            default:
+                return false;
+        }
+    }
+
+    public void Clear()
+    {
+        Ctrl = Alt = Shift = Win = false;
     }
 }

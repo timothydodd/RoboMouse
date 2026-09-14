@@ -703,14 +703,19 @@ public sealed class RoboMouseService : IDisposable
         e.Handled = true;
     }
 
+    private readonly ModifierState _modifiers = new();
+
     private void OnKeyboardEvent(object? sender, KeyboardEventArgs e)
     {
         if (e.IsInjected)
             return;
 
+        var isDown = e.EventType is KeyboardEventType.KeyDown or KeyboardEventType.SysKeyDown;
+        _modifiers.Update(e.KeyCode, isDown);
+
         // Escape hatch and on/off switch. Works whether or not sharing is enabled, and while controlling a
         // remote it takes priority over forwarding so a hung peer can never trap the keyboard.
-        if (e.EventType is KeyboardEventType.KeyDown or KeyboardEventType.SysKeyDown && _hotkey?.Matches(e.KeyCode) == true)
+        if (isDown && _hotkey?.Matches(e.KeyCode, _modifiers) == true)
         {
             e.Handled = true;
             OnHotkeyPressed();
@@ -915,6 +920,7 @@ public sealed class RoboMouseService : IDisposable
         _controllerConnection = connection;
         _entryEdge = msg.EntryEdge;
         _edgeOvershoot = 0;
+        _injectionBlocked = false;
         _isControlledByRemote = true;
 
         var normalized = msg.EntryEdge is ScreenPosition.Left or ScreenPosition.Right ? msg.EntryY : msg.EntryX;
@@ -930,7 +936,7 @@ public sealed class RoboMouseService : IDisposable
 
         if (msg.IsMotion)
         {
-            InputSimulator.MoveRelative(msg.DeltaX, msg.DeltaY);
+            MoveRemoteCursor(msg.DeltaX, msg.DeltaY);
             CheckForReturnEdge(msg.DeltaX, msg.DeltaY);
             return;
         }
@@ -959,6 +965,50 @@ public sealed class RoboMouseService : IDisposable
         }
 
         InputSimulator.SimulateMouseEvent(msg.EventType, wheelDelta: msg.WheelDelta);
+    }
+
+    private bool _injectionBlocked;
+
+    /// <summary>
+    /// Applies motion through SendInput so the local pointer settings apply. When an elevated window is in
+    /// the foreground Windows silently drops injected input (UIPI), which would freeze the cursor and leave
+    /// the controller unable to reach an edge and get back. Detect that and move the cursor directly
+    /// with SetCursorPos, which UIPI does not block. Clicks on the elevated window still cannot work
+    /// unless RoboMouse runs as administrator.
+    /// </summary>
+    private void MoveRemoteCursor(int dx, int dy)
+    {
+        var (beforeX, beforeY) = InputSimulator.GetCursorPosition();
+        var accepted = InputSimulator.MoveRelative(dx, dy);
+
+        if (accepted)
+        {
+            // SendInput can also "succeed" and yet be ignored. A non-zero delta that leaves the cursor
+            // exactly where it was, when it is not pinned on a desktop edge, means input is being dropped.
+            var (afterX, afterY) = InputSimulator.GetCursorPosition();
+            var bounds = _screenInfo.VirtualBounds;
+            var onEdge = afterX <= bounds.Left || afterX >= bounds.Right - 1 || afterY <= bounds.Top || afterY >= bounds.Bottom - 1;
+            if (afterX == beforeX && afterY == beforeY && !onEdge && (Math.Abs(dx) > 1 || Math.Abs(dy) > 1))
+                accepted = false;
+        }
+
+        if (accepted)
+        {
+            if (_injectionBlocked)
+            {
+                _injectionBlocked = false;
+                SimpleLogger.Log("Input", "Injected input accepted again");
+            }
+            return;
+        }
+
+        if (!_injectionBlocked)
+        {
+            _injectionBlocked = true;
+            SimpleLogger.Log("Input", "Injected input is being blocked (elevated window in front?); moving cursor directly");
+        }
+
+        InputSimulator.MoveTo(beforeX + dx, beforeY + dy);
     }
 
     /// <summary>
