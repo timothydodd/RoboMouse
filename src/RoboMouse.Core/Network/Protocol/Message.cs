@@ -11,7 +11,7 @@ public abstract class Message
     /// <summary>
     /// Protocol version number.
     /// </summary>
-    public const byte ProtocolVersion = 2;
+    public const byte ProtocolVersion = 3;
 
     /// <summary>
     /// Magic bytes to identify RoboMouse protocol.
@@ -108,6 +108,10 @@ public abstract class Message
             MessageType.CursorEnter => CursorEnterMessage.DeserializePayload(payload),
             MessageType.CursorLeave => CursorLeaveMessage.DeserializePayload(payload),
             MessageType.Clipboard => ClipboardMessage.DeserializePayload(payload),
+            MessageType.FileOffer => FileOfferMessage.DeserializePayload(payload),
+            MessageType.FileOfferRevoked => FileOfferRevokedMessage.DeserializePayload(payload),
+            MessageType.FileRequest => FileRequestMessage.DeserializePayload(payload),
+            MessageType.FileChunk => FileChunkMessage.DeserializePayload(payload),
             MessageType.Ping => new PingMessage(),
             MessageType.Pong => new PongMessage(),
             MessageType.Disconnect => new DisconnectMessage(),

@@ -52,8 +52,14 @@ public sealed class PeerConnection : IDisposable
     /// <summary>Most recent measured round-trip time in milliseconds, or -1 if not yet measured.</summary>
     public int RoundTripMs { get; private set; } = -1;
 
+    /// <summary>What this connection is for.</summary>
+    public ConnectionKind Kind { get; private set; }
+
     /// <summary>True when the remote side opened this connection only to test reachability.</summary>
-    public bool IsProbe { get; private set; }
+    public bool IsProbe => Kind == ConnectionKind.Probe;
+
+    /// <summary>The port the peer listens on for new connections.</summary>
+    public int PeerListenPort { get; private set; }
 
     /// <summary>True when this machine initiated the connection.</summary>
     public bool IsOutbound { get; private set; }
@@ -108,10 +114,11 @@ public sealed class PeerConnection : IDisposable
         string localMachineName,
         int localScreenWidth,
         int localScreenHeight,
+        int localListenPort,
         CancellationToken ct = default,
-        bool probe = false)
+        ConnectionKind kind = ConnectionKind.Control)
     {
-        SimpleLogger.Log("Connect", $"Connecting to {host}:{port}{(probe ? " (probe)" : "")}...");
+        SimpleLogger.Log("Connect", $"Connecting to {host}:{port} ({kind})...");
 
         var client = new TcpClient();
         await client.ConnectAsync(host, port, ct);
@@ -134,9 +141,10 @@ public sealed class PeerConnection : IDisposable
             ScreenWidth = localScreenWidth,
             ScreenHeight = localScreenHeight,
             SupportsClipboard = true,
-            IsProbe = probe
+            Kind = kind,
+            ListenPort = localListenPort
         };
-        connection.IsProbe = probe;
+        connection.Kind = kind;
         connection.IsOutbound = true;
 
         await connection.WriteDirectAsync(handshake, ct);
@@ -161,6 +169,7 @@ public sealed class PeerConnection : IDisposable
         connection.PeerName = ack.MachineName;
         connection.PeerScreenWidth = ack.ScreenWidth;
         connection.PeerScreenHeight = ack.ScreenHeight;
+        connection.PeerListenPort = ack.ListenPort;
 
         connection.StartThreads();
 
@@ -178,6 +187,7 @@ public sealed class PeerConnection : IDisposable
         string localMachineName,
         int localScreenWidth,
         int localScreenHeight,
+        int localListenPort,
         CancellationToken ct = default)
     {
         var remoteEp = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
@@ -205,7 +215,8 @@ public sealed class PeerConnection : IDisposable
         connection.PeerName = handshake.MachineName;
         connection.PeerScreenWidth = handshake.ScreenWidth;
         connection.PeerScreenHeight = handshake.ScreenHeight;
-        connection.IsProbe = handshake.IsProbe;
+        connection.Kind = handshake.Kind;
+        connection.PeerListenPort = handshake.ListenPort;
 
         var ack = new HandshakeAckMessage
         {
@@ -213,7 +224,8 @@ public sealed class PeerConnection : IDisposable
             MachineId = localMachineId,
             MachineName = localMachineName,
             ScreenWidth = localScreenWidth,
-            ScreenHeight = localScreenHeight
+            ScreenHeight = localScreenHeight,
+            ListenPort = localListenPort
         };
 
         await connection.WriteDirectAsync(ack, ct);

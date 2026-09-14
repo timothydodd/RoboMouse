@@ -129,6 +129,7 @@ public sealed class ConnectionListener : IDisposable
                 _machineName,
                 _screenWidth,
                 _screenHeight,
+                Port,
                 ct);
 
             SimpleLogger.Log("Listener", $"Connection accepted from {remoteEp} - Peer: {connection.PeerName} ({connection.PeerId})");

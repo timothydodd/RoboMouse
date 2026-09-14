@@ -13,22 +13,101 @@ namespace RoboMouse.Core.Input;
 public sealed class ClipboardManager : IDisposable
 {
     private readonly ClipboardNotificationForm _notificationForm;
+    private readonly StaWorker _fileSta;
     private bool _disposed;
-    private bool _ignoreNextChange;
+    private volatile bool _ignoreNextChange;
     private string? _lastTextHash;
     private readonly long _maxDataSize;
+    private VirtualFileDataObject? _virtualFiles;
+    private int _fileScanVersion;
 
     /// <summary>
     /// Event raised when the clipboard content changes.
     /// </summary>
     public event EventHandler<ClipboardMessage>? ClipboardChanged;
 
+    /// <summary>
+    /// Raised (on a background thread) when files were copied locally and are ready to be offered.
+    /// </summary>
+    public event EventHandler<FileOfferSource>? FilesCopied;
+
+    /// <summary>
+    /// Raised when the local clipboard no longer holds the files last offered.
+    /// </summary>
+    public event EventHandler? FilesCleared;
+
+    /// <summary>Whether local file copies are turned into offers.</summary>
+    public bool ShareFiles { get; set; } = true;
+
     public ClipboardManager(long maxDataSize = 10 * 1024 * 1024)
     {
         _maxDataSize = maxDataSize;
         _notificationForm = new ClipboardNotificationForm();
         _notificationForm.ClipboardUpdated += OnClipboardUpdated;
+        _fileSta = new StaWorker("RoboMouse-ClipboardFiles");
     }
+
+    #region Virtual files (receiving side)
+
+    /// <summary>
+    /// Puts remote files on the clipboard as virtual files. Applications that paste them read each
+    /// file through <paramref name="read"/>, which pulls bytes from the remote on demand.
+    /// </summary>
+    public void SetVirtualFiles(FileOfferMessage offer, VirtualFileDataObject.ReadRange read)
+    {
+        if (_disposed)
+            return;
+
+        _fileSta.BeginInvoke(() =>
+        {
+            try
+            {
+                var dataObject = new VirtualFileDataObject(offer.OfferId, offer.Entries, read);
+                _ignoreNextChange = true;
+                dataObject.SetOnClipboard();
+                _virtualFiles = dataObject;
+                SimpleLogger.Log("Files", $"Clipboard now offers {offer.Entries.Count} remote item(s), {offer.TotalSize / 1024.0 / 1024.0:0.#} MB");
+            }
+            catch (Exception ex)
+            {
+                _ignoreNextChange = false;
+                SimpleLogger.Log("Files", $"Could not place remote files on the clipboard: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Empties the clipboard if it still holds the given offer (or any remote offer when null).
+    /// </summary>
+    public void ClearVirtualFiles(string? offerId)
+    {
+        if (_disposed)
+            return;
+
+        _fileSta.BeginInvoke(() =>
+        {
+            var current = _virtualFiles;
+            if (current == null || (offerId != null && current.OfferId != offerId))
+                return;
+
+            try
+            {
+                if (current.IsOnClipboard())
+                {
+                    _ignoreNextChange = true;
+                    current.RemoveFromClipboard();
+                }
+            }
+            catch (Exception ex)
+            {
+                _ignoreNextChange = false;
+                SimpleLogger.Log("Files", $"Could not clear remote files from the clipboard: {ex.Message}");
+            }
+            _virtualFiles = null;
+        });
+    }
+
+    #endregion
 
     /// <summary>
     /// Starts monitoring clipboard changes.
@@ -106,6 +185,37 @@ public sealed class ClipboardManager : IDisposable
             _ignoreNextChange = false;
             return;
         }
+
+        // Files: announce them (names only) after enumerating on a background thread, since a large
+        // folder can take a while to walk and this runs on the UI thread.
+        var scan = ++_fileScanVersion;
+        try
+        {
+            if (ShareFiles && Clipboard.ContainsFileDropList())
+            {
+                var paths = Clipboard.GetFileDropList().Cast<string>().ToList();
+                Task.Run(() =>
+                {
+                    var offer = FileOfferSource.FromPaths(paths);
+                    if (scan != _fileScanVersion)
+                        return; // Clipboard changed again while we were scanning
+                    if (offer == null)
+                    {
+                        SimpleLogger.Log("Files", "Copied files not offered (nothing readable, or more than the entry limit)");
+                        FilesCleared?.Invoke(this, EventArgs.Empty);
+                        return;
+                    }
+                    FilesCopied?.Invoke(this, offer);
+                });
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            SimpleLogger.Log("Files", $"Failed to read copied files: {ex.Message}");
+        }
+
+        FilesCleared?.Invoke(this, EventArgs.Empty);
 
         try
         {
@@ -242,6 +352,12 @@ public sealed class ClipboardManager : IDisposable
             return;
 
         _disposed = true;
+        try
+        {
+            _fileSta.Invoke(() => _virtualFiles?.RemoveFromClipboard());
+        }
+        catch { }
+        _fileSta.Dispose();
         _notificationForm.Dispose();
     }
 }

@@ -29,6 +29,18 @@ public enum MessageType : byte
     /// <summary>Clipboard data request.</summary>
     ClipboardRequest = 0x31,
 
+    /// <summary>Files were copied on the sender; lists names and sizes only.</summary>
+    FileOffer = 0x32,
+
+    /// <summary>A previous file offer is no longer valid.</summary>
+    FileOfferRevoked = 0x33,
+
+    /// <summary>Request for a range of one offered file (sent over a transfer connection).</summary>
+    FileRequest = 0x34,
+
+    /// <summary>A range of file bytes, or an error, answering a FileRequest.</summary>
+    FileChunk = 0x35,
+
     /// <summary>Keep-alive ping.</summary>
     Ping = 0x40,
 

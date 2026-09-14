@@ -38,19 +38,20 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 - `MouseHook` / `KeyboardHook` - Low-level Windows hooks via SetWindowsHookEx. Used to detect edge hits and to freeze/swallow local input while controlling a remote. Events carry `IsInjected` so software-generated input is never acted on.
 - `RawMouseInput` - Raw Input (WM_INPUT) receiver giving unaccelerated hardware motion counts; this is the only source of motion forwarded to a remote.
 - `InputSimulator` - Generates synthetic input via SendInput API. Remote motion is injected as relative `MOUSEEVENTF_MOVE` so the local pointer settings apply.
-- `ClipboardManager` - Monitors and syncs clipboard changes
+- `ClipboardManager` - Monitors and syncs clipboard changes. Copied files become a `FileOfferSource` (names/sizes plus local paths that never leave the machine). Offers from peers are placed on the clipboard as a `VirtualFileDataObject` (CFSTR_FILEDESCRIPTORW/FILECONTENTS) created on a dedicated `StaWorker` thread so Explorer's reads never block the UI thread or the hooks.
 
 **Network Layer** (`src/RoboMouse.Core/Network/`):
 - `PeerDiscovery` - UDP broadcast for automatic peer finding
 - `ConnectionListener` - TCP server for incoming connections
 - `SecureChannel` - Authenticated, encrypted stream over the socket: ECDH key exchange authenticated with HMACs keyed from the shared pairing code, then AES-256-GCM per frame. Every connection goes through it before any protocol message.
 - `PeerConnection` - One TCP connection with a dedicated sender thread (`OutboundQueue`, consecutive motion messages merged) and receiver thread (`MessageFramer`). `Post()` is non-blocking and safe from hooks. Pings each second, exposes `RoundTripMs`, and drops the connection after 5 s without a pong. `IsOutbound` is used to resolve simultaneous connects (keep the one initiated by the smaller machine id).
+- `FileTransferClient` - Paste side: opens a second connection (`ConnectionKind.Transfer`) to the offering peer on first read and pulls 1 MB chunks (`FileRequest`/`FileChunk`). The serving side answers from `_localOffer` in `RoboMouseService`. Offers are revoked when the source clipboard changes.
 - `RoboMouseService` retries configured peers every 5 s in the background.
 
 **Protocol** (`src/RoboMouse.Core/Network/Protocol/`):
 - Binary message format with 2-byte magic, version, type, length prefix, and timestamp (16-byte header)
-- Message types: Handshake, Mouse (relative deltas), Keyboard, Clipboard, CursorEnter/Leave, Ping/Pong
-- Protocol version 2; both peers must run the same version
+- Message types: Handshake (carries `ConnectionKind` and listen port), Mouse (relative deltas), Keyboard, Clipboard, FileOffer/FileOfferRevoked/FileRequest/FileChunk, CursorEnter/Leave, Ping/Pong
+- Protocol version 3; both peers must run the same version
 
 ### Control Flow
 

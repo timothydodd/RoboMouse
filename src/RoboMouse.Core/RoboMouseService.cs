@@ -63,6 +63,14 @@ public sealed class RoboMouseService : IDisposable
     private string? _pairingKeySource;
     private byte[]? _pairingKey;
 
+    // File sharing: what we currently offer (serving side) and what we currently hold from a peer (paste side)
+    private FileOfferSource? _localOffer;
+    private readonly object _fileLock = new();
+    private readonly List<PeerConnection> _transferServers = new();
+    private readonly Dictionary<string, FileTransferClient> _transferClients = new();
+    private string? _remoteOfferPeerId;
+    private string? _remoteOfferId;
+
     /// <summary>
     /// The key derived from the pairing code. Derivation is deliberately slow, so it is cached until the code changes.
     /// </summary>
@@ -140,8 +148,13 @@ public sealed class RoboMouseService : IDisposable
         _rawMouse = new RawMouseInput();
         _rawMouse.Motion += OnRawMouseMotion;
 
-        _clipboardManager = new ClipboardManager(_settings.Clipboard.MaxSizeBytes);
+        _clipboardManager = new ClipboardManager(_settings.Clipboard.MaxSizeBytes)
+        {
+            ShareFiles = _settings.Clipboard.SyncFiles
+        };
         _clipboardManager.ClipboardChanged += OnClipboardChanged;
+        _clipboardManager.FilesCopied += OnLocalFilesCopied;
+        _clipboardManager.FilesCleared += OnLocalFilesCleared;
 
         var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
 
@@ -236,6 +249,7 @@ public sealed class RoboMouseService : IDisposable
                 _settings.MachineName,
                 width,
                 height,
+                _settings.LocalPort,
                 ct);
 
             peerConfig.ScreenWidth = connection.PeerScreenWidth;
@@ -451,18 +465,38 @@ public sealed class RoboMouseService : IDisposable
             EndBeingControlled(notifyPeer: false);
         }
 
+        ForgetRemoteOffer(connection.PeerId);
+
         PeerDisconnected?.Invoke(this, connection.PeerId);
     }
 
     private void OnIncomingConnection(object? sender, PeerConnection connection)
     {
-        if (connection.IsProbe)
+        switch (connection.Kind)
         {
-            // A connection test from another machine. It only needs pings answered (the connection
-            // does that itself) until the tester hangs up; never treat it as a peer.
-            SimpleLogger.Log("Accept", $"Connection test from {connection.PeerName}");
-            connection.Disconnected += (s, e) => connection.Dispose();
-            return;
+            case ConnectionKind.Probe:
+                // A connection test from another machine. It only needs pings answered (the connection
+                // does that itself) until the tester hangs up; never treat it as a peer.
+                SimpleLogger.Log("Accept", $"Connection test from {connection.PeerName}");
+                connection.Disconnected += (s, e) => connection.Dispose();
+                return;
+
+            case ConnectionKind.Transfer:
+                // A peer is pasting files we offered. Serve requests until it hangs up.
+                lock (_fileLock)
+                {
+                    _transferServers.Add(connection);
+                }
+                connection.MessageReceived += OnTransferRequest;
+                connection.Disconnected += (s, e) =>
+                {
+                    lock (_fileLock)
+                    {
+                        _transferServers.Remove(connection);
+                    }
+                    connection.Dispose();
+                };
+                return;
         }
 
         AddConnection(connection);
@@ -511,7 +545,8 @@ public sealed class RoboMouseService : IDisposable
         {
             var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
             probe = await PeerConnection.ConnectAsync(
-                address, port, GetPairingKey(), _settings.MachineId, _settings.MachineName, width, height, ct, probe: true);
+                address, port, GetPairingKey(), _settings.MachineId, _settings.MachineName, width, height,
+                _settings.LocalPort, ct, ConnectionKind.Probe);
 
             result.ConnectMs = (int)sw.ElapsedMilliseconds;
             result.PeerName = probe.PeerName;
@@ -905,6 +940,14 @@ public sealed class RoboMouseService : IDisposable
                 case ClipboardMessage clipMsg:
                     HandleRemoteClipboard(clipMsg);
                     break;
+
+                case FileOfferMessage offer:
+                    HandleRemoteFileOffer(offer, connection);
+                    break;
+
+                case FileOfferRevokedMessage revoked:
+                    HandleRemoteOfferRevoked(revoked, connection);
+                    break;
             }
         }
         catch (Exception ex)
@@ -1129,10 +1172,17 @@ public sealed class RoboMouseService : IDisposable
     /// <summary>Starts or stops clipboard monitoring to match the current setting.</summary>
     public void ApplyClipboardSetting()
     {
+        _clipboardManager.ShareFiles = _settings.Clipboard.SyncFiles;
         if (_settings.Clipboard.Enabled)
             _clipboardManager.Start();
         else
             _clipboardManager.Stop();
+
+        if (!_settings.Clipboard.SyncFiles)
+        {
+            OnLocalFilesCleared(this, EventArgs.Empty);
+            _clipboardManager.ClearVirtualFiles(null);
+        }
     }
 
     private void OnClipboardChanged(object? sender, ClipboardMessage message)
@@ -1159,6 +1209,166 @@ public sealed class RoboMouseService : IDisposable
 
     #endregion
 
+    #region File sharing
+
+    // Serving side: files copied here are announced to every peer; bytes are read on request.
+
+    private void OnLocalFilesCopied(object? sender, FileOfferSource offer)
+    {
+        if (!_enabled || !_settings.Clipboard.Enabled || !_settings.Clipboard.SyncFiles)
+            return;
+
+        FileOfferSource? previous;
+        lock (_fileLock)
+        {
+            previous = _localOffer;
+            _localOffer = offer;
+        }
+
+        SimpleLogger.Log("Files", $"Offering {offer.Entries.Count} item(s), {offer.TotalSize / 1024.0 / 1024.0:0.#} MB");
+
+        var message = offer.ToMessage();
+        lock (_connectionLock)
+        {
+            foreach (var connection in _connections.Values)
+            {
+                if (previous != null)
+                    connection.Post(new FileOfferRevokedMessage { OfferId = previous.OfferId });
+                connection.Post(message);
+            }
+        }
+    }
+
+    private void OnLocalFilesCleared(object? sender, EventArgs e)
+    {
+        FileOfferSource? previous;
+        lock (_fileLock)
+        {
+            previous = _localOffer;
+            _localOffer = null;
+        }
+
+        if (previous == null)
+            return;
+
+        lock (_connectionLock)
+        {
+            foreach (var connection in _connections.Values)
+                connection.Post(new FileOfferRevokedMessage { OfferId = previous.OfferId });
+        }
+    }
+
+    private void OnTransferRequest(object? sender, ProtocolMessage message)
+    {
+        if (sender is not PeerConnection connection || message is not FileRequestMessage request)
+            return;
+
+        FileOfferSource? offer;
+        lock (_fileLock)
+        {
+            offer = _localOffer;
+        }
+
+        var reply = new FileChunkMessage
+        {
+            OfferId = request.OfferId,
+            EntryIndex = request.EntryIndex,
+            Offset = request.Offset
+        };
+
+        try
+        {
+            if (offer == null || offer.OfferId != request.OfferId)
+                reply.Error = "Those files are no longer on the clipboard of the other machine.";
+            else
+                reply.Data = offer.Read(request.EntryIndex, request.Offset, Math.Clamp(request.Length, 0, FileTransferClient.ChunkSize));
+        }
+        catch (Exception ex)
+        {
+            reply.Error = ex.Message;
+        }
+
+        connection.Post(reply);
+    }
+
+    // Paste side: an offer from a peer becomes virtual files on our clipboard, fetched on demand.
+
+    private void HandleRemoteFileOffer(FileOfferMessage offer, PeerConnection connection)
+    {
+        if (!_settings.Clipboard.Enabled || !_settings.Clipboard.SyncFiles || offer.Entries.Count == 0)
+            return;
+
+        var address = connection.RemoteEndPoint?.Address;
+        var port = connection.PeerListenPort;
+        if (address == null || port <= 0)
+        {
+            SimpleLogger.Log("Files", $"Cannot fetch files from {connection.PeerName}: no address to connect back to");
+            return;
+        }
+
+        FileTransferClient client;
+        lock (_fileLock)
+        {
+            if (_transferClients.TryGetValue(connection.PeerId, out var old))
+            {
+                old.Dispose();
+                _transferClients.Remove(connection.PeerId);
+            }
+
+            var peerName = connection.PeerName;
+            client = new FileTransferClient(peerName, async ct =>
+            {
+                var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
+                return await PeerConnection.ConnectAsync(
+                    address.ToString(), port, GetPairingKey(), _settings.MachineId, _settings.MachineName,
+                    width, height, _settings.LocalPort, ct, ConnectionKind.Transfer);
+            });
+            _transferClients[connection.PeerId] = client;
+            _remoteOfferPeerId = connection.PeerId;
+            _remoteOfferId = offer.OfferId;
+        }
+
+        var offerId = offer.OfferId;
+        _clipboardManager.SetVirtualFiles(offer, (index, offset, length) => client.Fetch(offerId, index, offset, length));
+    }
+
+    private void HandleRemoteOfferRevoked(FileOfferRevokedMessage revoked, PeerConnection connection)
+    {
+        bool current;
+        lock (_fileLock)
+        {
+            current = _remoteOfferPeerId == connection.PeerId && _remoteOfferId == revoked.OfferId;
+        }
+        if (!current)
+            return;
+
+        _clipboardManager.ClearVirtualFiles(revoked.OfferId);
+        ForgetRemoteOffer(connection.PeerId);
+    }
+
+    private void ForgetRemoteOffer(string peerId)
+    {
+        FileTransferClient? client = null;
+        string? offerId = null;
+        lock (_fileLock)
+        {
+            if (_transferClients.Remove(peerId, out var found))
+                client = found;
+            if (_remoteOfferPeerId == peerId)
+            {
+                offerId = _remoteOfferId;
+                _remoteOfferPeerId = null;
+                _remoteOfferId = null;
+            }
+        }
+
+        if (offerId != null)
+            _clipboardManager.ClearVirtualFiles(offerId);
+        client?.Dispose();
+    }
+
+    #endregion
+
     public void Dispose()
     {
         if (_disposed)
@@ -1166,6 +1376,16 @@ public sealed class RoboMouseService : IDisposable
 
         _disposed = true;
         Stop();
+
+        lock (_fileLock)
+        {
+            foreach (var client in _transferClients.Values)
+                client.Dispose();
+            _transferClients.Clear();
+            foreach (var server in _transferServers)
+                server.Dispose();
+            _transferServers.Clear();
+        }
 
         _rawMouse.Dispose();
         _mouseHook.Dispose();

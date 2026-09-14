@@ -27,7 +27,8 @@ public class ClipboardSettings
     public bool SyncImages { get; set; } = true;
 
     /// <summary>
-    /// Whether to sync file paths/references.
+    /// Whether files copied on one machine can be pasted on another. Only names are shared at copy
+    /// time; bytes stream from the source machine when the paste happens.
     /// </summary>
-    public bool SyncFiles { get; set; } = false;
+    public bool SyncFiles { get; set; } = true;
 }

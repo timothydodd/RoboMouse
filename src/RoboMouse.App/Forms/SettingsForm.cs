@@ -18,6 +18,7 @@ public partial class SettingsForm : Form
     private NumericUpDown _discoveryPortNumeric = null!;
     private TextBox _pairingCodeTextBox = null!;
     private CheckBox _clipboardEnabledCheck = null!;
+    private CheckBox _shareFilesCheck = null!;
     private CheckBox _borderHighlightCheck = null!;
 #if DEBUG
     private CheckBox _debugPanelCheck = null!;
@@ -142,8 +143,18 @@ public partial class SettingsForm : Form
 
         // Clipboard sync
         layout.Controls.Add(new Label { Text = "Clipboard:", AutoSize = true }, 0, row);
-        _clipboardEnabledCheck = new CheckBox { Text = "Enable clipboard sharing", AutoSize = true };
-        layout.Controls.Add(_clipboardEnabledCheck, 1, row++);
+        var clipboardPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown };
+        _clipboardEnabledCheck = new CheckBox { Text = "Share text and images", AutoSize = true };
+        clipboardPanel.Controls.Add(_clipboardEnabledCheck);
+        _shareFilesCheck = new CheckBox { Text = "Share copied files (paste them in Explorer on the other machine)", AutoSize = true };
+        clipboardPanel.Controls.Add(_shareFilesCheck);
+        clipboardPanel.Controls.Add(new Label
+        {
+            Text = "Files transfer only when you paste, straight from the machine you copied them on.",
+            AutoSize = true,
+            ForeColor = Color.Gray
+        });
+        layout.Controls.Add(clipboardPanel, 1, row++);
 
         // Border highlight
         layout.Controls.Add(new Label { Text = "Screen border:", AutoSize = true }, 0, row);
@@ -701,6 +712,7 @@ public partial class SettingsForm : Form
         _discoveryPortNumeric.Value = _settings.DiscoveryPort;
         _pairingCodeTextBox.Text = _settings.PairingCode;
         _clipboardEnabledCheck.Checked = _settings.Clipboard.Enabled;
+        _shareFilesCheck.Checked = _settings.Clipboard.SyncFiles;
         _borderHighlightCheck.Checked = _settings.ShowBorderHighlight;
 #if DEBUG
         _debugPanelCheck.Checked = _settings.DebugPanelEnabled;
@@ -734,6 +746,7 @@ public partial class SettingsForm : Form
         _settings.LocalPort = (int)_portNumeric.Value;
         _settings.DiscoveryPort = (int)_discoveryPortNumeric.Value;
         _settings.Clipboard.Enabled = _clipboardEnabledCheck.Checked;
+        _settings.Clipboard.SyncFiles = _shareFilesCheck.Checked;
         _settings.ShowBorderHighlight = _borderHighlightCheck.Checked;
 #if DEBUG
         _settings.DebugPanelEnabled = _debugPanelCheck.Checked;

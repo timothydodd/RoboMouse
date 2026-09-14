@@ -3,6 +3,21 @@ using System.Buffers.Binary;
 namespace RoboMouse.Core.Network.Protocol;
 
 /// <summary>
+/// What a connection is for.
+/// </summary>
+public enum ConnectionKind : byte
+{
+    /// <summary>Normal peer link carrying input, clipboard and control messages.</summary>
+    Control = 0,
+
+    /// <summary>Reachability test; the receiver answers pings but does not treat the sender as a peer.</summary>
+    Probe = 1,
+
+    /// <summary>Bulk file transfer link, kept separate so large copies never delay input.</summary>
+    Transfer = 2
+}
+
+/// <summary>
 /// Initial handshake message sent when connecting.
 /// </summary>
 public class HandshakeMessage : Message
@@ -34,11 +49,11 @@ public class HandshakeMessage : Message
     /// </summary>
     public bool SupportsClipboard { get; set; } = true;
 
-    /// <summary>
-    /// True for a connection test. The receiver answers the handshake and pings but does not
-    /// treat the sender as a peer; the sender disconnects when the test completes.
-    /// </summary>
-    public bool IsProbe { get; set; }
+    /// <summary>What this connection is for.</summary>
+    public ConnectionKind Kind { get; set; } = ConnectionKind.Control;
+
+    /// <summary>The port the sender listens on, so the receiver can open further connections back to it.</summary>
+    public int ListenPort { get; set; }
 
     protected override byte[] SerializePayload()
     {
@@ -55,7 +70,10 @@ public class HandshakeMessage : Message
         buffer.AddRange(intBuffer);
 
         buffer.Add(SupportsClipboard ? (byte)1 : (byte)0);
-        buffer.Add(IsProbe ? (byte)1 : (byte)0);
+        buffer.Add((byte)Kind);
+
+        BinaryPrimitives.WriteInt32LittleEndian(intBuffer, ListenPort);
+        buffer.AddRange(intBuffer);
 
         return buffer.ToArray();
     }
@@ -73,7 +91,8 @@ public class HandshakeMessage : Message
         message.ScreenHeight = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset));
         offset += 4;
         message.SupportsClipboard = payload[offset++] == 1;
-        message.IsProbe = offset < payload.Length && payload[offset] == 1;
+        message.Kind = (ConnectionKind)payload[offset++];
+        message.ListenPort = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset));
 
         return message;
     }
@@ -116,6 +135,9 @@ public class HandshakeAckMessage : Message
     /// </summary>
     public string? RejectReason { get; set; }
 
+    /// <summary>The port the acknowledging machine listens on.</summary>
+    public int ListenPort { get; set; }
+
     protected override byte[] SerializePayload()
     {
         var buffer = new List<byte>();
@@ -132,6 +154,9 @@ public class HandshakeAckMessage : Message
         buffer.AddRange(intBuffer);
 
         MessageHelpers.WriteString(buffer, RejectReason ?? string.Empty);
+
+        BinaryPrimitives.WriteInt32LittleEndian(intBuffer, ListenPort);
+        buffer.AddRange(intBuffer);
 
         return buffer.ToArray();
     }
@@ -154,6 +179,7 @@ public class HandshakeAckMessage : Message
         message.RejectReason = MessageHelpers.ReadString(payload, ref offset);
         if (string.IsNullOrEmpty(message.RejectReason))
             message.RejectReason = null;
+        message.ListenPort = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset));
 
         return message;
     }

@@ -10,7 +10,7 @@ A Windows application that lets you share your mouse and keyboard across multipl
 
 - **Seamless Mouse/Keyboard Sharing** - Move your mouse to the screen edge to control another computer
 - **Automatic Peer Discovery** - Computers on the same network find each other automatically via UDP broadcast
-- **Clipboard Synchronization** - Copy on one machine, paste on another
+- **Clipboard Synchronization** - Copy text, images or files on one machine, paste on another
 - **Visual Screen Layout Editor** - Drag and drop to arrange your screens
 - **System Tray Application** - Runs quietly in the background; the icon's signal colour shows state (grey = no peers, green = connected, blue = controlling another screen, orange = being controlled)
 
@@ -83,6 +83,21 @@ RoboMouse.sln
 └── tests/
     └── RoboMouse.Core.Tests/  # Unit tests
 ```
+
+## Copying Files Between Machines
+
+Copy files or folders in Explorer on one machine, move to the other, and paste in Explorer.
+Only the names and sizes are sent when you copy; the bytes stream directly from the source
+machine when you paste, over a separate connection so mouse input is never delayed. Explorer
+shows its usual progress dialog and cancelling it stops the transfer.
+
+Notes:
+
+- The source machine must stay running and reachable until the paste finishes.
+- Explorer, Outlook, Teams and Office accept these "virtual file" pastes. Some applications
+  only accept plain file paths (VS Code, for instance) and will not see them; paste into a
+  folder first.
+- Turn it off under Settings > General > Clipboard if you do not want copied files offered.
 
 ## Pairing and Security
 
