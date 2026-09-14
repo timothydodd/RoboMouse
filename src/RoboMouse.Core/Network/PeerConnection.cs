@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Sockets;
 using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network.Protocol;
@@ -8,79 +8,72 @@ namespace RoboMouse.Core.Network;
 
 /// <summary>
 /// Represents a TCP connection to a peer.
+///
+/// After the handshake, all traffic flows through two dedicated threads:
+///  - a sender thread that drains an outbound queue. Consecutive mouse-motion messages
+///    are merged while they wait, so a stalled socket produces one catch-up message
+///    instead of a burst of stale ones, and the input hook never touches the socket.
+///  - a receiver thread that reads into a large buffer and parses as many frames as
+///    arrived in one read.
 /// </summary>
 public sealed class PeerConnection : IDisposable
 {
+    private const int HeaderSize = 16;
+    private const int MaxMessageSize = 64 * 1024 * 1024;
+    private const int PingIntervalMs = 1000;
+
     private readonly TcpClient _client;
     private readonly NetworkStream _stream;
-    private readonly CancellationTokenSource _cts;
-    private Task _receiveTask;
-    private readonly SemaphoreSlim _sendLock = new(1, 1);
-    private bool _disposed;
+    private readonly CancellationTokenSource _cts = new();
 
-    /// <summary>
-    /// Unique identifier of the connected peer.
-    /// </summary>
+    private readonly object _sendLock = new();
+    private readonly Queue<ProtocolMessage> _outbound = new();
+    private readonly AutoResetEvent _outboundSignal = new(false);
+    private readonly ManualResetEventSlim _outboundDrained = new(true);
+    private Thread? _sendThread;
+    private Thread? _receiveThread;
+    private System.Threading.Timer? _pingTimer;
+
+    private volatile bool _disposed;
+    private int _disconnectRaised;
+
+    /// <summary>Unique identifier of the connected peer.</summary>
     public string PeerId { get; private set; } = string.Empty;
 
-    /// <summary>
-    /// Display name of the connected peer.
-    /// </summary>
+    /// <summary>Display name of the connected peer.</summary>
     public string PeerName { get; private set; } = string.Empty;
 
-    /// <summary>
-    /// Peer's screen width.
-    /// </summary>
+    /// <summary>Peer's screen width.</summary>
     public int PeerScreenWidth { get; private set; }
 
-    /// <summary>
-    /// Peer's screen height.
-    /// </summary>
+    /// <summary>Peer's screen height.</summary>
     public int PeerScreenHeight { get; private set; }
 
-    /// <summary>
-    /// Remote endpoint address.
-    /// </summary>
+    /// <summary>Most recent measured round-trip time in milliseconds, or -1 if not yet measured.</summary>
+    public int RoundTripMs { get; private set; } = -1;
+
+    /// <summary>Remote endpoint address.</summary>
     public IPEndPoint? RemoteEndPoint => _client.Client.RemoteEndPoint as IPEndPoint;
 
-    /// <summary>
-    /// Whether the connection is established and active.
-    /// </summary>
-    public bool IsConnected => _client.Connected && !_disposed;
+    /// <summary>Whether the connection is established and active.</summary>
+    public bool IsConnected => !_disposed && _client.Connected;
 
-    /// <summary>
-    /// Event raised when a message is received.
-    /// </summary>
+    /// <summary>Raised on the receive thread when a message is received.</summary>
     public event EventHandler<ProtocolMessage>? MessageReceived;
 
-    /// <summary>
-    /// Event raised when the connection is lost.
-    /// </summary>
+    /// <summary>Raised when a round-trip measurement completes.</summary>
+    public event EventHandler<int>? RoundTripMeasured;
+
+    /// <summary>Raised when the connection is lost.</summary>
     public event EventHandler<Exception?>? Disconnected;
 
-    private PeerConnection(TcpClient client, bool startReceiveLoop = true)
+    private PeerConnection(TcpClient client)
     {
         _client = client;
         _client.NoDelay = true; // Disable Nagle's algorithm for lower latency
+        _client.ReceiveBufferSize = 256 * 1024;
+        _client.SendBufferSize = 256 * 1024;
         _stream = _client.GetStream();
-        _cts = new CancellationTokenSource();
-
-        if (startReceiveLoop)
-        {
-            _receiveTask = ReceiveLoopAsync(_cts.Token);
-        }
-        else
-        {
-            _receiveTask = Task.CompletedTask;
-        }
-    }
-
-    /// <summary>
-    /// Starts the background receive loop. Call after handshake is complete.
-    /// </summary>
-    private void StartReceiveLoop()
-    {
-        _receiveTask = ReceiveLoopAsync(_cts.Token);
     }
 
     /// <summary>
@@ -100,12 +93,8 @@ public sealed class PeerConnection : IDisposable
         var client = new TcpClient();
         await client.ConnectAsync(host, port, ct);
 
-        SimpleLogger.Log("Connect", $"TCP connected to {host}:{port}");
+        var connection = new PeerConnection(client);
 
-        // Don't start receive loop yet - we need to complete handshake first
-        var connection = new PeerConnection(client, startReceiveLoop: false);
-
-        // Send handshake
         var handshake = new HandshakeMessage
         {
             MachineId = localMachineId,
@@ -115,14 +104,8 @@ public sealed class PeerConnection : IDisposable
             SupportsClipboard = true
         };
 
-        SimpleLogger.Log("Connect", $"Sending handshake (Id={localMachineId}, Name={localMachineName}, Screen={localScreenWidth}x{localScreenHeight})");
-        await connection.SendAsync(handshake, ct);
-
-        SimpleLogger.Log("Connect", "Waiting for handshake response...");
-        // Wait for handshake acknowledgment
-        var response = await connection.ReceiveMessageAsync(ct);
-
-        SimpleLogger.Log("Connect", $"Received response: {response?.GetType().Name ?? "null"}");
+        await connection.WriteDirectAsync(handshake, ct);
+        var response = await connection.ReadOneAsync(ct);
 
         if (response is not HandshakeAckMessage ack)
         {
@@ -142,10 +125,9 @@ public sealed class PeerConnection : IDisposable
         connection.PeerScreenWidth = ack.ScreenWidth;
         connection.PeerScreenHeight = ack.ScreenHeight;
 
-        // Now start the receive loop for ongoing messages
-        connection.StartReceiveLoop();
+        connection.StartThreads();
 
-        SimpleLogger.Log("Connect", $"Connected successfully to {ack.MachineName}");
+        SimpleLogger.Log("Connect", $"Connected to {ack.MachineName} ({ack.ScreenWidth}x{ack.ScreenHeight})");
         return connection;
     }
 
@@ -161,16 +143,9 @@ public sealed class PeerConnection : IDisposable
         CancellationToken ct = default)
     {
         var remoteEp = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
-        SimpleLogger.Log("Accept", $"Processing incoming connection from {remoteEp}");
+        var connection = new PeerConnection(client);
 
-        // Don't start receive loop yet - we need to complete handshake first
-        var connection = new PeerConnection(client, startReceiveLoop: false);
-
-        // Wait for handshake
-        SimpleLogger.Log("Accept", "Waiting for handshake message...");
-        var message = await connection.ReceiveMessageAsync(ct);
-
-        SimpleLogger.Log("Accept", $"Received message: {message?.GetType().Name ?? "null"}");
+        var message = await connection.ReadOneAsync(ct);
 
         if (message is not HandshakeMessage handshake)
         {
@@ -178,14 +153,11 @@ public sealed class PeerConnection : IDisposable
             throw new InvalidOperationException($"Expected handshake message, got {message?.GetType().Name ?? "null"}");
         }
 
-        SimpleLogger.Log("Accept", $"Handshake from: {handshake.MachineName} ({handshake.MachineId}), Screen={handshake.ScreenWidth}x{handshake.ScreenHeight}");
-
         connection.PeerId = handshake.MachineId;
         connection.PeerName = handshake.MachineName;
         connection.PeerScreenWidth = handshake.ScreenWidth;
         connection.PeerScreenHeight = handshake.ScreenHeight;
 
-        // Send acknowledgment
         var ack = new HandshakeAckMessage
         {
             Accepted = true,
@@ -195,145 +167,283 @@ public sealed class PeerConnection : IDisposable
             ScreenHeight = localScreenHeight
         };
 
-        SimpleLogger.Log("Accept", $"Sending HandshakeAck (Id={localMachineId}, Name={localMachineName})");
-        await connection.SendAsync(ack, ct);
+        await connection.WriteDirectAsync(ack, ct);
+        connection.StartThreads();
 
-        // Now start the receive loop for ongoing messages
-        connection.StartReceiveLoop();
-
-        SimpleLogger.Log("Accept", "Connection established successfully");
+        SimpleLogger.Log("Accept", $"Accepted {handshake.MachineName} from {remoteEp} ({handshake.ScreenWidth}x{handshake.ScreenHeight})");
         return connection;
     }
 
+    private void StartThreads()
+    {
+        _sendThread = new Thread(SendLoop)
+        {
+            Name = $"RoboMouse-Send-{PeerName}",
+            IsBackground = true,
+            Priority = ThreadPriority.AboveNormal
+        };
+        _receiveThread = new Thread(ReceiveLoop)
+        {
+            Name = $"RoboMouse-Recv-{PeerName}",
+            IsBackground = true,
+            Priority = ThreadPriority.AboveNormal
+        };
+        _sendThread.Start();
+        _receiveThread.Start();
+
+        _pingTimer = new System.Threading.Timer(_ => Post(new PingMessage()), null, PingIntervalMs, PingIntervalMs);
+    }
+
     /// <summary>
-    /// Sends a message to the peer.
+    /// Queues a message for sending. Never blocks and never throws; safe to call from input hooks.
+    /// Consecutive mouse-motion messages waiting in the queue are merged into one.
     /// </summary>
-    public async Task SendAsync(ProtocolMessage message, CancellationToken ct = default)
+    public void Post(ProtocolMessage message)
     {
         if (_disposed)
-            throw new ObjectDisposedException(nameof(PeerConnection));
+            return;
 
-        var data = message.Serialize();
-
-        await _sendLock.WaitAsync(ct);
-        try
+        lock (_sendLock)
         {
-            await _stream.WriteAsync(data, ct);
-            await _stream.FlushAsync(ct);
-        }
-        finally
-        {
-            _sendLock.Release();
-        }
-    }
-
-    /// <summary>
-    /// Receives a single message from the peer.
-    /// </summary>
-    private async Task<ProtocolMessage?> ReceiveMessageAsync(CancellationToken ct)
-    {
-        var headerBuffer = new byte[16];
-        var bytesRead = 0;
-
-        // Read header
-        while (bytesRead < 16)
-        {
-            var read = await _stream.ReadAsync(headerBuffer.AsMemory(bytesRead, 16 - bytesRead), ct);
-            if (read == 0)
-                return null;
-            bytesRead += read;
-        }
-
-        // Get total message size
-        var messageSize = ProtocolMessage.GetMessageSize(headerBuffer);
-        if (messageSize < 0)
-            return null;
-
-        // Read remaining data
-        var fullBuffer = new byte[messageSize];
-        headerBuffer.CopyTo(fullBuffer, 0);
-
-        bytesRead = 16;
-        while (bytesRead < messageSize)
-        {
-            var read = await _stream.ReadAsync(fullBuffer.AsMemory(bytesRead, messageSize - bytesRead), ct);
-            if (read == 0)
-                return null;
-            bytesRead += read;
-        }
-
-        return ProtocolMessage.Deserialize(fullBuffer);
-    }
-
-    private async Task ReceiveLoopAsync(CancellationToken ct)
-    {
-        Exception? disconnectReason = null;
-
-        try
-        {
-            while (!ct.IsCancellationRequested)
+            if (message is MouseMessage { IsMotion: true } motion
+                && _outbound.Count > 0
+                && _lastQueued is MouseMessage { IsMotion: true } tail)
             {
-                var message = await ReceiveMessageAsync(ct);
+                tail.DeltaX += motion.DeltaX;
+                tail.DeltaY += motion.DeltaY;
+            }
+            else
+            {
+                _outbound.Enqueue(message);
+                _lastQueued = message;
+            }
+            _outboundDrained.Reset();
+        }
 
-                if (message == null)
+        _outboundSignal.Set();
+    }
+
+    private ProtocolMessage? _lastQueued;
+
+    private void SendLoop()
+    {
+        var batch = new List<ProtocolMessage>();
+        var buffer = new MemoryStream(4096);
+
+        try
+        {
+            while (!_disposed)
+            {
+                _outboundSignal.WaitOne();
+
+                lock (_sendLock)
                 {
-                    // Connection closed gracefully
-                    break;
+                    while (_outbound.Count > 0)
+                        batch.Add(_outbound.Dequeue());
+                    _lastQueued = null;
                 }
 
-                // Handle ping internally
-                if (message is PingMessage)
-                {
-                    await SendAsync(new PongMessage(), ct);
+                if (batch.Count == 0)
                     continue;
-                }
 
-                MessageReceived?.Invoke(this, message);
-
-                if (message is DisconnectMessage)
+                buffer.SetLength(0);
+                foreach (var message in batch)
                 {
-                    break;
+                    var data = message.Serialize();
+                    buffer.Write(data, 0, data.Length);
+                }
+                batch.Clear();
+
+                _stream.Write(buffer.GetBuffer(), 0, (int)buffer.Length);
+
+                lock (_sendLock)
+                {
+                    if (_outbound.Count == 0)
+                        _outboundDrained.Set();
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (Exception ex) when (!_disposed)
         {
-            // Normal cancellation
+            RaiseDisconnected(ex);
         }
-        catch (IOException ex)
+        catch
         {
-            disconnectReason = ex;
+            // Disposed; ignore.
         }
-        catch (SocketException ex)
+    }
+
+    private void ReceiveLoop()
+    {
+        var buffer = new byte[64 * 1024];
+        var filled = 0;
+        Exception? reason = null;
+
+        try
         {
-            disconnectReason = ex;
+            while (!_disposed)
+            {
+                var read = _stream.Read(buffer, filled, buffer.Length - filled);
+                if (read == 0)
+                    break; // Closed gracefully
+                filled += read;
+
+                var consumed = 0;
+                while (filled - consumed >= HeaderSize)
+                {
+                    var size = ProtocolMessage.GetMessageSize(buffer.AsSpan(consumed, HeaderSize));
+                    if (size < HeaderSize || size > MaxMessageSize)
+                        throw new InvalidDataException("Invalid frame header from peer.");
+
+                    if (size > buffer.Length)
+                    {
+                        Array.Resize(ref buffer, Math.Max(size, buffer.Length * 2));
+                    }
+
+                    if (filled - consumed < size)
+                        break; // Need more data for this frame
+
+                    var message = ProtocolMessage.Deserialize(buffer.AsSpan(consumed, size));
+                    consumed += size;
+
+                    if (message != null && !Dispatch(message))
+                    {
+                        filled = 0;
+                        consumed = 0;
+                        goto done;
+                    }
+                }
+
+                if (consumed > 0)
+                {
+                    var remaining = filled - consumed;
+                    if (remaining > 0)
+                        Buffer.BlockCopy(buffer, consumed, buffer, 0, remaining);
+                    filled = remaining;
+                }
+            }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!_disposed)
         {
-            disconnectReason = ex;
+            reason = ex;
+        }
+        catch
+        {
+            return;
         }
 
+    done:
         if (!_disposed)
         {
-            Disconnected?.Invoke(this, disconnectReason);
+            RaiseDisconnected(reason);
         }
+    }
+
+    /// <summary>
+    /// Handles a received message. Returns false when the connection should end.
+    /// </summary>
+    private bool Dispatch(ProtocolMessage message)
+    {
+        switch (message)
+        {
+            case PingMessage ping:
+                Post(new PongMessage { Timestamp = ping.Timestamp });
+                return true;
+
+            case PongMessage pong:
+                var rtt = (int)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pong.Timestamp);
+                if (rtt >= 0)
+                {
+                    RoundTripMs = rtt;
+                    RoundTripMeasured?.Invoke(this, rtt);
+                }
+                return true;
+
+            case DisconnectMessage:
+                MessageReceived?.Invoke(this, message);
+                return false;
+
+            default:
+                try
+                {
+                    MessageReceived?.Invoke(this, message);
+                }
+                catch (Exception ex)
+                {
+                    SimpleLogger.Log("Recv", $"Handler for {message.Type} threw: {ex.Message}");
+                }
+                return true;
+        }
+    }
+
+    private void RaiseDisconnected(Exception? reason)
+    {
+        if (Interlocked.Exchange(ref _disconnectRaised, 1) == 0)
+        {
+            Disconnected?.Invoke(this, reason);
+        }
+    }
+
+    /// <summary>
+    /// Writes a message straight to the socket. Only for the handshake, before the sender thread starts.
+    /// </summary>
+    private async Task WriteDirectAsync(ProtocolMessage message, CancellationToken ct)
+    {
+        var data = message.Serialize();
+        await _stream.WriteAsync(data, ct);
+    }
+
+    /// <summary>
+    /// Reads one message straight from the socket. Only for the handshake, before the receiver thread starts.
+    /// </summary>
+    private async Task<ProtocolMessage?> ReadOneAsync(CancellationToken ct)
+    {
+        var header = new byte[HeaderSize];
+        if (!await ReadExactlyAsync(header, HeaderSize, ct))
+            return null;
+
+        var size = ProtocolMessage.GetMessageSize(header);
+        if (size < HeaderSize || size > MaxMessageSize)
+            return null;
+
+        var full = new byte[size];
+        header.CopyTo(full, 0);
+        if (!await ReadExactlyAsync(full.AsMemory(HeaderSize), size - HeaderSize, ct))
+            return null;
+
+        return ProtocolMessage.Deserialize(full);
+    }
+
+    private async Task<bool> ReadExactlyAsync(Memory<byte> target, int count, CancellationToken ct)
+    {
+        var got = 0;
+        while (got < count)
+        {
+            var read = await _stream.ReadAsync(target.Slice(got, count - got), ct);
+            if (read == 0)
+                return false;
+            got += read;
+        }
+        return true;
     }
 
     /// <summary>
     /// Gracefully disconnects from the peer.
     /// </summary>
-    public async Task DisconnectAsync()
+    public Task DisconnectAsync()
     {
         if (_disposed)
-            return;
+            return Task.CompletedTask;
 
         try
         {
-            await SendAsync(new DisconnectMessage());
+            Post(new DisconnectMessage());
+            _outboundDrained.Wait(250);
         }
         catch { }
 
         Dispose();
+        return Task.CompletedTask;
     }
 
     public void Dispose()
@@ -343,17 +453,14 @@ public sealed class PeerConnection : IDisposable
 
         _disposed = true;
         _cts.Cancel();
+        _pingTimer?.Dispose();
+        _outboundSignal.Set();
 
-        try
-        { _stream.Close(); }
-        catch { }
-        try
-        { _client.Close(); }
-        catch { }
+        try { _stream.Close(); } catch { }
+        try { _client.Close(); } catch { }
 
         _stream.Dispose();
         _client.Dispose();
         _cts.Dispose();
-        _sendLock.Dispose();
     }
 }

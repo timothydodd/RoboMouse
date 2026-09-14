@@ -120,7 +120,8 @@ public sealed class MouseHook : IDisposable
             hookStruct.pt.Y,
             eventType.Value,
             wheelDelta,
-            hookStruct.time);
+            hookStruct.time,
+            (hookStruct.flags & NativeMethods.LLMHF_INJECTED) != 0);
     }
 
     private static MouseEventType GetXButtonDownType(uint mouseData)

@@ -1,25 +1,26 @@
 using System.Buffers.Binary;
 using RoboMouse.Core.Input;
-using InputMouseEventArgs = RoboMouse.Core.Input.MouseEventArgs;
 
 namespace RoboMouse.Core.Network.Protocol;
 
 /// <summary>
-/// Mouse input event message.
+/// Mouse input event message. Motion is relative, in raw hardware counts, so the
+/// receiving machine applies its own pointer speed and acceleration exactly as it
+/// would for a locally attached mouse.
 /// </summary>
 public class MouseMessage : Message
 {
     public override MessageType Type => MessageType.Mouse;
 
     /// <summary>
-    /// X coordinate (relative to sender's screen).
+    /// Horizontal motion since the previous message (raw counts). Only meaningful for Move.
     /// </summary>
-    public int X { get; set; }
+    public int DeltaX { get; set; }
 
     /// <summary>
-    /// Y coordinate (relative to sender's screen).
+    /// Vertical motion since the previous message (raw counts). Only meaningful for Move.
     /// </summary>
-    public int Y { get; set; }
+    public int DeltaY { get; set; }
 
     /// <summary>
     /// Type of mouse event.
@@ -32,60 +33,37 @@ public class MouseMessage : Message
     public int WheelDelta { get; set; }
 
     /// <summary>
-    /// Velocity X in pixels per second (for prediction).
+    /// True for pure motion messages, which may be merged with adjacent motion messages.
     /// </summary>
-    public float VelocityX { get; set; }
-
-    /// <summary>
-    /// Velocity Y in pixels per second (for prediction).
-    /// </summary>
-    public float VelocityY { get; set; }
+    public bool IsMotion => EventType == MouseEventType.Move;
 
     protected override byte[] SerializePayload()
     {
-        var buffer = new byte[21]; // 4 + 4 + 1 + 4 + 4 + 4
+        var buffer = new byte[13]; // 4 + 4 + 1 + 4
 
-        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(0), X);
-        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(4), Y);
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(0), DeltaX);
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(4), DeltaY);
         buffer[8] = (byte)EventType;
         BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(9), WheelDelta);
-        BinaryPrimitives.WriteSingleLittleEndian(buffer.AsSpan(13), VelocityX);
-        BinaryPrimitives.WriteSingleLittleEndian(buffer.AsSpan(17), VelocityY);
 
         return buffer;
     }
 
     public static MouseMessage DeserializePayload(ReadOnlySpan<byte> payload)
     {
-        var msg = new MouseMessage
+        return new MouseMessage
         {
-            X = BinaryPrimitives.ReadInt32LittleEndian(payload),
-            Y = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(4)),
+            DeltaX = BinaryPrimitives.ReadInt32LittleEndian(payload),
+            DeltaY = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(4)),
             EventType = (MouseEventType)payload[8],
             WheelDelta = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(9))
         };
-
-        // Velocity fields are optional for backwards compatibility
-        if (payload.Length >= 21)
-        {
-            msg.VelocityX = BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(13));
-            msg.VelocityY = BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(17));
-        }
-
-        return msg;
     }
 
-    /// <summary>
-    /// Creates a MouseMessage from a mouse event.
-    /// </summary>
-    public static MouseMessage FromEvent(InputMouseEventArgs e)
+    public static MouseMessage Motion(int dx, int dy) => new()
     {
-        return new MouseMessage
-        {
-            X = e.X,
-            Y = e.Y,
-            EventType = e.EventType,
-            WheelDelta = e.WheelDelta
-        };
-    }
+        DeltaX = dx,
+        DeltaY = dy,
+        EventType = MouseEventType.Move
+    };
 }

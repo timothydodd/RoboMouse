@@ -36,9 +36,9 @@ public class MessageSerializationTests
     {
         var original = new MouseMessage
         {
-            X = 500,
-            Y = 300,
-            EventType = MouseEventType.LeftDown,
+            DeltaX = -17,
+            DeltaY = 42,
+            EventType = MouseEventType.Move,
             WheelDelta = 0
         };
 
@@ -46,8 +46,8 @@ public class MessageSerializationTests
         var deserialized = ProtocolMessage.Deserialize(serialized) as MouseMessage;
 
         Assert.NotNull(deserialized);
-        Assert.Equal(original.X, deserialized.X);
-        Assert.Equal(original.Y, deserialized.Y);
+        Assert.Equal(original.DeltaX, deserialized.DeltaX);
+        Assert.Equal(original.DeltaY, deserialized.DeltaY);
         Assert.Equal(original.EventType, deserialized.EventType);
         Assert.Equal(original.WheelDelta, deserialized.WheelDelta);
     }
@@ -57,10 +57,8 @@ public class MessageSerializationTests
     {
         var original = new MouseMessage
         {
-            X = 100,
-            Y = 200,
             EventType = MouseEventType.Wheel,
-            WheelDelta = 120
+            WheelDelta = -120
         };
 
         var serialized = original.Serialize();
@@ -68,7 +66,28 @@ public class MessageSerializationTests
 
         Assert.NotNull(deserialized);
         Assert.Equal(MouseEventType.Wheel, deserialized.EventType);
-        Assert.Equal(120, deserialized.WheelDelta);
+        Assert.Equal(-120, deserialized.WheelDelta);
+    }
+
+    [Fact]
+    public void PongMessage_EchoesPingTimestamp()
+    {
+        var ping = new PingMessage { Timestamp = 1234567890123 };
+        var pong = new PongMessage { Timestamp = ping.Timestamp };
+
+        var deserialized = ProtocolMessage.Deserialize(pong.Serialize());
+
+        Assert.IsType<PongMessage>(deserialized);
+        Assert.Equal(ping.Timestamp, deserialized!.Timestamp);
+    }
+
+    [Fact]
+    public void Deserialize_RejectsOldProtocolVersion()
+    {
+        var data = new MouseMessage().Serialize();
+        data[2] = 1; // Version byte
+
+        Assert.Null(ProtocolMessage.Deserialize(data));
     }
 
     [Fact]

@@ -11,7 +11,7 @@ public abstract class Message
     /// <summary>
     /// Protocol version number.
     /// </summary>
-    public const byte ProtocolVersion = 1;
+    public const byte ProtocolVersion = 2;
 
     /// <summary>
     /// Magic bytes to identify RoboMouse protocol.

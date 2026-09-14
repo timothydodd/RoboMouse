@@ -4,24 +4,11 @@ using RoboMouse.Core.Input;
 namespace RoboMouse.Core.Screen;
 
 /// <summary>
-/// Manages cursor capture and transition between screens.
+/// Places the cursor on screen edges during transitions between machines.
 /// </summary>
 public class CursorManager
 {
     private readonly ScreenInfo _screenInfo;
-    private bool _isCaptured;
-    private int _capturedX;
-    private int _capturedY;
-
-    /// <summary>
-    /// Whether the cursor is currently captured (controlling remote).
-    /// </summary>
-    public bool IsCaptured => _isCaptured;
-
-    /// <summary>
-    /// The last captured position.
-    /// </summary>
-    public (int X, int Y) CapturedPosition => (_capturedX, _capturedY);
 
     public CursorManager(ScreenInfo screenInfo)
     {
@@ -29,89 +16,43 @@ public class CursorManager
     }
 
     /// <summary>
-    /// Captures the cursor at its current position.
+    /// Computes the pixel position on the given edge of the virtual screen for a normalized
+    /// (0..1) position along that edge.
     /// </summary>
-    public void Capture()
+    public (int X, int Y) GetEdgePoint(ScreenPosition edge, float normalizedPosition)
     {
-        if (_isCaptured)
-            return;
-
-        var (x, y) = InputSimulator.GetCursorPosition();
-        Capture(x, y);
-    }
-
-    /// <summary>
-    /// Captures the cursor at the specified position.
-    /// Uses warp-back approach instead of clipping for delta tracking.
-    /// </summary>
-    public void Capture(int x, int y)
-    {
-        _capturedX = x;
-        _capturedY = y;
-        _isCaptured = true;
-
-        // Move cursor to capture point (will be warped back here after each move)
-        InputSimulator.MoveTo(x, y);
-    }
-
-    /// <summary>
-    /// Warps the cursor back to the captured position.
-    /// Call this after processing mouse movement to reset for next delta.
-    /// </summary>
-    public void WarpBack()
-    {
-        if (_isCaptured)
-        {
-            InputSimulator.MoveTo(_capturedX, _capturedY);
-        }
-    }
-
-    /// <summary>
-    /// Releases the cursor from capture.
-    /// </summary>
-    public void Release()
-    {
-        if (!_isCaptured)
-            return;
-
-        _isCaptured = false;
-        // No need to release clip since we're not using ClipCursor anymore
-    }
-
-    /// <summary>
-    /// Releases the cursor and moves it to a position based on normalized coordinates.
-    /// </summary>
-    public void ReleaseAt(ScreenPosition entryEdge, float normalizedPosition)
-    {
-        Release();
-
         var bounds = _screenInfo.VirtualBounds;
-        int x, y;
+        normalizedPosition = Math.Clamp(normalizedPosition, 0f, 1f);
 
-        switch (entryEdge)
+        return edge switch
         {
-            case ScreenPosition.Left:
-                x = bounds.Left;
-                y = bounds.Top + (int)(normalizedPosition * bounds.Height);
-                break;
-            case ScreenPosition.Right:
-                x = bounds.Right - 1;
-                y = bounds.Top + (int)(normalizedPosition * bounds.Height);
-                break;
-            case ScreenPosition.Top:
-                x = bounds.Left + (int)(normalizedPosition * bounds.Width);
-                y = bounds.Top;
-                break;
-            case ScreenPosition.Bottom:
-                x = bounds.Left + (int)(normalizedPosition * bounds.Width);
-                y = bounds.Bottom - 1;
-                break;
-            default:
-                return;
-        }
+            ScreenPosition.Left => (bounds.Left, bounds.Top + (int)(normalizedPosition * (bounds.Height - 1))),
+            ScreenPosition.Right => (bounds.Right - 1, bounds.Top + (int)(normalizedPosition * (bounds.Height - 1))),
+            ScreenPosition.Top => (bounds.Left + (int)(normalizedPosition * (bounds.Width - 1)), bounds.Top),
+            ScreenPosition.Bottom => (bounds.Left + (int)(normalizedPosition * (bounds.Width - 1)), bounds.Bottom - 1),
+            _ => (bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2)
+        };
+    }
 
-        System.Diagnostics.Debug.WriteLine($"ReleaseAt: edge={entryEdge}, normalized={normalizedPosition}, moving to ({x}, {y}), bounds=({bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom})");
+    /// <summary>
+    /// Moves the cursor to the given edge at a normalized position along it.
+    /// </summary>
+    public void PlaceAtEdge(ScreenPosition edge, float normalizedPosition)
+    {
+        var (x, y) = GetEdgePoint(edge, normalizedPosition);
         InputSimulator.MoveTo(x, y);
+    }
+
+    /// <summary>
+    /// Returns the normalized (0..1) position of a point along the given edge of the virtual screen.
+    /// </summary>
+    public float GetNormalizedPositionOnEdge(ScreenPosition edge, int x, int y)
+    {
+        var bounds = _screenInfo.VirtualBounds;
+        var value = edge is ScreenPosition.Left or ScreenPosition.Right
+            ? (y - bounds.Top) / (float)Math.Max(1, bounds.Height - 1)
+            : (x - bounds.Left) / (float)Math.Max(1, bounds.Width - 1);
+        return Math.Clamp(value, 0f, 1f);
     }
 
     /// <summary>

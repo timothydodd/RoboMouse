@@ -44,16 +44,22 @@ public class KeyboardEventArgs : EventArgs
     public uint Timestamp { get; }
 
     /// <summary>
+    /// True when the event was injected by software (SendInput) rather than a physical keyboard.
+    /// </summary>
+    public bool IsInjected { get; }
+
+    /// <summary>
     /// Set to true to prevent the event from being passed to other applications.
     /// </summary>
     public bool Handled { get; set; }
 
-    public KeyboardEventArgs(Keys keyCode, uint scanCode, KeyboardEventType eventType, bool isExtendedKey, uint timestamp = 0)
+    public KeyboardEventArgs(Keys keyCode, uint scanCode, KeyboardEventType eventType, bool isExtendedKey, uint timestamp = 0, bool isInjected = false)
     {
         KeyCode = keyCode;
         ScanCode = scanCode;
         EventType = eventType;
         IsExtendedKey = isExtendedKey;
         Timestamp = timestamp;
+        IsInjected = isInjected;
     }
 }

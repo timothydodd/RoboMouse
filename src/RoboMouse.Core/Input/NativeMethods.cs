@@ -58,6 +58,71 @@ internal static class NativeMethods
     public const uint XBUTTON1 = 0x0001;
     public const uint XBUTTON2 = 0x0002;
 
+    /// <summary>Set in MSLLHOOKSTRUCT.flags when the event was injected (SendInput/SetCursorPos).</summary>
+    public const uint LLMHF_INJECTED = 0x00000001;
+
+    #endregion
+
+    #region Raw Input
+
+    public const int WM_INPUT = 0x00FF;
+    public const uint RID_INPUT = 0x10000003;
+    public const uint RIM_TYPEMOUSE = 0;
+    public const ushort HID_USAGE_PAGE_GENERIC = 0x01;
+    public const ushort HID_USAGE_GENERIC_MOUSE = 0x02;
+    public const uint RIDEV_INPUTSINK = 0x00000100;
+    public const uint RIDEV_REMOVE = 0x00000001;
+    public const ushort MOUSE_MOVE_RELATIVE = 0x00;
+    public const ushort MOUSE_MOVE_ABSOLUTE = 0x01;
+    public const ushort MOUSE_VIRTUAL_DESKTOP = 0x02;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RAWINPUTDEVICE
+    {
+        public ushort usUsagePage;
+        public ushort usUsage;
+        public uint dwFlags;
+        public IntPtr hwndTarget;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RAWINPUTHEADER
+    {
+        public uint dwType;
+        public uint dwSize;
+        public IntPtr hDevice;
+        public IntPtr wParam;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    public struct RAWMOUSE
+    {
+        [FieldOffset(0)] public ushort usFlags;
+        [FieldOffset(4)] public uint ulButtons;
+        [FieldOffset(4)] public ushort usButtonFlags;
+        [FieldOffset(6)] public ushort usButtonData;
+        [FieldOffset(8)] public uint ulRawButtons;
+        [FieldOffset(12)] public int lLastX;
+        [FieldOffset(16)] public int lLastY;
+        [FieldOffset(20)] public uint ulExtraInformation;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RAWINPUT
+    {
+        public RAWINPUTHEADER header;
+        public RAWMOUSE mouse;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] pRawInputDevices, uint uiNumDevices, uint cbSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetRawInputData(IntPtr hRawInput, uint uiCommand, IntPtr pData, ref uint pcbSize, uint cbSizeHeader);
+
+    public const IntPtr HWND_MESSAGE = -3;
+
     #endregion
 
     #region Hook Delegates and Structures

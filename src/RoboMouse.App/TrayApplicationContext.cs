@@ -412,24 +412,10 @@ public class TrayApplicationContext : ApplicationContext
         {
             IsControlling = e.IsControlling,
             PeerName = e.PeerName,
-            LocalX = e.LocalX,
-            LocalY = e.LocalY,
-            PrevX = e.PrevX,
-            PrevY = e.PrevY,
-            VirtualX = e.VirtualX,
-            VirtualY = e.VirtualY,
+            PeerPosition = e.PeerPosition,
             DeltaX = e.DeltaX,
             DeltaY = e.DeltaY,
-            VelocityX = e.VelocityX,
-            VelocityY = e.VelocityY,
-            IsIgnored = e.IsIgnored,
-            RemoteX = e.RemoteX,
-            RemoteY = e.RemoteY,
-            PeerScreenWidth = e.PeerScreenWidth,
-            PeerScreenHeight = e.PeerScreenHeight,
-            CaptureX = e.CaptureX,
-            CaptureY = e.CaptureY,
-            PeerPosition = e.PeerPosition
+            RoundTripMs = e.RoundTripMs
         });
     }
 

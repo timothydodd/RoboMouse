@@ -1,42 +1,44 @@
-﻿namespace RoboMouse.App.Forms;
+namespace RoboMouse.App.Forms;
 
 /// <summary>
-/// Debug panel that shows mouse movement information when controlling a remote machine.
+/// Debug panel that shows forwarded motion and link latency while controlling a remote machine.
 /// </summary>
 public class DebugPanelForm : Form
 {
     private readonly Label _statusLabel;
-    private readonly Label _prevPosLabel;
-    private readonly Label _positionLabel;
-    private readonly Label _virtualPosLabel;
-    private readonly Label _deltaLabel;
-    private readonly Label _velocityLabel;
-    private readonly Label _directionLabel;
-    private readonly Panel _directionIndicator;
     private readonly Label _peerLabel;
-    private readonly Label _remotePosLabel;
-    private readonly Label _peerScreenLabel;
-    private readonly Label _captureLabel;
     private readonly Label _peerPositionLabel;
+    private readonly Label _rttLabel;
+    private readonly Label _rateLabel;
+    private readonly Label _deltaLabel;
+    private readonly Label _totalLabel;
+    private readonly Panel _directionIndicator;
     private readonly ListBox _historyList;
+    private readonly System.Windows.Forms.Timer _refreshTimer;
 
-    private float _lastVelocityX;
-    private float _lastVelocityY;
-    private readonly List<string> _history = new(10);
-    private MouseDebugData? _lastData;
+    private readonly List<string> _history = new(12);
+    private readonly object _lock = new();
+
+    private MouseDebugData? _latest;
+    private int _samplesSinceTick;
+    private int _samplesPerSecond;
+    private long _totalDx;
+    private long _totalDy;
+    private int _lastDx;
+    private int _lastDy;
+    private bool _dirty;
 
     public DebugPanelForm()
     {
         Text = "RoboMouse Debug";
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(320, 780);
+        Size = new Size(320, 520);
         TopMost = true;
         ShowInTaskbar = false;
         BackColor = Color.FromArgb(30, 30, 30);
         ForeColor = Color.White;
 
-        // Position in top-right corner of screen
         var screen = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
         Location = new Point(screen.Right - Width - 10, screen.Top + 10);
 
@@ -44,7 +46,6 @@ public class DebugPanelForm : Form
         var labelHeight = 24;
         var y = padding;
 
-        // Title
         var titleLabel = new Label
         {
             Text = "Mouse Debug Info",
@@ -56,74 +57,26 @@ public class DebugPanelForm : Form
         Controls.Add(titleLabel);
         y += 32;
 
-        // Status
         _statusLabel = CreateLabel("Status: Idle", ref y, labelHeight, padding);
-
-        // Connected peer
         _peerLabel = CreateLabel("Peer: None", ref y, labelHeight, padding);
-
-        y += 8; // spacing
-
-        // Position section
-        var posHeader = new Label
-        {
-            Text = "Position",
-            Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Location = new Point(padding, y),
-            Size = new Size(Width - padding * 2, 20),
-            ForeColor = Color.FromArgb(150, 150, 150)
-        };
-        Controls.Add(posHeader);
-        y += 22;
-
-        _prevPosLabel = CreateLabel("Prev: (0, 0)", ref y, labelHeight, padding);
-        _positionLabel = CreateLabel("Curr: (0, 0)", ref y, labelHeight, padding);
-        _virtualPosLabel = CreateLabel("Virtual: (0.00, 0.00)", ref y, labelHeight, padding);
-        _remotePosLabel = CreateLabel("Remote: (0, 0)", ref y, labelHeight, padding);
-
-        y += 8; // spacing
-
-        // Peer info section
-        var peerHeader = new Label
-        {
-            Text = "Peer Info",
-            Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Location = new Point(padding, y),
-            Size = new Size(Width - padding * 2, 20),
-            ForeColor = Color.FromArgb(150, 150, 150)
-        };
-        Controls.Add(peerHeader);
-        y += 22;
-
         _peerPositionLabel = CreateLabel("Position: -", ref y, labelHeight, padding);
-        _peerScreenLabel = CreateLabel("Screen: 0x0", ref y, labelHeight, padding);
-        _captureLabel = CreateLabel("Capture: (0, 0)", ref y, labelHeight, padding);
 
-        y += 8; // spacing
+        y += 8;
+        AddHeader("Link", ref y, padding);
+        _rttLabel = CreateLabel("Round trip: -", ref y, labelHeight, padding);
+        _rateLabel = CreateLabel("Motion rate: 0 /s", ref y, labelHeight, padding);
 
-        // Movement section
-        var moveHeader = new Label
-        {
-            Text = "Movement",
-            Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Location = new Point(padding, y),
-            Size = new Size(Width - padding * 2, 20),
-            ForeColor = Color.FromArgb(150, 150, 150)
-        };
-        Controls.Add(moveHeader);
-        y += 22;
+        y += 8;
+        AddHeader("Motion (raw counts)", ref y, padding);
+        _deltaLabel = CreateLabel("Last: (0, 0)", ref y, labelHeight, padding);
+        _totalLabel = CreateLabel("Total: (0, 0)", ref y, labelHeight, padding);
 
-        _deltaLabel = CreateLabel("Delta: (0, 0)", ref y, labelHeight, padding);
-        _velocityLabel = CreateLabel("Velocity: 0 px/s", ref y, labelHeight, padding);
-        _directionLabel = CreateLabel("Direction: -", ref y, labelHeight, padding);
-
-        // Direction indicator (visual arrow)
         y += 8;
         var indicatorLabel = new Label
         {
             Text = "Direction:",
             Font = new Font("Segoe UI", 9),
-            Location = new Point(padding, y),
+            Location = new Point(padding, y + 30),
             Size = new Size(70, 20),
             ForeColor = Color.FromArgb(150, 150, 150)
         };
@@ -131,40 +84,27 @@ public class DebugPanelForm : Form
 
         _directionIndicator = new Panel
         {
-            Location = new Point(padding + 80, y - 20),
+            Location = new Point(padding + 80, y),
             Size = new Size(80, 80),
             BackColor = Color.FromArgb(40, 40, 40)
         };
         _directionIndicator.Paint += DirectionIndicator_Paint;
         Controls.Add(_directionIndicator);
+        y += 90;
 
-        y += 70;
-
-        // History section
-        var historyHeader = new Label
-        {
-            Text = "Last 10 Movements",
-            Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Location = new Point(padding, y),
-            Size = new Size(Width - padding * 2, 20),
-            ForeColor = Color.FromArgb(150, 150, 150)
-        };
-        Controls.Add(historyHeader);
-        y += 22;
-
+        AddHeader("Recent samples", ref y, padding);
         _historyList = new ListBox
         {
             Location = new Point(padding, y),
-            Size = new Size(Width - padding * 2 - 10, 140),
+            Size = new Size(Width - padding * 2 - 10, 120),
             BackColor = Color.FromArgb(40, 40, 40),
             ForeColor = Color.White,
             Font = new Font("Consolas", 8),
             BorderStyle = BorderStyle.None
         };
         Controls.Add(_historyList);
-        y += 145;
+        y += 125;
 
-        // Copy button
         var copyButton = new Button
         {
             Text = "Copy to Clipboard",
@@ -177,50 +117,25 @@ public class DebugPanelForm : Form
         copyButton.FlatAppearance.BorderColor = Color.FromArgb(100, 100, 100);
         copyButton.Click += CopyButton_Click;
         Controls.Add(copyButton);
+
+        // Raw input arrives up to 1000 times a second; repaint on a timer instead of per sample.
+        _refreshTimer = new System.Windows.Forms.Timer { Interval = 100 };
+        _refreshTimer.Tick += RefreshTimer_Tick;
+        _refreshTimer.Start();
     }
 
-    private void CopyButton_Click(object? sender, EventArgs e)
+    private void AddHeader(string text, ref int y, int padding)
     {
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("=== RoboMouse Debug ===");
-        sb.AppendLine(_statusLabel.Text);
-        sb.AppendLine(_peerLabel.Text);
-        sb.AppendLine();
-        sb.AppendLine("=== Position ===");
-        sb.AppendLine(_prevPosLabel.Text);
-        sb.AppendLine(_positionLabel.Text);
-        sb.AppendLine(_virtualPosLabel.Text);
-        sb.AppendLine(_remotePosLabel.Text);
-        sb.AppendLine();
-        sb.AppendLine("=== Peer Info ===");
-        sb.AppendLine(_peerPositionLabel.Text);
-        sb.AppendLine(_peerScreenLabel.Text);
-        sb.AppendLine(_captureLabel.Text);
-        sb.AppendLine();
-        sb.AppendLine("=== Movement ===");
-        sb.AppendLine(_deltaLabel.Text);
-        sb.AppendLine(_velocityLabel.Text);
-        sb.AppendLine(_directionLabel.Text);
-        sb.AppendLine();
-        sb.AppendLine("=== History ===");
-        foreach (var entry in _history)
+        var header = new Label
         {
-            sb.AppendLine(entry);
-        }
-
-        try
-        {
-            Clipboard.SetText(sb.ToString());
-            if (sender is Button btn)
-            {
-                var originalText = btn.Text;
-                btn.Text = "Copied!";
-                var timer = new System.Windows.Forms.Timer { Interval = 1000 };
-                timer.Tick += (_, _) => { btn.Text = originalText; timer.Stop(); timer.Dispose(); };
-                timer.Start();
-            }
-        }
-        catch { }
+            Text = text,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            Location = new Point(padding, y),
+            Size = new Size(Width - padding * 2, 20),
+            ForeColor = Color.FromArgb(150, 150, 150)
+        };
+        Controls.Add(header);
+        y += 22;
     }
 
     private Label CreateLabel(string text, ref int y, int height, int padding)
@@ -238,6 +153,96 @@ public class DebugPanelForm : Form
         return label;
     }
 
+    /// <summary>
+    /// Records a motion sample. Safe to call from any thread at any rate; the UI updates on a timer.
+    /// </summary>
+    public void UpdateData(MouseDebugData data)
+    {
+        lock (_lock)
+        {
+            _latest = data;
+            _dirty = true;
+
+            if (data.DeltaX != 0 || data.DeltaY != 0)
+            {
+                _samplesSinceTick++;
+                _totalDx += data.DeltaX;
+                _totalDy += data.DeltaY;
+                _lastDx = data.DeltaX;
+                _lastDy = data.DeltaY;
+
+                _history.Insert(0, $"{GetDirectionArrow(data.DeltaX, data.DeltaY)} ({data.DeltaX,4:+0;-0;0},{data.DeltaY,4:+0;-0;0})  rtt {FormatRtt(data.RoundTripMs)}");
+                if (_history.Count > 12)
+                    _history.RemoveAt(12);
+            }
+        }
+    }
+
+    private int _ticksSinceRateUpdate;
+
+    private void RefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        MouseDebugData? data;
+        List<string> history;
+        int rate;
+        long totalDx, totalDy;
+        int lastDx, lastDy;
+
+        lock (_lock)
+        {
+            _ticksSinceRateUpdate++;
+            if (_ticksSinceRateUpdate >= 10)
+            {
+                _samplesPerSecond = _samplesSinceTick;
+                _samplesSinceTick = 0;
+                _ticksSinceRateUpdate = 0;
+                _dirty = true;
+            }
+
+            if (!_dirty)
+                return;
+            _dirty = false;
+
+            data = _latest;
+            history = new List<string>(_history);
+            rate = _samplesPerSecond;
+            totalDx = _totalDx;
+            totalDy = _totalDy;
+            lastDx = _lastDx;
+            lastDy = _lastDy;
+        }
+
+        var controlling = data?.IsControlling ?? false;
+        _statusLabel.Text = $"Status: {(controlling ? "Controlling" : "Idle")}";
+        _statusLabel.ForeColor = controlling ? Color.FromArgb(100, 255, 100) : Color.White;
+        _peerLabel.Text = $"Peer: {data?.PeerName ?? "None"}";
+        _peerPositionLabel.Text = $"Position: {data?.PeerPosition ?? "-"}";
+
+        var rtt = data?.RoundTripMs ?? -1;
+        _rttLabel.Text = $"Round trip: {FormatRtt(rtt)}";
+        _rttLabel.ForeColor = rtt switch
+        {
+            < 0 => Color.Gray,
+            < 5 => Color.FromArgb(100, 255, 100),
+            < 20 => Color.FromArgb(255, 220, 100),
+            _ => Color.FromArgb(255, 120, 100)
+        };
+
+        _rateLabel.Text = $"Motion rate: {rate} /s";
+        _deltaLabel.Text = $"Last: ({lastDx:+0;-0;0}, {lastDy:+0;-0;0})";
+        _totalLabel.Text = $"Total: ({totalDx}, {totalDy})";
+
+        _historyList.BeginUpdate();
+        _historyList.Items.Clear();
+        foreach (var entry in history)
+            _historyList.Items.Add(entry);
+        _historyList.EndUpdate();
+
+        _directionIndicator.Invalidate();
+    }
+
+    private static string FormatRtt(int rtt) => rtt < 0 ? "-" : $"{rtt} ms";
+
     private void DirectionIndicator_Paint(object? sender, PaintEventArgs e)
     {
         var g = e.Graphics;
@@ -246,105 +251,30 @@ public class DebugPanelForm : Form
         var center = new PointF(_directionIndicator.Width / 2f, _directionIndicator.Height / 2f);
         var radius = Math.Min(_directionIndicator.Width, _directionIndicator.Height) / 2f - 5;
 
-        // Draw circle background
         using var bgBrush = new SolidBrush(Color.FromArgb(50, 50, 50));
         g.FillEllipse(bgBrush, center.X - radius, center.Y - radius, radius * 2, radius * 2);
 
-        // Draw direction arrow if there's velocity
-        var speed = (float)Math.Sqrt(_lastVelocityX * _lastVelocityX + _lastVelocityY * _lastVelocityY);
-        if (speed > 10)
+        int dx, dy;
+        lock (_lock)
         {
-            // Normalize velocity to get direction
-            var dirX = _lastVelocityX / speed;
-            var dirY = _lastVelocityY / speed;
+            dx = _lastDx;
+            dy = _lastDy;
+        }
 
-            // Scale arrow length based on speed (capped)
-            var arrowLength = Math.Min(radius * 0.8f, radius * 0.3f + speed / 500f * radius * 0.5f);
+        var magnitude = (float)Math.Sqrt(dx * dx + dy * dy);
+        if (magnitude > 0)
+        {
+            var arrowLength = Math.Min(radius * 0.85f, radius * 0.3f + magnitude / 40f * radius * 0.5f);
+            var endX = center.X + dx / magnitude * arrowLength;
+            var endY = center.Y + dy / magnitude * arrowLength;
 
-            var endX = center.X + dirX * arrowLength;
-            var endY = center.Y + dirY * arrowLength;
-
-            // Arrow color based on speed
-            var colorIntensity = Math.Min(255, (int)(speed / 20));
-            using var pen = new Pen(Color.FromArgb(colorIntensity, 255 - colorIntensity / 2, 100), 3);
+            using var pen = new Pen(Color.FromArgb(100, 180, 255), 3);
             pen.EndCap = System.Drawing.Drawing2D.LineCap.ArrowAnchor;
-
             g.DrawLine(pen, center.X, center.Y, endX, endY);
-
-            // Draw center dot
-            using var centerBrush = new SolidBrush(Color.FromArgb(100, 180, 255));
-            g.FillEllipse(centerBrush, center.X - 4, center.Y - 4, 8, 8);
-        }
-        else
-        {
-            // Just draw center dot when idle
-            using var centerBrush = new SolidBrush(Color.FromArgb(100, 100, 100));
-            g.FillEllipse(centerBrush, center.X - 4, center.Y - 4, 8, 8);
-        }
-    }
-
-    /// <summary>
-    /// Updates the debug panel with current mouse movement data.
-    /// </summary>
-    public void UpdateData(MouseDebugData data)
-    {
-        if (InvokeRequired)
-        {
-            BeginInvoke(() => UpdateData(data));
-            return;
         }
 
-        if (data.IsIgnored)
-        {
-            _statusLabel.Text = "Status: IGNORED (warp)";
-            _statusLabel.ForeColor = Color.FromArgb(255, 165, 0); // Orange for ignored
-        }
-        else
-        {
-            _statusLabel.Text = $"Status: {(data.IsControlling ? "Controlling" : "Idle")}";
-            _statusLabel.ForeColor = data.IsControlling ? Color.FromArgb(100, 255, 100) : Color.White;
-        }
-
-        _peerLabel.Text = $"Peer: {data.PeerName ?? "None"}";
-
-        _prevPosLabel.Text = $"Prev: ({data.PrevX}, {data.PrevY})";
-        _positionLabel.Text = $"Curr: ({data.LocalX}, {data.LocalY})";
-        _virtualPosLabel.Text = $"Virtual: ({data.VirtualX:F3}, {data.VirtualY:F3})";
-        _remotePosLabel.Text = $"Remote: ({data.RemoteX}, {data.RemoteY})";
-
-        _peerPositionLabel.Text = $"Position: {data.PeerPosition ?? "-"}";
-        _peerScreenLabel.Text = $"Screen: {data.PeerScreenWidth}x{data.PeerScreenHeight}";
-        _captureLabel.Text = $"Capture: ({data.CaptureX}, {data.CaptureY})";
-
-        _deltaLabel.Text = $"Delta: ({data.DeltaX:+0;-0;0}, {data.DeltaY:+0;-0;0})";
-        _deltaLabel.ForeColor = data.IsIgnored ? Color.FromArgb(255, 165, 0) : Color.White;
-
-        var speed = (float)Math.Sqrt(data.VelocityX * data.VelocityX + data.VelocityY * data.VelocityY);
-        _velocityLabel.Text = $"Velocity: {speed:F0} px/s";
-
-        // Determine direction
-        var direction = GetDirectionString(data.VelocityX, data.VelocityY);
-        _directionLabel.Text = $"Direction: {direction}";
-
-        _lastVelocityX = data.VelocityX;
-        _lastVelocityY = data.VelocityY;
-        _lastData = data;
-        _directionIndicator.Invalidate();
-
-        // Add to history (only non-ignored movements with actual delta)
-        if (!data.IsIgnored && (data.DeltaX != 0 || data.DeltaY != 0))
-        {
-            var arrow = GetDirectionArrow(data.DeltaX, data.DeltaY);
-            var historyEntry = $"{arrow} Δ({data.DeltaX:+00;-00},{data.DeltaY:+00;-00}) v{speed:000} →({data.RemoteX,4},{data.RemoteY,4})";
-
-            _history.Insert(0, historyEntry);
-            if (_history.Count > 10)
-                _history.RemoveAt(10);
-
-            _historyList.Items.Clear();
-            foreach (var entry in _history)
-                _historyList.Items.Add(entry);
-        }
+        using var centerBrush = new SolidBrush(Color.FromArgb(100, 180, 255));
+        g.FillEllipse(centerBrush, center.X - 4, center.Y - 4, 8, 8);
     }
 
     private static string GetDirectionArrow(int dx, int dy)
@@ -366,26 +296,38 @@ public class DebugPanelForm : Form
         };
     }
 
-    private static string GetDirectionString(float vx, float vy)
+    private void CopyButton_Click(object? sender, EventArgs e)
     {
-        var speed = (float)Math.Sqrt(vx * vx + vy * vy);
-        if (speed < 10)
-            return "Stationary";
-
-        var angle = Math.Atan2(vy, vx) * 180 / Math.PI;
-
-        return angle switch
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== RoboMouse Debug ===");
+        sb.AppendLine(_statusLabel.Text);
+        sb.AppendLine(_peerLabel.Text);
+        sb.AppendLine(_peerPositionLabel.Text);
+        sb.AppendLine(_rttLabel.Text);
+        sb.AppendLine(_rateLabel.Text);
+        sb.AppendLine(_deltaLabel.Text);
+        sb.AppendLine(_totalLabel.Text);
+        sb.AppendLine();
+        sb.AppendLine("=== Recent samples ===");
+        lock (_lock)
         {
-            >= -22.5f and < 22.5f => "Right →",
-            >= 22.5f and < 67.5f => "Down-Right ↘",
-            >= 67.5f and < 112.5f => "Down ↓",
-            >= 112.5f and < 157.5f => "Down-Left ↙",
-            >= 157.5f or < -157.5f => "Left ←",
-            >= -157.5f and < -112.5f => "Up-Left ↖",
-            >= -112.5f and < -67.5f => "Up ↑",
-            >= -67.5f and < -22.5f => "Up-Right ↗",
-            _ => "Unknown"
-        };
+            foreach (var entry in _history)
+                sb.AppendLine(entry);
+        }
+
+        try
+        {
+            Clipboard.SetText(sb.ToString());
+            if (sender is Button btn)
+            {
+                var originalText = btn.Text;
+                btn.Text = "Copied!";
+                var timer = new System.Windows.Forms.Timer { Interval = 1000 };
+                timer.Tick += (_, _) => { btn.Text = originalText; timer.Stop(); timer.Dispose(); };
+                timer.Start();
+            }
+        }
+        catch { }
     }
 
     /// <summary>
@@ -395,7 +337,6 @@ public class DebugPanelForm : Form
     {
         var screen = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
 
-        // Position based on which edge the mouse is going to
         Location = edge?.ToLower() switch
         {
             "left" => new Point(screen.Left + 10, screen.Top + 10),
@@ -420,6 +361,15 @@ public class DebugPanelForm : Form
         }
         base.OnFormClosing(e);
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _refreshTimer.Dispose();
+        }
+        base.Dispose(disposing);
+    }
 }
 
 /// <summary>
@@ -429,26 +379,8 @@ public class MouseDebugData
 {
     public bool IsControlling { get; set; }
     public string? PeerName { get; set; }
-    public int LocalX { get; set; }
-    public int LocalY { get; set; }
-    public int PrevX { get; set; }
-    public int PrevY { get; set; }
-    public float VirtualX { get; set; }
-    public float VirtualY { get; set; }
+    public string? PeerPosition { get; set; }
     public int DeltaX { get; set; }
     public int DeltaY { get; set; }
-    public float VelocityX { get; set; }
-    public float VelocityY { get; set; }
-    public bool IsIgnored { get; set; }
-
-    // Extra debug info
-    public int RemoteX { get; set; }
-    public int RemoteY { get; set; }
-    public int PeerScreenWidth { get; set; }
-    public int PeerScreenHeight { get; set; }
-    public int CaptureX { get; set; }
-    public int CaptureY { get; set; }
-    public string? PeerPosition { get; set; }
-    public float InitialVirtualX { get; set; }
-    public float InitialVirtualY { get; set; }
+    public int RoundTripMs { get; set; }
 }

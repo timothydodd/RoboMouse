@@ -51,16 +51,22 @@ public class MouseEventArgs : EventArgs
     public uint Timestamp { get; }
 
     /// <summary>
+    /// True when the event was injected by software (SendInput/SetCursorPos) rather than a physical device.
+    /// </summary>
+    public bool IsInjected { get; }
+
+    /// <summary>
     /// Set to true to prevent the event from being passed to other applications.
     /// </summary>
     public bool Handled { get; set; }
 
-    public MouseEventArgs(int x, int y, MouseEventType eventType, int wheelDelta = 0, uint timestamp = 0)
+    public MouseEventArgs(int x, int y, MouseEventType eventType, int wheelDelta = 0, uint timestamp = 0, bool isInjected = false)
     {
         X = x;
         Y = y;
         EventType = eventType;
         WheelDelta = wheelDelta;
         Timestamp = timestamp;
+        IsInjected = isInjected;
     }
 }

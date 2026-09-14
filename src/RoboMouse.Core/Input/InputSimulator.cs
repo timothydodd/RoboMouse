@@ -21,12 +21,30 @@ public static class InputSimulator
     }
 
     /// <summary>
-    /// Moves the mouse cursor by the specified relative amount.
+    /// Injects relative mouse motion through SendInput. Unlike SetCursorPos this goes
+    /// through the normal input pipeline, so Windows applies this machine's pointer
+    /// speed and acceleration settings exactly as it would for a physical mouse.
     /// </summary>
-    public static void MoveBy(int deltaX, int deltaY)
+    public static void MoveRelative(int deltaX, int deltaY)
     {
-        NativeMethods.GetCursorPos(out var point);
-        NativeMethods.SetCursorPos(point.X + deltaX, point.Y + deltaY);
+        if (deltaX == 0 && deltaY == 0)
+            return;
+
+        var input = new NativeMethods.INPUT
+        {
+            type = NativeMethods.INPUT_MOUSE,
+            u = new NativeMethods.INPUTUNION
+            {
+                mi = new NativeMethods.MOUSEINPUT
+                {
+                    dx = deltaX,
+                    dy = deltaY,
+                    dwFlags = NativeMethods.MOUSEEVENTF_MOVE
+                }
+            }
+        };
+
+        SendInputs(input);
     }
 
     /// <summary>

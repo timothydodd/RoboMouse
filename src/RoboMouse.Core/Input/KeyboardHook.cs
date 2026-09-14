@@ -14,6 +14,7 @@ public sealed class KeyboardHook : IDisposable
     private bool _disposed;
 
     private const uint LLKHF_EXTENDED = 0x01;
+    private const uint LLKHF_INJECTED = 0x10;
 
     /// <summary>
     /// Event raised when any keyboard event occurs.
@@ -111,7 +112,8 @@ public sealed class KeyboardHook : IDisposable
             hookStruct.scanCode,
             eventType.Value,
             isExtended,
-            hookStruct.time);
+            hookStruct.time,
+            (hookStruct.flags & LLKHF_INJECTED) != 0);
     }
 
     public void Dispose()

@@ -1,4 +1,4 @@
-﻿using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Input;
 using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network;
@@ -11,14 +11,27 @@ namespace RoboMouse.Core;
 
 /// <summary>
 /// The main service that coordinates mouse/keyboard sharing.
+///
+/// Control model: the machine whose physical mouse is in use (the controller) reads raw
+/// hardware motion and forwards it as relative deltas. The controlled machine injects those
+/// deltas through its own input pipeline, so its own pointer settings apply and its cursor
+/// position is always the real one. The controlled machine therefore owns edge detection:
+/// when its cursor is pushed through the edge it entered from, it hands control back.
 /// </summary>
 public sealed class RoboMouseService : IDisposable
 {
+    /// <summary>Raw counts of motion into the entry edge required before control returns.</summary>
+    private const int ReturnOvershootCounts = 12;
+
+    /// <summary>After control returns, ignore edge hits for this long so the placed cursor does not re-enter.</summary>
+    private const int ReturnCooldownMs = 300;
+
     private readonly AppSettings _settings;
     private readonly ScreenInfo _screenInfo;
     private readonly CursorManager _cursorManager;
     private readonly MouseHook _mouseHook;
     private readonly KeyboardHook _keyboardHook;
+    private readonly RawMouseInput _rawMouse;
     private readonly ClipboardManager _clipboardManager;
     private readonly PeerDiscovery _discovery;
     private readonly ConnectionListener _listener;
@@ -26,36 +39,24 @@ public sealed class RoboMouseService : IDisposable
     private readonly Dictionary<string, PeerConnection> _connections = new();
     private readonly object _connectionLock = new();
 
+    // Controller state (this machine's mouse drives a remote screen)
     private PeerConfig? _activePeer;
-    private bool _isControllingRemote;
-    private bool _isControlledByRemote;
+    private PeerConnection? _activeConnection;
+    private volatile bool _isControllingRemote;
+    private long _returnCooldownUntil;
+
+    // Controlled state (a remote machine drives this screen)
+    private volatile bool _isControlledByRemote;
+    private PeerConnection? _controllerConnection;
+    private ScreenPosition _entryEdge;
+    private int _edgeOvershoot;
+    private readonly HashSet<MouseEventType> _heldButtons = new();
+    private readonly Dictionary<Keys, (uint ScanCode, bool Extended)> _heldKeys = new();
+
     private bool _enabled;
     private bool _disposed;
 
-    // Accumulated cursor position on remote screen (in remote screen pixel coordinates)
-    // This is tracked on the server side by accumulating deltas from local mouse movement
-    private int _remoteX;
-    private int _remoteY;
-    private bool _hasMovedIntoRemote; // Must move away from entry edge before return is allowed
-
-    // Track last seen mouse position for delta calculation
-    // We save this after each warp to center so we can calculate the next delta
-    private int _lastSeenX;
-    private int _lastSeenY;
-
-    // Velocity tracking for smooth movement
-    private float _velocityX;
-    private float _velocityY;
-    private long _lastMoveTime;
-
-    // Cooldown to prevent immediate re-entry after returning from remote
-    private long _returnCooldownUntil;
-
-
-
-    /// <summary>
-    /// Whether the service is enabled.
-    /// </summary>
+    /// <summary>Whether the service is enabled.</summary>
     public bool Enabled
     {
         get => _enabled;
@@ -68,24 +69,16 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Whether we are currently controlling a remote machine.
-    /// </summary>
+    /// <summary>Whether we are currently controlling a remote machine.</summary>
     public bool IsControllingRemote => _isControllingRemote;
 
-    /// <summary>
-    /// Whether we are currently being controlled by a remote machine.
-    /// </summary>
+    /// <summary>Whether we are currently being controlled by a remote machine.</summary>
     public bool IsControlledByRemote => _isControlledByRemote;
 
-    /// <summary>
-    /// The currently active peer configuration.
-    /// </summary>
+    /// <summary>The currently active peer configuration.</summary>
     public PeerConfig? ActivePeer => _activePeer;
 
-    /// <summary>
-    /// Connected peers.
-    /// </summary>
+    /// <summary>Connected peers.</summary>
     public IReadOnlyCollection<PeerConnection> ConnectedPeers
     {
         get
@@ -97,40 +90,18 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Discovered peers on the network.
-    /// </summary>
+    /// <summary>Discovered peers on the network.</summary>
     public IReadOnlyCollection<DiscoveredPeer> DiscoveredPeers => _discovery.Peers;
 
-    /// <summary>
-    /// Event raised when connection status changes.
-    /// </summary>
     public event EventHandler<PeerConnection>? PeerConnected;
-
-    /// <summary>
-    /// Event raised when a peer disconnects.
-    /// </summary>
     public event EventHandler<string>? PeerDisconnected;
-
-    /// <summary>
-    /// Event raised when a new peer is discovered.
-    /// </summary>
     public event EventHandler<DiscoveredPeer>? PeerDiscovered;
-
-    /// <summary>
-    /// Event raised when control state changes.
-    /// </summary>
     public event EventHandler? ControlStateChanged;
-
-    /// <summary>
-    /// Event raised when an error occurs.
-    /// </summary>
     public event EventHandler<Exception>? Error;
 
-    /// <summary>
-    /// Event raised when mouse debug data is updated (for debug panel).
-    /// </summary>
+    /// <summary>Raised for each forwarded motion sample while controlling (for the debug panel).</summary>
     public event EventHandler<MouseDebugEventArgs>? MouseDebugUpdate;
+
     public RoboMouseService(AppSettings settings)
     {
         _settings = settings;
@@ -142,6 +113,9 @@ public sealed class RoboMouseService : IDisposable
 
         _keyboardHook = new KeyboardHook();
         _keyboardHook.KeyboardEvent += OnKeyboardEvent;
+
+        _rawMouse = new RawMouseInput();
+        _rawMouse.Motion += OnRawMouseMotion;
 
         _clipboardManager = new ClipboardManager(_settings.Clipboard.MaxSizeBytes);
         _clipboardManager.ClipboardChanged += OnClipboardChanged;
@@ -167,9 +141,7 @@ public sealed class RoboMouseService : IDisposable
         _listener.PeerConnected += OnIncomingConnection;
     }
 
-    /// <summary>
-    /// Starts the service.
-    /// </summary>
+    /// <summary>Starts the service.</summary>
     public void Start()
     {
         _listener.Start();
@@ -184,9 +156,7 @@ public sealed class RoboMouseService : IDisposable
         OnEnabledChanged();
     }
 
-    /// <summary>
-    /// Stops the service.
-    /// </summary>
+    /// <summary>Stops the service.</summary>
     public void Stop()
     {
         _enabled = false;
@@ -206,9 +176,9 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Connects to a peer.
-    /// </summary>
+    #region Connection management
+
+    /// <summary>Connects to a peer.</summary>
     public async Task ConnectToPeerAsync(PeerConfig peerConfig, CancellationToken ct = default)
     {
         var (width, height) = InputSimulator.GetPrimaryScreenSize();
@@ -222,19 +192,14 @@ public sealed class RoboMouseService : IDisposable
             height,
             ct);
 
-        // Update peer config with received screen info
         peerConfig.ScreenWidth = connection.PeerScreenWidth;
         peerConfig.ScreenHeight = connection.PeerScreenHeight;
-
-        // Update the peer ID to match what the remote machine reports
         peerConfig.Id = connection.PeerId;
 
         AddConnection(connection);
     }
 
-    /// <summary>
-    /// Connects to a peer by IP address. Creates and saves the peer config.
-    /// </summary>
+    /// <summary>Connects to a peer by IP address. Creates and saves the peer config.</summary>
     public async Task<PeerConfig> ConnectToAddressAsync(string address, int port, ScreenPosition position, CancellationToken ct = default)
     {
         var peerConfig = new PeerConfig
@@ -242,12 +207,11 @@ public sealed class RoboMouseService : IDisposable
             Address = address,
             Port = port,
             Position = position,
-            Name = address // Will be updated after connection
+            Name = address
         };
 
         await ConnectToPeerAsync(peerConfig, ct);
 
-        // Update name from connection info
         lock (_connectionLock)
         {
             if (_connections.TryGetValue(peerConfig.Id, out var conn))
@@ -256,7 +220,6 @@ public sealed class RoboMouseService : IDisposable
             }
         }
 
-        // Add to settings if not already present
         var existing = _settings.Peers.FirstOrDefault(p => p.Id == peerConfig.Id);
         if (existing == null)
         {
@@ -264,7 +227,6 @@ public sealed class RoboMouseService : IDisposable
         }
         else
         {
-            // Update existing config
             existing.Address = peerConfig.Address;
             existing.Port = peerConfig.Port;
             existing.Position = peerConfig.Position;
@@ -274,9 +236,7 @@ public sealed class RoboMouseService : IDisposable
         return peerConfig;
     }
 
-    /// <summary>
-    /// Connects to all configured peers that have addresses.
-    /// </summary>
+    /// <summary>Connects to all configured peers that have addresses.</summary>
     public async Task ConnectToConfiguredPeersAsync(CancellationToken ct = default)
     {
         var peersToConnect = _settings.Peers.Where(p => !string.IsNullOrEmpty(p.Address)).ToList();
@@ -285,7 +245,6 @@ public sealed class RoboMouseService : IDisposable
         {
             try
             {
-                // Skip if already connected
                 lock (_connectionLock)
                 {
                     if (_connections.ContainsKey(peer.Id))
@@ -296,15 +255,12 @@ public sealed class RoboMouseService : IDisposable
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Failed to connect to {peer.Name} ({peer.Address}): {ex.Message}");
-                // Continue trying other peers
+                SimpleLogger.Log("Connect", $"Failed to connect to {peer.Name} ({peer.Address}): {ex.Message}");
             }
         }
     }
 
-    /// <summary>
-    /// Connects to a discovered peer.
-    /// </summary>
+    /// <summary>Connects to a discovered peer.</summary>
     public async Task ConnectToPeerAsync(DiscoveredPeer peer, ScreenPosition position, CancellationToken ct = default)
     {
         var peerConfig = new PeerConfig
@@ -321,9 +277,7 @@ public sealed class RoboMouseService : IDisposable
         await ConnectToPeerAsync(peerConfig, ct);
     }
 
-    /// <summary>
-    /// Disconnects from a peer.
-    /// </summary>
+    /// <summary>Disconnects from a peer.</summary>
     public async Task DisconnectFromPeerAsync(string peerId)
     {
         PeerConnection? connection;
@@ -363,18 +317,51 @@ public sealed class RoboMouseService : IDisposable
             }
         }
 
-        if (connection != null)
-        {
-            connection.Dispose();
-            PeerDisconnected?.Invoke(this, peerId);
+        if (connection == null)
+            return;
 
-            // Release cursor if we were controlling/controlled by this peer
-            if (_activePeer?.Id == peerId)
-            {
-                EndRemoteControl();
-            }
+        connection.Dispose();
+
+        if (_activeConnection == connection)
+        {
+            EndRemoteControl(notifyPeer: false);
+        }
+
+        if (_controllerConnection == connection)
+        {
+            EndBeingControlled(notifyPeer: false);
+        }
+
+        PeerDisconnected?.Invoke(this, peerId);
+    }
+
+    private void OnIncomingConnection(object? sender, PeerConnection connection)
+    {
+        AddConnection(connection);
+    }
+
+    private void OnPeerDiscovered(object? sender, DiscoveredPeer peer)
+    {
+        PeerDiscovered?.Invoke(this, peer);
+    }
+
+    private void OnPeerLost(object? sender, DiscoveredPeer peer)
+    {
+    }
+
+    private PeerConfig? GetPeerAtEdge(ScreenPosition edge)
+    {
+        var peer = _settings.Peers.FirstOrDefault(p => p.Position == edge);
+        if (peer == null)
+            return null;
+
+        lock (_connectionLock)
+        {
+            return _connections.ContainsKey(peer.Id) ? peer : null;
         }
     }
+
+    #endregion
 
     private void OnEnabledChanged()
     {
@@ -385,9 +372,38 @@ public sealed class RoboMouseService : IDisposable
         }
         else
         {
+            EndRemoteControl(notifyPeer: true);
+            EndBeingControlled(notifyPeer: true);
             _mouseHook.Uninstall();
             _keyboardHook.Uninstall();
-            EndRemoteControl();
+        }
+    }
+
+    #region Local input (controller side)
+
+    private void OnRawMouseMotion(int dx, int dy)
+    {
+        if (!_isControllingRemote)
+            return;
+
+        var connection = _activeConnection;
+        if (connection == null)
+            return;
+
+        connection.Post(MouseMessage.Motion(dx, dy));
+
+        var debug = MouseDebugUpdate;
+        if (debug != null)
+        {
+            debug(this, new MouseDebugEventArgs
+            {
+                IsControlling = true,
+                PeerName = _activePeer?.Name,
+                PeerPosition = _activePeer?.Position.ToString(),
+                DeltaX = dx,
+                DeltaY = dy,
+                RoundTripMs = connection.RoundTripMs
+            });
         }
     }
 
@@ -396,233 +412,176 @@ public sealed class RoboMouseService : IDisposable
         if (!_enabled)
             return;
 
-        // If we're being controlled, ignore local input
-        if (_isControlledByRemote)
-        {
+        // Injected events (our own SendInput/SetCursorPos, or a remote controller's) are never ours to act on.
+        if (e.IsInjected)
             return;
-        }
 
-        // If we're controlling a remote, forward input
-        if (_isControllingRemote && _activePeer != null)
+        // While being controlled, let the local mouse behave normally.
+        if (_isControlledByRemote)
+            return;
+
+        if (_isControllingRemote)
         {
-            if (e.EventType == MouseEventType.Move)
+            // Freeze the local cursor: swallow everything. Motion arrives separately via raw input.
+            e.Handled = true;
+
+            if (e.EventType != MouseEventType.Move)
             {
-                var capturedPos = _cursorManager.CapturedPosition;
-
-                // Calculate delta from last seen position (like Deskflow)
-                var deltaX = e.X - _lastSeenX;
-                var deltaY = e.Y - _lastSeenY;
-
-                // Save position to compute delta of next motion
-                _lastSeenX = e.X;
-                _lastSeenY = e.Y;
-
-                // Ignore if the mouse didn't move
-                if (deltaX == 0 && deltaY == 0)
-                    return;
-
-                // Warp cursor back to center (like Deskflow does on every move)
-                // This allows infinite movement regardless of screen size differences
-                InputSimulator.MoveTo(capturedPos.X, capturedPos.Y);
-
-                // Filter out bogus motion from the warp itself
-                // If the delta is suspiciously close to half the screen size, it's probably from the warp
-                var bounds = _screenInfo.VirtualBounds;
-                int halfW = bounds.Width / 2;
-                int halfH = bounds.Height / 2;
-                const int bogusZoneSize = 10;
-
-                if (Math.Abs(deltaX) + bogusZoneSize > halfW || Math.Abs(deltaY) + bogusZoneSize > halfH)
+                _activeConnection?.Post(new MouseMessage
                 {
-                    SimpleLogger.Log("Mouse", $"Dropped bogus delta motion: {deltaX},{deltaY}");
-                    e.Handled = true;
-                    return;
-                }
-
-                // Calculate velocity for prediction
-                var now = Environment.TickCount64;
-                var timeDelta = now - _lastMoveTime;
-                if (timeDelta > 0 && timeDelta < 1000)
-                {
-                    var newVelX = (deltaX * 1000f) / timeDelta;
-                    var newVelY = (deltaY * 1000f) / timeDelta;
-
-                    const float smoothing = 0.3f;
-                    _velocityX = _velocityX * (1 - smoothing) + newVelX * smoothing;
-                    _velocityY = _velocityY * (1 - smoothing) + newVelY * smoothing;
-                }
-                else
-                {
-                    _velocityX = 0;
-                    _velocityY = 0;
-                }
-                _lastMoveTime = now;
-
-                // Accumulate motion into remote position (like Deskflow's m_x += dx, m_y += dy)
-                _remoteX += deltaX;
-                _remoteY += deltaY;
-
-                // Get remote screen bounds
-                int remoteW = _activePeer.ScreenWidth;
-                int remoteH = _activePeer.ScreenHeight;
-
-                // Check if we've moved into the remote screen (away from entry edge)
-                if (!_hasMovedIntoRemote)
-                {
-                    _hasMovedIntoRemote = HasMovedIntoRemotePixels(_activePeer.Position, _remoteX, _remoteY, remoteW, remoteH);
-                }
-
-                // Check if returning from remote (hit opposite edge)
-                if (_hasMovedIntoRemote)
-                {
-                    var returnEdge = GetReturnEdgePixels(_activePeer.Position, _remoteX, _remoteY, remoteW, remoteH);
-                    if (returnEdge != null)
-                    {
-                        // Calculate normalized position for where to place cursor on local screen
-                        var peerPosition = _activePeer.Position;
-                        var normalizedPos = peerPosition is ScreenPosition.Left or ScreenPosition.Right
-                            ? (float)_remoteY / remoteH
-                            : (float)_remoteX / remoteW;
-                        normalizedPos = Math.Clamp(normalizedPos, 0f, 1f);
-
-                        // Set cooldown to prevent immediate re-entry
-                        _returnCooldownUntil = Environment.TickCount64 + 500;
-
-                        SimpleLogger.Log("Control", $"Return detected! Setting cooldown, peerPosition={peerPosition}");
-
-                        // End remote control first (restores cursor visibility)
-                        EndRemoteControl();
-
-                        // Then position cursor at the edge we're returning from
-                        _cursorManager.ReleaseAt(peerPosition, normalizedPos);
-
-                        e.Handled = true;
-                        return;
-                    }
-                }
-
-                // Clamp position to remote screen bounds (like Deskflow)
-                int clampedX = Math.Clamp(_remoteX, 0, remoteW - 1);
-                int clampedY = Math.Clamp(_remoteY, 0, remoteH - 1);
-
-                // Send absolute position to remote (like Deskflow's m_active->mouseMove(m_x, m_y))
-                var msg = new MouseMessage
-                {
-                    X = clampedX,
-                    Y = clampedY,
-                    EventType = MouseEventType.Move,
-                    WheelDelta = 0,
-                    VelocityX = _velocityX,
-                    VelocityY = _velocityY
-                };
-                SendToActivePeer(msg);
-
-                // Fire debug event
-                MouseDebugUpdate?.Invoke(this, new MouseDebugEventArgs
-                {
-                    IsControlling = true,
-                    PeerName = _activePeer.Name,
-                    LocalX = e.X,
-                    LocalY = e.Y,
-                    PrevX = e.X - deltaX,
-                    PrevY = e.Y - deltaY,
-                    VirtualX = (float)clampedX / remoteW,
-                    VirtualY = (float)clampedY / remoteH,
-                    DeltaX = deltaX,
-                    DeltaY = deltaY,
-                    VelocityX = _velocityX,
-                    VelocityY = _velocityY,
-                    RemoteX = clampedX,
-                    RemoteY = clampedY,
-                    PeerScreenWidth = remoteW,
-                    PeerScreenHeight = remoteH,
-                    CaptureX = capturedPos.X,
-                    CaptureY = capturedPos.Y,
-                    PeerPosition = _activePeer.Position.ToString()
-                });
-
-                e.Handled = true;
-            }
-            else
-            {
-                e.Handled = true;
-                // For clicks/wheel, use current accumulated position
-                var msg = new MouseMessage
-                {
-                    X = Math.Clamp(_remoteX, 0, _activePeer.ScreenWidth - 1),
-                    Y = Math.Clamp(_remoteY, 0, _activePeer.ScreenHeight - 1),
                     EventType = e.EventType,
                     WheelDelta = e.WheelDelta
-                };
-                SendToActivePeer(msg);
+                });
             }
             return;
         }
 
-        // Check for edge transition to remote
-        if (e.EventType == MouseEventType.Move)
-        {
-            // Skip if we just returned from remote (cooldown period)
-            var now = Environment.TickCount64;
-            if (now < _returnCooldownUntil)
-            {
-                SimpleLogger.Log("Control", $"Cooldown active: {_returnCooldownUntil - now}ms remaining, ignoring edge at ({e.X}, {e.Y})");
-                return;
-            }
+        if (e.EventType != MouseEventType.Move)
+            return;
 
-            var edge = _screenInfo.GetEdgeAt(e.X, e.Y, _settings.EdgeThreshold);
-            if (edge != null)
-            {
-                var targetPeer = GetPeerAtEdge(edge.Edge);
-                if (targetPeer != null)
-                {
-                    SimpleLogger.Log("Control", $"Starting remote control to {targetPeer.Name} at edge {edge.Edge}");
-                    StartRemoteControl(targetPeer, edge);
-                    e.Handled = true;
-                }
-            }
-        }
+        if (Environment.TickCount64 < Interlocked.Read(ref _returnCooldownUntil))
+            return;
 
+        var edge = _screenInfo.GetEdgeAt(e.X, e.Y, _settings.EdgeThreshold);
+        if (edge == null)
+            return;
+
+        var targetPeer = GetPeerAtEdge(edge.Edge);
+        if (targetPeer == null)
+            return;
+
+        StartRemoteControl(targetPeer, edge);
+        e.Handled = true;
     }
 
     private void OnKeyboardEvent(object? sender, KeyboardEventArgs e)
     {
-        if (!_enabled)
+        if (!_enabled || e.IsInjected || _isControlledByRemote)
             return;
 
-        // If we're being controlled, ignore local input
-        if (_isControlledByRemote)
-        {
-            return;
-        }
-
-        // If we're controlling a remote, forward input
-        if (_isControllingRemote && _activePeer != null)
+        if (_isControllingRemote)
         {
             e.Handled = true;
-            SendToActivePeer(KeyboardMessage.FromEvent(e));
+            _activeConnection?.Post(KeyboardMessage.FromEvent(e));
         }
     }
 
-    private void OnClipboardChanged(object? sender, ClipboardMessage message)
+    private void StartRemoteControl(PeerConfig peer, EdgeInfo edge)
     {
-        if (!_enabled || !_settings.Clipboard.Enabled)
-            return;
-
-        // Broadcast to all connected peers
+        PeerConnection? connection;
         lock (_connectionLock)
         {
-            foreach (var connection in _connections.Values)
-            {
-                _ = connection.SendAsync(message);
-            }
+            _connections.TryGetValue(peer.Id, out connection);
         }
+        if (connection == null)
+            return;
+
+        SimpleLogger.Log("Control", $"Entering {peer.Name} via {edge.Edge} edge at {edge.NormalizedPosition:F3}");
+
+        _activePeer = peer;
+        _activeConnection = connection;
+        _isControllingRemote = true;
+
+        try
+        {
+            _rawMouse.Start();
+        }
+        catch (Exception ex)
+        {
+            _isControllingRemote = false;
+            _activePeer = null;
+            _activeConnection = null;
+            Error?.Invoke(this, ex);
+            return;
+        }
+
+        InputSimulator.HideSystemCursor();
+
+        // Park the (now hidden and frozen) cursor away from the edge so nothing local reacts to it.
+        var bounds = _screenInfo.PrimaryBounds;
+        InputSimulator.MoveTo(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2);
+
+        var entryEdge = CursorManager.GetOppositeEdge(peer.Position);
+        var enterMsg = new CursorEnterMessage
+        {
+            EntryEdge = entryEdge,
+            EntryX = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? 0f : edge.NormalizedPosition,
+            EntryY = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? edge.NormalizedPosition : 0f
+        };
+        connection.Post(enterMsg);
+
+        ControlStateChanged?.Invoke(this, EventArgs.Empty);
     }
+
+    /// <summary>
+    /// Stops controlling the remote. When <paramref name="notifyPeer"/> is true the remote is told to
+    /// release; when false the remote initiated the hand-back (or is gone) and already knows.
+    /// </summary>
+    private void EndRemoteControl(bool notifyPeer)
+    {
+        if (!_isControllingRemote)
+            return;
+
+        var connection = _activeConnection;
+        var peer = _activePeer;
+
+        _isControllingRemote = false;
+        _activeConnection = null;
+        _activePeer = null;
+
+        _rawMouse.Stop();
+        InputSimulator.RestoreSystemCursor();
+
+        if (notifyPeer && connection != null && peer != null)
+        {
+            connection.Post(new CursorLeaveMessage
+            {
+                ExitEdge = CursorManager.GetOppositeEdge(peer.Position),
+                ExitX = 0.5f,
+                ExitY = 0.5f
+            });
+        }
+
+        ControlStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// The controlled machine pushed the cursor back through its entry edge: place our cursor on the
+    /// matching local edge and resume local control.
+    /// </summary>
+    private void HandleReturnFromRemote(CursorLeaveMessage msg)
+    {
+        var peer = _activePeer;
+        if (peer == null)
+            return;
+
+        var normalized = msg.ExitEdge is ScreenPosition.Left or ScreenPosition.Right ? msg.ExitY : msg.ExitX;
+
+        SimpleLogger.Log("Control", $"Returned from {peer.Name} at {normalized:F3}");
+
+        Interlocked.Exchange(ref _returnCooldownUntil, Environment.TickCount64 + ReturnCooldownMs);
+        EndRemoteControl(notifyPeer: false);
+
+        // Land one pixel inside the edge so only a deliberate push back toward it re-enters.
+        var (x, y) = _cursorManager.GetEdgePoint(peer.Position, normalized);
+        var (nudgeX, nudgeY) = peer.Position switch
+        {
+            ScreenPosition.Left => (1, 0),
+            ScreenPosition.Right => (-1, 0),
+            ScreenPosition.Top => (0, 1),
+            ScreenPosition.Bottom => (0, -1),
+            _ => (0, 0)
+        };
+        InputSimulator.MoveTo(x + nudgeX, y + nudgeY);
+    }
+
+    #endregion
+
+    #region Remote input (controlled side)
 
     private void OnMessageReceived(object? sender, ProtocolMessage message)
     {
-        var connection = sender as PeerConnection;
-        if (connection == null)
+        if (sender is not PeerConnection connection)
             return;
 
         try
@@ -630,22 +589,26 @@ public sealed class RoboMouseService : IDisposable
             switch (message)
             {
                 case MouseMessage mouseMsg:
-                    SimpleLogger.Log("Input", $"MouseMsg: Type={mouseMsg.EventType}, Pos=({mouseMsg.X},{mouseMsg.Y}), Controlled={_isControlledByRemote}");
                     HandleRemoteMouseInput(mouseMsg, connection);
                     break;
 
                 case KeyboardMessage keyMsg:
-                    HandleRemoteKeyboardInput(keyMsg);
+                    HandleRemoteKeyboardInput(keyMsg, connection);
                     break;
 
                 case CursorEnterMessage enterMsg:
-                    SimpleLogger.Log("Input", $"CursorEnter: Edge={enterMsg.EntryEdge}, Pos=({enterMsg.EntryX},{enterMsg.EntryY})");
                     HandleCursorEnter(enterMsg, connection);
                     break;
 
                 case CursorLeaveMessage leaveMsg:
-                    SimpleLogger.Log("Input", "CursorLeave received");
-                    HandleCursorLeave(leaveMsg, connection);
+                    if (_isControllingRemote && connection == _activeConnection)
+                    {
+                        HandleReturnFromRemote(leaveMsg);
+                    }
+                    else if (_isControlledByRemote && connection == _controllerConnection)
+                    {
+                        EndBeingControlled(notifyPeer: false);
+                    }
                     break;
 
                 case ClipboardMessage clipMsg:
@@ -659,81 +622,186 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
+    private void HandleCursorEnter(CursorEnterMessage msg, PeerConnection connection)
+    {
+        SimpleLogger.Log("Control", $"Controlled by {connection.PeerName} via {msg.EntryEdge} edge");
+
+        _controllerConnection = connection;
+        _entryEdge = msg.EntryEdge;
+        _edgeOvershoot = 0;
+        _isControlledByRemote = true;
+
+        var normalized = msg.EntryEdge is ScreenPosition.Left or ScreenPosition.Right ? msg.EntryY : msg.EntryX;
+        _cursorManager.PlaceAtEdge(msg.EntryEdge, normalized);
+
+        ControlStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     private void HandleRemoteMouseInput(MouseMessage msg, PeerConnection connection)
     {
-        if (!_isControlledByRemote)
+        if (!_isControlledByRemote || connection != _controllerConnection)
             return;
 
-        // The sender sends coordinates in OUR screen space directly
-        var localX = msg.X;
-        var localY = msg.Y;
-
-        // Clamp to screen bounds
-        var bounds = _screenInfo.PrimaryBounds;
-        var clampedX = Math.Clamp(localX, bounds.Left, bounds.Right - 1);
-        var clampedY = Math.Clamp(localY, bounds.Top, bounds.Bottom - 1);
-
-        if (msg.EventType == MouseEventType.Move)
+        if (msg.IsMotion)
         {
-            InputSimulator.MoveTo(clampedX, clampedY);
+            InputSimulator.MoveRelative(msg.DeltaX, msg.DeltaY);
+            CheckForReturnEdge(msg.DeltaX, msg.DeltaY);
+            return;
+        }
+
+        switch (msg.EventType)
+        {
+            case MouseEventType.LeftDown or MouseEventType.RightDown or MouseEventType.MiddleDown
+                or MouseEventType.XButton1Down or MouseEventType.XButton2Down:
+                _heldButtons.Add(msg.EventType);
+                break;
+            case MouseEventType.LeftUp:
+                _heldButtons.Remove(MouseEventType.LeftDown);
+                break;
+            case MouseEventType.RightUp:
+                _heldButtons.Remove(MouseEventType.RightDown);
+                break;
+            case MouseEventType.MiddleUp:
+                _heldButtons.Remove(MouseEventType.MiddleDown);
+                break;
+            case MouseEventType.XButton1Up:
+                _heldButtons.Remove(MouseEventType.XButton1Down);
+                break;
+            case MouseEventType.XButton2Up:
+                _heldButtons.Remove(MouseEventType.XButton2Down);
+                break;
+        }
+
+        InputSimulator.SimulateMouseEvent(msg.EventType, wheelDelta: msg.WheelDelta);
+    }
+
+    /// <summary>
+    /// Hands control back once the cursor is pinned against the entry edge and the controller keeps
+    /// pushing into it. Motion away from the edge resets the count so leaning on it briefly is harmless.
+    /// </summary>
+    private void CheckForReturnEdge(int dx, int dy)
+    {
+        var (x, y) = InputSimulator.GetCursorPosition();
+        var bounds = _screenInfo.VirtualBounds;
+
+        var (pinned, push) = _entryEdge switch
+        {
+            ScreenPosition.Left => (x <= bounds.Left, -dx),
+            ScreenPosition.Right => (x >= bounds.Right - 1, dx),
+            ScreenPosition.Top => (y <= bounds.Top, -dy),
+            ScreenPosition.Bottom => (y >= bounds.Bottom - 1, dy),
+            _ => (false, 0)
+        };
+
+        if (!pinned || push <= 0)
+        {
+            _edgeOvershoot = 0;
+            return;
+        }
+
+        _edgeOvershoot += push;
+        if (_edgeOvershoot < ReturnOvershootCounts)
+            return;
+
+        var normalized = _cursorManager.GetNormalizedPositionOnEdge(_entryEdge, x, y);
+        var leave = new CursorLeaveMessage
+        {
+            ExitEdge = _entryEdge,
+            ExitX = _entryEdge is ScreenPosition.Left or ScreenPosition.Right ? 0f : normalized,
+            ExitY = _entryEdge is ScreenPosition.Left or ScreenPosition.Right ? normalized : 0f
+        };
+
+        var connection = _controllerConnection;
+        EndBeingControlled(notifyPeer: false);
+        connection?.Post(leave);
+    }
+
+    private void HandleRemoteKeyboardInput(KeyboardMessage msg, PeerConnection connection)
+    {
+        if (!_isControlledByRemote || connection != _controllerConnection)
+            return;
+
+        if (msg.EventType is KeyboardEventType.KeyDown or KeyboardEventType.SysKeyDown)
+        {
+            _heldKeys[msg.KeyCode] = (msg.ScanCode, msg.IsExtendedKey);
         }
         else
         {
-            // Move to position first for clicks
-            InputSimulator.MoveTo(clampedX, clampedY);
-            InputSimulator.SimulateMouseEvent(msg.EventType, wheelDelta: msg.WheelDelta);
+            _heldKeys.Remove(msg.KeyCode);
         }
-    }
-
-    private void HandleRemoteKeyboardInput(KeyboardMessage msg)
-    {
-        if (!_isControlledByRemote)
-            return;
 
         InputSimulator.SimulateKeyboardEvent(msg.KeyCode, msg.ScanCode, msg.EventType, msg.IsExtendedKey);
     }
 
-    private void HandleCursorEnter(CursorEnterMessage msg, PeerConnection connection)
+    /// <summary>
+    /// Stops being controlled. Releases any keys or buttons the controller left held so nothing sticks.
+    /// </summary>
+    private void EndBeingControlled(bool notifyPeer)
     {
-        SimpleLogger.Log("Control", $"HandleCursorEnter: Setting _isControlledByRemote = true, entry edge = {msg.EntryEdge}");
-        _isControlledByRemote = true;
+        if (!_isControlledByRemote)
+            return;
 
-        // Calculate entry position
-        var bounds = _screenInfo.PrimaryBounds;
-        int x, y;
+        var connection = _controllerConnection;
+        _isControlledByRemote = false;
+        _controllerConnection = null;
+        _edgeOvershoot = 0;
 
-        switch (msg.EntryEdge)
+        ReleaseHeldInput();
+
+        if (notifyPeer && connection != null)
         {
-            case ScreenPosition.Left:
-                x = bounds.Left;
-                y = bounds.Top + (int)(msg.EntryY * bounds.Height);
-                break;
-            case ScreenPosition.Right:
-                x = bounds.Right - 1;
-                y = bounds.Top + (int)(msg.EntryY * bounds.Height);
-                break;
-            case ScreenPosition.Top:
-                x = bounds.Left + (int)(msg.EntryX * bounds.Width);
-                y = bounds.Top;
-                break;
-            case ScreenPosition.Bottom:
-                x = bounds.Left + (int)(msg.EntryX * bounds.Width);
-                y = bounds.Bottom - 1;
-                break;
-            default:
-                x = bounds.Width / 2;
-                y = bounds.Height / 2;
-                break;
+            connection.Post(new CursorLeaveMessage
+            {
+                ExitEdge = _entryEdge,
+                ExitX = 0.5f,
+                ExitY = 0.5f
+            });
         }
 
-        InputSimulator.MoveTo(x, y);
         ControlStateChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void HandleCursorLeave(CursorLeaveMessage msg, PeerConnection connection)
+    private void ReleaseHeldInput()
     {
-        _isControlledByRemote = false;
-        ControlStateChanged?.Invoke(this, EventArgs.Empty);
+        foreach (var (key, (scan, extended)) in _heldKeys)
+        {
+            InputSimulator.SimulateKeyboardEvent(key, scan, KeyboardEventType.KeyUp, extended);
+        }
+        _heldKeys.Clear();
+
+        foreach (var button in _heldButtons)
+        {
+            var up = button switch
+            {
+                MouseEventType.LeftDown => MouseEventType.LeftUp,
+                MouseEventType.RightDown => MouseEventType.RightUp,
+                MouseEventType.MiddleDown => MouseEventType.MiddleUp,
+                MouseEventType.XButton1Down => MouseEventType.XButton1Up,
+                MouseEventType.XButton2Down => MouseEventType.XButton2Up,
+                _ => (MouseEventType?)null
+            };
+            if (up != null)
+                InputSimulator.SimulateMouseEvent(up.Value);
+        }
+        _heldButtons.Clear();
+    }
+
+    #endregion
+
+    #region Clipboard
+
+    private void OnClipboardChanged(object? sender, ClipboardMessage message)
+    {
+        if (!_enabled || !_settings.Clipboard.Enabled)
+            return;
+
+        lock (_connectionLock)
+        {
+            foreach (var connection in _connections.Values)
+            {
+                connection.Post(message);
+            }
+        }
     }
 
     private void HandleRemoteClipboard(ClipboardMessage msg)
@@ -744,193 +812,7 @@ public sealed class RoboMouseService : IDisposable
         _clipboardManager.SetClipboard(msg);
     }
 
-    private void OnPeerDiscovered(object? sender, DiscoveredPeer peer)
-    {
-        PeerDiscovered?.Invoke(this, peer);
-    }
-
-    private void OnPeerLost(object? sender, DiscoveredPeer peer)
-    {
-        // Could notify UI
-    }
-
-    private void OnIncomingConnection(object? sender, PeerConnection connection)
-    {
-        // Add to connections but don't set as active peer yet
-        AddConnection(connection);
-    }
-
-    private void StartRemoteControl(PeerConfig peer, EdgeInfo edge)
-    {
-        SimpleLogger.Log("Control", $">>> StartRemoteControl CALLED for {peer.Name}");
-
-        _activePeer = peer;
-        _isControllingRemote = true;
-        _hasMovedIntoRemote = false;
-
-        // Initialize cursor position on remote screen in pixel coordinates (like Deskflow)
-        int remoteW = peer.ScreenWidth;
-        int remoteH = peer.ScreenHeight;
-
-        switch (peer.Position)
-        {
-            case ScreenPosition.Right:
-                // Entering from left edge of remote screen
-                _remoteX = 0;
-                _remoteY = (int)(edge.NormalizedPosition * remoteH);
-                break;
-            case ScreenPosition.Left:
-                // Entering from right edge of remote screen
-                _remoteX = remoteW - 1;
-                _remoteY = (int)(edge.NormalizedPosition * remoteH);
-                break;
-            case ScreenPosition.Bottom:
-                // Entering from top edge of remote screen
-                _remoteX = (int)(edge.NormalizedPosition * remoteW);
-                _remoteY = 0;
-                break;
-            case ScreenPosition.Top:
-                // Entering from bottom edge of remote screen
-                _remoteX = (int)(edge.NormalizedPosition * remoteW);
-                _remoteY = remoteH - 1;
-                break;
-        }
-
-        SimpleLogger.Log("Control", $"StartRemoteControl: peer={peer.Name}, remotePos=({_remoteX},{_remoteY})");
-
-        // Set capture position to CENTER of the primary screen (like Deskflow)
-        var bounds = _screenInfo.PrimaryBounds;
-        int captureX = bounds.Left + bounds.Width / 2;
-        int captureY = bounds.Top + bounds.Height / 2;
-
-        // Hide cursor while controlling remote
-        InputSimulator.HideSystemCursor();
-
-        // Move cursor to capture position and set it as the warp-back point
-        _cursorManager.Capture(captureX, captureY);
-        InputSimulator.MoveTo(captureX, captureY);
-
-        // Initialize last seen position for delta tracking (after the warp)
-        _lastSeenX = captureX;
-        _lastSeenY = captureY;
-
-        // Notify the peer that cursor is entering with initial absolute position
-        var enterMsg = new CursorEnterMessage
-        {
-            EntryX = (float)_remoteX / remoteW,
-            EntryY = (float)_remoteY / remoteH,
-            EntryEdge = CursorManager.GetOppositeEdge(peer.Position)
-        };
-
-        SendToActivePeer(enterMsg);
-        ControlStateChanged?.Invoke(this, EventArgs.Empty);
-    }
-
-    private void EndRemoteControl()
-    {
-        if (!_isControllingRemote)
-            return;
-
-        // Restore cursor
-        InputSimulator.RestoreSystemCursor();
-
-        // Release cursor
-        _cursorManager.Release();
-
-        if (_activePeer != null)
-        {
-            var leaveMsg = new CursorLeaveMessage
-            {
-                ExitX = 0.5f,
-                ExitY = 0.5f,
-                ExitEdge = CursorManager.GetOppositeEdge(_activePeer.Position)
-            };
-            SendToActivePeer(leaveMsg);
-        }
-
-        _isControllingRemote = false;
-        _activePeer = null;
-        ControlStateChanged?.Invoke(this, EventArgs.Empty);
-    }
-
-    private void SendToActivePeer(ProtocolMessage message)
-    {
-        if (_activePeer == null)
-            return;
-
-        PeerConnection? connection;
-        lock (_connectionLock)
-        {
-            _connections.TryGetValue(_activePeer.Id, out connection);
-        }
-
-        if (connection != null)
-        {
-            _ = connection.SendAsync(message);
-        }
-    }
-
-    /// <summary>
-    /// Checks if we've moved far enough into the remote screen (pixel-based).
-    /// </summary>
-    private bool HasMovedIntoRemotePixels(ScreenPosition peerPosition, int x, int y, int screenW, int screenH)
-    {
-        // 5% of screen size threshold
-        int thresholdX = screenW / 20;
-        int thresholdY = screenH / 20;
-
-        return peerPosition switch
-        {
-            ScreenPosition.Right => x >= thresholdX,
-            ScreenPosition.Left => x <= screenW - thresholdX,
-            ScreenPosition.Bottom => y >= thresholdY,
-            ScreenPosition.Top => y <= screenH - thresholdY,
-            _ => false
-        };
-    }
-
-    /// <summary>
-    /// Checks if cursor has hit the return edge (pixel-based).
-    /// </summary>
-    private ScreenPosition? GetReturnEdgePixels(ScreenPosition peerPosition, int x, int y, int screenW, int screenH)
-    {
-        return peerPosition switch
-        {
-            ScreenPosition.Right => x < 0 ? ScreenPosition.Left : null,
-            ScreenPosition.Left => x >= screenW ? ScreenPosition.Right : null,
-            ScreenPosition.Bottom => y < 0 ? ScreenPosition.Top : null,
-            ScreenPosition.Top => y >= screenH ? ScreenPosition.Bottom : null,
-            _ => null
-        };
-    }
-
-    private PeerConfig? GetPeerAtEdge(ScreenPosition edge)
-    {
-        // Find configured peer at this edge
-        var peer = _settings.Peers.FirstOrDefault(p => p.Position == edge);
-        if (peer == null)
-            return null;
-
-        // Check if connected to this peer
-        lock (_connectionLock)
-        {
-            if (!_connections.ContainsKey(peer.Id))
-                return null;
-        }
-
-        return peer;
-    }
-
-    private PeerConfig? GetPeerConfig(string peerId)
-    {
-        return _settings.Peers.FirstOrDefault(p => p.Id == peerId);
-    }
-
-    private bool ShouldReturnFromRemote(ScreenPosition currentEdge, ScreenPosition peerPosition)
-    {
-        // Return when hitting the opposite edge
-        return currentEdge == CursorManager.GetOppositeEdge(peerPosition);
-    }
+    #endregion
 
     public void Dispose()
     {
@@ -940,6 +822,7 @@ public sealed class RoboMouseService : IDisposable
         _disposed = true;
         Stop();
 
+        _rawMouse.Dispose();
         _mouseHook.Dispose();
         _keyboardHook.Dispose();
         _clipboardManager.Dispose();
@@ -947,29 +830,16 @@ public sealed class RoboMouseService : IDisposable
         _listener.Dispose();
     }
 }
+
+/// <summary>
+/// Debug information about forwarded motion while controlling a remote machine.
+/// </summary>
 public class MouseDebugEventArgs : EventArgs
 {
     public bool IsControlling { get; set; }
     public string? PeerName { get; set; }
-    public int LocalX { get; set; }
-    public int LocalY { get; set; }
-    public int PrevX { get; set; }
-    public int PrevY { get; set; }
-    public float VirtualX { get; set; }
-    public float VirtualY { get; set; }
+    public string? PeerPosition { get; set; }
     public int DeltaX { get; set; }
     public int DeltaY { get; set; }
-    public float VelocityX { get; set; }
-    public float VelocityY { get; set; }
-    public bool IsIgnored { get; set; }
-
-    // Extra debug info
-    public int RemoteX { get; set; }
-    public int RemoteY { get; set; }
-    public int PeerScreenWidth { get; set; }
-    public int PeerScreenHeight { get; set; }
-    public int CaptureX { get; set; }
-    public int CaptureY { get; set; }
-    public string? PeerPosition { get; set; }
+    public int RoundTripMs { get; set; }
 }
-
