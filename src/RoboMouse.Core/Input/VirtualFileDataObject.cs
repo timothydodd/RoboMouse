@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
-using System.Text;
 using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network.Protocol;
 
@@ -12,8 +11,27 @@ namespace RoboMouse.Core.Input;
 /// each file's bytes are produced by a stream that pulls from the remote machine only when an
 /// application actually reads it, so nothing transfers until you paste.
 /// </summary>
-public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTypes.IDataObject
+public sealed class VirtualFileDataObject : VirtualFileDataObject.IDataObjectHresult
 {
+    /// <summary>
+    /// IDataObject declared with HRESULT returns. The framework's ComTypes.IDataObject can only refuse a
+    /// format by throwing, and Explorer probes many formats on every paste evaluation; with this
+    /// declaration a refusal is an ordinary return value and never raises an exception.
+    /// </summary>
+    [ComImport, Guid("0000010E-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IDataObjectHresult
+    {
+        [PreserveSig] int GetData(ref FORMATETC format, out STGMEDIUM medium);
+        [PreserveSig] int GetDataHere(ref FORMATETC format, ref STGMEDIUM medium);
+        [PreserveSig] int QueryGetData(ref FORMATETC format);
+        [PreserveSig] int GetCanonicalFormatEtc(ref FORMATETC formatIn, out FORMATETC formatOut);
+        [PreserveSig] int SetData(ref FORMATETC formatIn, ref STGMEDIUM medium, [MarshalAs(UnmanagedType.Bool)] bool release);
+        [PreserveSig] int EnumFormatEtc(DATADIR direction, out IEnumFORMATETC? enumerator);
+        [PreserveSig] int DAdvise(ref FORMATETC format, ADVF advf, IAdviseSink sink, out int connection);
+        [PreserveSig] int DUnadvise(int connection);
+        [PreserveSig] int EnumDAdvise(out IEnumSTATDATA? enumAdvise);
+    }
+
     /// <summary>Reads up to <c>length</c> bytes of entry <c>index</c> at <c>offset</c>; fewer bytes means end of file.</summary>
     public delegate byte[] ReadRange(int index, long offset, int length);
 
@@ -35,7 +53,7 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
 
     #region IDataObject
 
-    public void GetData(ref FORMATETC format, out STGMEDIUM medium)
+    public int GetData(ref FORMATETC format, out STGMEDIUM medium)
     {
         medium = default;
 
@@ -43,7 +61,7 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
         {
             medium.tymed = TYMED.TYMED_HGLOBAL;
             medium.unionmember = BuildFileGroupDescriptor();
-            return;
+            return Native.S_OK;
         }
 
         if (format.cfFormat == CfFileContents && (format.tymed & TYMED.TYMED_ISTREAM) != 0)
@@ -55,7 +73,7 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
                 var stream = new PullStream(_entries[index], index, _read);
                 medium.tymed = TYMED.TYMED_ISTREAM;
                 medium.unionmember = Marshal.GetComInterfaceForObject(stream, typeof(IStream));
-                return;
+                return Native.S_OK;
             }
         }
 
@@ -67,11 +85,11 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
             Native.GlobalUnlock(handle);
             medium.tymed = TYMED.TYMED_HGLOBAL;
             medium.unionmember = handle;
-            return;
+            return Native.S_OK;
         }
 
-        SimpleLogger.Log("Files", $"GetData refused: {Describe(format)}");
-        throw new COMException("Format not supported.", Native.DV_E_FORMATETC);
+        // Explorer probes many formats (Shell IDList Array, Net Resource, ...); refusing is normal.
+        return Native.DV_E_FORMATETC;
     }
 
     private int FirstFileIndex()
@@ -82,16 +100,7 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
         return -1;
     }
 
-    private static string Describe(FORMATETC format)
-    {
-        var name = new StringBuilder(256);
-        var length = Native.GetClipboardFormatName((uint)(ushort)format.cfFormat, name, name.Capacity);
-        var formatName = length > 0 ? name.ToString() : $"CF #{(ushort)format.cfFormat}";
-        return $"{formatName} tymed={format.tymed} lindex={format.lindex} aspect={format.dwAspect}";
-    }
-
-    public void GetDataHere(ref FORMATETC format, ref STGMEDIUM medium)
-        => throw new COMException("Not implemented.", Native.E_NOTIMPL);
+    public int GetDataHere(ref FORMATETC format, ref STGMEDIUM medium) => Native.E_NOTIMPL;
 
     public int QueryGetData(ref FORMATETC format)
     {
@@ -111,17 +120,19 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
         return Native.DATA_S_SAMEFORMATETC;
     }
 
-    public void SetData(ref FORMATETC formatIn, ref STGMEDIUM medium, bool release)
+    public int SetData(ref FORMATETC formatIn, ref STGMEDIUM medium, bool release)
     {
         // Explorer reports the drop effect it performed here. Accept and ignore.
         if (release)
             Native.ReleaseStgMedium(ref medium);
+        return Native.S_OK;
     }
 
-    public IEnumFORMATETC EnumFormatEtc(DATADIR direction)
+    public int EnumFormatEtc(DATADIR direction, out IEnumFORMATETC? enumerator)
     {
+        enumerator = null;
         if (direction != DATADIR.DATADIR_GET)
-            throw new COMException("Not implemented.", Native.E_NOTIMPL);
+            return Native.E_NOTIMPL;
 
         var formats = new[]
         {
@@ -129,8 +140,7 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
             new FORMATETC { cfFormat = CfFileContents, dwAspect = DVASPECT.DVASPECT_CONTENT, lindex = -1, tymed = TYMED.TYMED_ISTREAM },
             new FORMATETC { cfFormat = CfPreferredDropEffect, dwAspect = DVASPECT.DVASPECT_CONTENT, lindex = -1, tymed = TYMED.TYMED_HGLOBAL }
         };
-        Marshal.ThrowExceptionForHR(Native.SHCreateStdEnumFmtEtc((uint)formats.Length, formats, out var enumerator));
-        return enumerator;
+        return Native.SHCreateStdEnumFmtEtc((uint)formats.Length, formats, out enumerator);
     }
 
     public int DAdvise(ref FORMATETC format, ADVF advf, IAdviseSink sink, out int connection)
@@ -139,7 +149,7 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
         return Native.OLE_E_ADVISENOTSUPPORTED;
     }
 
-    public void DUnadvise(int connection) => throw new COMException("Not supported.", Native.OLE_E_ADVISENOTSUPPORTED);
+    public int DUnadvise(int connection) => Native.OLE_E_ADVISENOTSUPPORTED;
 
     public int EnumDAdvise(out IEnumSTATDATA? enumAdvise)
     {
@@ -311,8 +321,6 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         public static extern uint RegisterClipboardFormat(string lpszFormat);
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        public static extern int GetClipboardFormatName(uint format, StringBuilder lpszFormatName, int cchMaxCount);
 
         [DllImport("kernel32.dll")]
         public static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
@@ -328,10 +336,10 @@ public sealed class VirtualFileDataObject : System.Runtime.InteropServices.ComTy
         public static extern void ReleaseStgMedium(ref STGMEDIUM pmedium);
 
         [DllImport("ole32.dll")]
-        public static extern int OleSetClipboard([MarshalAs(UnmanagedType.Interface)] System.Runtime.InteropServices.ComTypes.IDataObject? pDataObj);
+        public static extern int OleSetClipboard([MarshalAs(UnmanagedType.Interface)] IDataObjectHresult? pDataObj);
 
         [DllImport("ole32.dll")]
-        public static extern int OleIsCurrentClipboard([MarshalAs(UnmanagedType.Interface)] System.Runtime.InteropServices.ComTypes.IDataObject pDataObj);
+        public static extern int OleIsCurrentClipboard([MarshalAs(UnmanagedType.Interface)] IDataObjectHresult pDataObj);
 
         [DllImport("shell32.dll")]
         public static extern int SHCreateStdEnumFmtEtc(uint cfmt, [In] FORMATETC[] afmt, out IEnumFORMATETC ppenumFormatEtc);
