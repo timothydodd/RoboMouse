@@ -17,7 +17,7 @@ A Windows application that lets you share your mouse and keyboard across multipl
 ## Requirements
 
 - Windows 10/11
-- .NET 9.0 Runtime
+- .NET 10 Desktop Runtime
 - Network connectivity between computers
 
 ## Getting Started
@@ -28,8 +28,8 @@ A Windows application that lets you share your mouse and keyboard across multipl
 dotnet publish src/RoboMouse.App -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
 ```
 
-The output in `src/RoboMouse.App/bin/Release/net9.0-windows/win-x64/publish/` needs only the
-.NET 9 Desktop Runtime on the target machine.
+The output in `src/RoboMouse.App/bin/Release/net10.0-windows/win-x64/publish/` needs only the
+.NET 10 Desktop Runtime on the target machine.
 
 ### Building from Source
 
@@ -45,7 +45,7 @@ dotnet build
 dotnet run --project src/RoboMouse.App
 ```
 
-Or build and run the executable directly from `bin/Debug/net9.0-windows/`.
+Or build and run the executable directly from `bin/Debug/net10.0-windows/`.
 
 ## Usage
 

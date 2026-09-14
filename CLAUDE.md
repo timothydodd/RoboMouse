@@ -67,7 +67,7 @@ Never do per-event file logging on the input path: the hook callback has a syste
 
 ### Windows-Specific
 
-- Target framework: `net9.0-windows`
+- Target framework: `net10.0-windows`
 - Uses Windows Forms for system tray UI
 - P/Invoke calls in `NativeMethods.cs` for hooks and input simulation
 - Settings stored in `%AppData%/RoboMouse/settings.json`
