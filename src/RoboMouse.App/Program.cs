@@ -1,29 +1,31 @@
-using RoboMouse.Core.Configuration;
+using System.Runtime.InteropServices;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using RoboMouse.Core.Input;
 using RoboMouse.Core.Logging;
 
 namespace RoboMouse.App;
 
-internal static class Program
+internal static partial class Program
 {
     [STAThread]
-    static void Main(string[] args)
+    public static int Main(string[] args)
     {
         // Recovery switch: if a previous instance was killed while controlling a remote, the system
         // cursors may still be blank. "RoboMouse.exe --restore-cursor" puts them back and exits.
         if (args.Any(a => string.Equals(a, "--restore-cursor", StringComparison.OrdinalIgnoreCase)))
         {
             InputSimulator.RestoreSystemCursor();
-            return;
+            return 0;
         }
 
         // Ensure single instance
         using var mutex = new Mutex(true, "RoboMouse_SingleInstance", out var isNew);
         if (!isNew)
         {
-            MessageBox.Show("RoboMouse is already running.", "RoboMouse",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
+            MessageBoxW(0, "RoboMouse is already running.", "RoboMouse", MB_OK | MB_ICONINFORMATION);
+            return 0;
         }
 
         // Clear log file on startup
@@ -37,23 +39,17 @@ internal static class Program
             InputSimulator.RestoreSystemCursor();
             SimpleLogger.Log("Fatal", e.ExceptionObject?.ToString() ?? "Unknown unhandled exception");
         };
-        Application.ThreadException += (_, e) =>
-        {
-            SimpleLogger.Log("UI", e.Exception.ToString());
-        };
 
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-
-        // Load settings
-        var settings = AppSettings.Load();
-
-        // Run the application
-        var context = new TrayApplicationContext(settings);
-        Application.Run(context);
-
-        // Save settings on exit
-        settings.Save();
+        return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
     }
+
+    public static AppBuilder BuildAvaloniaApp() =>
+        AppBuilder.Configure<App>()
+            .UsePlatformDetect();
+
+    private const uint MB_OK = 0x0;
+    private const uint MB_ICONINFORMATION = 0x40;
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int MessageBoxW(nint hWnd, string text, string caption, uint type);
 }

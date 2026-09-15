@@ -1,0 +1,76 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:RoboMouse.App.ViewModels"
+        xmlns:views="using:RoboMouse.App.Views"
+        x:Class="RoboMouse.App.Views.PeerSetupWindow"
+        x:DataType="vm:PeerSetupViewModel"
+        Title="{Binding Title}"
+        Width="480" SizeToContent="Height"
+        CanResize="False" ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Icon="/Assets/app.ico"
+        Background="{DynamicResource AppWindowBackgroundBrush}">
+
+  <DockPanel>
+    <Border DockPanel.Dock="Bottom" Classes="footer">
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+        <Button Classes="accent" Content="{Binding ConfirmText}" Command="{Binding ConfirmCommand}" IsDefault="True" />
+        <Button Content="Cancel" Command="{Binding CancelCommand}" IsCancel="True" />
+      </StackPanel>
+    </Border>
+
+    <StackPanel Margin="24,20,24,24" Spacing="14">
+      <TextBlock Classes="subtitle" Text="{Binding Title}" />
+
+      <StackPanel Spacing="6">
+        <TextBlock Text="Name" />
+        <TextBox Text="{Binding Name}" PlaceholderText="How this machine is shown in the list" />
+      </StackPanel>
+
+      <Grid ColumnDefinitions="*,12,Auto,12,Auto">
+        <StackPanel Spacing="6">
+          <TextBlock Text="Address" />
+          <TextBox Text="{Binding Address}" PlaceholderText="IP address or host name" />
+        </StackPanel>
+        <StackPanel Grid.Column="2" Spacing="6">
+          <TextBlock Text="Port" />
+          <NumericUpDown Value="{Binding Port}" Minimum="1024" Maximum="65535" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="120" />
+        </StackPanel>
+        <Button Grid.Column="4" Content="Test" Command="{Binding TestCommand}" IsVisible="{Binding CanTest}"
+                VerticalAlignment="Bottom" MinWidth="72" HorizontalContentAlignment="Center" />
+      </Grid>
+
+      <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding CanTest}">
+        <ProgressBar IsIndeterminate="True" Width="60" IsVisible="{Binding IsTesting}" VerticalAlignment="Center" />
+        <TextBlock Classes="caption" Text="{Binding TestResult}"
+                   Foreground="{Binding TestTone, Converter={x:Static views:StatusToneToBrushConverter.Instance}}"
+                   MaxWidth="400" VerticalAlignment="Center" />
+      </StackPanel>
+
+      <StackPanel Spacing="6">
+        <TextBlock Text="Position" />
+        <ComboBox ItemsSource="{Binding Positions}" SelectedItem="{Binding SelectedPosition}" Width="220" />
+      </StackPanel>
+
+      <StackPanel Spacing="6">
+        <TextBlock Text="Offset along the shared edge" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBlock Text="X" VerticalAlignment="Center" Classes="muted" />
+          <NumericUpDown Value="{Binding OffsetX}" Minimum="-10000" Maximum="10000" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="130" />
+          <TextBlock Text="Y" VerticalAlignment="Center" Classes="muted" Margin="8,0,0,0" />
+          <NumericUpDown Value="{Binding OffsetY}" Minimum="-10000" Maximum="10000" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="130" />
+        </StackPanel>
+        <TextBlock Classes="caption" Text="Pixels to shift the other screen. Easier to set by dragging on the Layout page." />
+      </StackPanel>
+
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel>
+          <TextBlock Text="Enabled" />
+          <TextBlock Classes="caption" Text="A disabled peer keeps its settings but is never connected to and cannot take control of this screen." />
+        </StackPanel>
+        <ToggleSwitch Grid.Column="1" IsChecked="{Binding IsEnabled}" VerticalAlignment="Center" Margin="16,0,0,0" />
+      </Grid>
+    </StackPanel>
+  </DockPanel>
+
+</Window>

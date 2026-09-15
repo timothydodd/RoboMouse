@@ -3,8 +3,8 @@
   Builds the Microsoft Store package (MSIX) for RoboMouse.
 
 .DESCRIPTION
-  Publishes a self-contained win-x64 build, stamps the package manifest with the identity from
-  Partner Center, and packs it with makeappx from the Windows SDK. The result is unsigned: Partner
+  Publishes a Native AOT win-x64 build (needs the Visual Studio C++ build tools), stamps the package
+  manifest with the identity from Partner Center, and packs it with makeappx from the Windows SDK. The result is unsigned: Partner
   Center signs Store submissions. Use -Sign to sign with a self-signed certificate for sideload testing.
 
 .PARAMETER PackageName
@@ -46,15 +46,15 @@ if (-not $sdkBin) { throw "makeappx.exe not found. Install the Windows 10/11 SDK
 $makeappx = Join-Path $sdkBin "makeappx.exe"
 $signtool = Join-Path $sdkBin "signtool.exe"
 
-# --- Publish self-contained (Store packages cannot rely on a separately installed .NET runtime) --
+# --- Publish (Native AOT: a self-contained native executable, so the Store package needs no runtime) --
 $stage = Join-Path $root "artifacts\msix-stage"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item $stage -ItemType Directory | Out-Null
 
-Write-Host "Publishing self-contained win-x64..."
-dotnet publish (Join-Path $root "src\RoboMouse.App") -c Release -r win-x64 --self-contained true `
-    -p:PublishSingleFile=false -p:DebugType=none -o $stage
+Write-Host "Publishing Native AOT win-x64..."
+dotnet publish (Join-Path $root "src\RoboMouse.App") -c Release -r win-x64 -o $stage
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+Get-ChildItem $stage -Filter *.pdb | Remove-Item
 
 # --- Manifest and assets ------------------------------------------------------------------------
 Copy-Item (Join-Path $PSScriptRoot "Assets") (Join-Path $stage "Assets") -Recurse

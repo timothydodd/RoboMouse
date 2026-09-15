@@ -3,9 +3,10 @@ using System.Runtime.InteropServices;
 namespace RoboMouse.Core.Input;
 
 /// <summary>
-/// P/Invoke declarations for Windows input APIs.
+/// P/Invoke declarations for Windows input, window and clipboard APIs. Everything here is declared
+/// with source-generated marshalling so the assembly compiles ahead of time (Native AOT).
 /// </summary>
-internal static class NativeMethods
+internal static unsafe partial class NativeMethods
 {
     #region Hook Constants
 
@@ -53,6 +54,7 @@ internal static class NativeMethods
     public const uint KEYEVENTF_KEYDOWN = 0x0000;
     public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
     public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint KEYEVENTF_UNICODE = 0x0004;
     public const uint KEYEVENTF_SCANCODE = 0x0008;
 
     public const uint XBUTTON1 = 0x0001;
@@ -65,7 +67,7 @@ internal static class NativeMethods
 
     #region Raw Input
 
-    public const int WM_INPUT = 0x00FF;
+    public const uint WM_INPUT = 0x00FF;
     public const uint RID_INPUT = 0x10000003;
     public const uint RIM_TYPEMOUSE = 0;
     public const ushort HID_USAGE_PAGE_GENERIC = 0x01;
@@ -82,7 +84,7 @@ internal static class NativeMethods
         public ushort usUsagePage;
         public ushort usUsage;
         public uint dwFlags;
-        public IntPtr hwndTarget;
+        public nint hwndTarget;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -90,8 +92,8 @@ internal static class NativeMethods
     {
         public uint dwType;
         public uint dwSize;
-        public IntPtr hDevice;
-        public IntPtr wParam;
+        public nint hDevice;
+        public nint wParam;
     }
 
     [StructLayout(LayoutKind.Explicit)]
@@ -114,21 +116,18 @@ internal static class NativeMethods
         public RAWMOUSE mouse;
     }
 
-    [DllImport("user32.dll", SetLastError = true)]
+    [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] pRawInputDevices, uint uiNumDevices, uint cbSize);
+    public static partial bool RegisterRawInputDevices(RAWINPUTDEVICE* pRawInputDevices, uint uiNumDevices, uint cbSize);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern uint GetRawInputData(IntPtr hRawInput, uint uiCommand, IntPtr pData, ref uint pcbSize, uint cbSizeHeader);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial uint GetRawInputData(nint hRawInput, uint uiCommand, void* pData, uint* pcbSize, uint cbSizeHeader);
 
-    public const IntPtr HWND_MESSAGE = -3;
+    public const nint HWND_MESSAGE = -3;
 
     #endregion
 
-    #region Hook Delegates and Structures
-
-    public delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
-    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+    #region Hook Structures
 
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT
@@ -144,7 +143,7 @@ internal static class NativeMethods
         public uint mouseData;
         public uint flags;
         public uint time;
-        public IntPtr dwExtraInfo;
+        public nint dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -154,7 +153,7 @@ internal static class NativeMethods
         public uint scanCode;
         public uint flags;
         public uint time;
-        public IntPtr dwExtraInfo;
+        public nint dwExtraInfo;
     }
 
     #endregion
@@ -185,7 +184,7 @@ internal static class NativeMethods
         public uint mouseData;
         public uint dwFlags;
         public uint time;
-        public IntPtr dwExtraInfo;
+        public nint dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -195,7 +194,7 @@ internal static class NativeMethods
         public ushort wScan;
         public uint dwFlags;
         public uint time;
-        public IntPtr dwExtraInfo;
+        public nint dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -211,74 +210,55 @@ internal static class NativeMethods
 
     #region Hook Functions
 
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial nint SetWindowsHookExW(int idHook, delegate* unmanaged[Stdcall]<int, nint, nint, nint> lpfn, nint hMod, uint dwThreadId);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
-
-    [DllImport("user32.dll", SetLastError = true)]
+    [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    public static partial bool UnhookWindowsHookEx(nint hhk);
 
-    [DllImport("user32.dll")]
-    public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    [LibraryImport("user32.dll")]
+    public static partial nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr GetModuleHandle(string? lpModuleName);
+    [LibraryImport("kernel32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    public static partial nint GetModuleHandleW(string? lpModuleName);
 
     #endregion
 
     #region Input Functions
 
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial uint SendInput(uint nInputs, INPUT* pInputs, int cbSize);
 
-    [DllImport("user32.dll")]
+    [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool GetCursorPos(out POINT lpPoint);
+    public static partial bool GetCursorPos(out POINT lpPoint);
 
-    [DllImport("user32.dll")]
+    [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool SetCursorPos(int X, int Y);
+    public static partial bool SetCursorPos(int X, int Y);
 
-    [DllImport("user32.dll")]
+    [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool ClipCursor(ref RECT lpRect);
+    public static partial bool ClipCursor(RECT* lpRect);
 
-    [DllImport("user32.dll")]
+    [LibraryImport("user32.dll")]
+    public static partial int ShowCursor([MarshalAs(UnmanagedType.Bool)] bool bShow);
+
+    [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool ClipCursor(IntPtr lpRect);
+    public static partial bool SetSystemCursor(nint hcur, uint id);
 
-    [DllImport("user32.dll")]
-    public static extern int ShowCursor([MarshalAs(UnmanagedType.Bool)] bool bShow);
-
-    [DllImport("user32.dll")]
-    public static extern IntPtr SetCursor(IntPtr hCursor);
-
-    [DllImport("user32.dll")]
-    public static extern IntPtr GetCursor();
-
-    [DllImport("user32.dll")]
-    public static extern IntPtr LoadCursor(IntPtr hInstance, int lpCursorName);
-
-    [DllImport("user32.dll")]
-    public static extern IntPtr CopyIcon(IntPtr hIcon);
-
-    [DllImport("user32.dll")]
+    [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool SetSystemCursor(IntPtr hcur, uint id);
+    public static partial bool SystemParametersInfoW(uint uiAction, uint uiParam, nint pvParam, uint fWinIni);
 
-    [DllImport("user32.dll")]
+    [LibraryImport("user32.dll")]
+    public static partial nint CreateCursor(nint hInst, int xHotSpot, int yHotSpot, int nWidth, int nHeight, byte* pvANDPlane, byte* pvXORPlane);
+
+    [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
-
-    [DllImport("user32.dll")]
-    public static extern IntPtr CreateCursor(IntPtr hInst, int xHotSpot, int yHotSpot, int nWidth, int nHeight, byte[] pvANDPlane, byte[] pvXORPlane);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool DestroyCursor(IntPtr hCursor);
+    public static partial bool DestroyCursor(nint hCursor);
 
     // Cursor IDs for SetSystemCursor
     public const uint OCR_NORMAL = 32512;
@@ -298,11 +278,11 @@ internal static class NativeMethods
     // SystemParametersInfo constants
     public const uint SPI_SETCURSORS = 0x0057;
 
-    [DllImport("user32.dll")]
-    public static extern short GetAsyncKeyState(int vKey);
+    [LibraryImport("user32.dll")]
+    public static partial short GetAsyncKeyState(int vKey);
 
-    [DllImport("user32.dll")]
-    public static extern int GetSystemMetrics(int nIndex);
+    [LibraryImport("user32.dll")]
+    public static partial int GetSystemMetrics(int nIndex);
 
     public const int SM_CXSCREEN = 0;
     public const int SM_CYSCREEN = 1;
@@ -313,17 +293,178 @@ internal static class NativeMethods
 
     #endregion
 
+    #region Monitors
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO
+    {
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    public const uint MONITORINFOF_PRIMARY = 1;
+    public const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool EnumDisplayMonitors(nint hdc, RECT* lprcClip,
+        delegate* unmanaged[Stdcall]<nint, nint, RECT*, nint, int> lpfnEnum, nint dwData);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetMonitorInfoW(nint hMonitor, MONITORINFO* lpmi);
+
+    [LibraryImport("user32.dll")]
+    public static partial nint MonitorFromPoint(POINT pt, uint dwFlags);
+
+    #endregion
+
     #region Clipboard Functions
 
-    [DllImport("user32.dll", SetLastError = true)]
+    [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool AddClipboardFormatListener(IntPtr hwnd);
+    public static partial bool AddClipboardFormatListener(nint hwnd);
 
-    [DllImport("user32.dll", SetLastError = true)]
+    [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
+    public static partial bool RemoveClipboardFormatListener(nint hwnd);
 
-    public const int WM_CLIPBOARDUPDATE = 0x031D;
+    public const uint WM_CLIPBOARDUPDATE = 0x031D;
+
+    public const uint CF_TEXT = 1;
+    public const uint CF_DIB = 8;
+    public const uint CF_UNICODETEXT = 13;
+    public const uint CF_HDROP = 15;
+    public const uint CF_DIBV5 = 17;
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool OpenClipboard(nint hWndNewOwner);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseClipboard();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool EmptyClipboard();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial nint GetClipboardData(uint uFormat);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial nint SetClipboardData(uint uFormat, nint hMem);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsClipboardFormatAvailable(uint format);
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial uint RegisterClipboardFormatW(string lpszFormat);
+
+    [LibraryImport("shell32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial uint DragQueryFileW(nint hDrop, uint iFile, char* lpszFile, uint cch);
+
+    public const uint GMEM_MOVEABLE = 0x0002;
+    public const uint GMEM_ZEROINIT = 0x0040;
+    public const uint GHND = GMEM_MOVEABLE | GMEM_ZEROINIT;
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint GlobalAlloc(uint uFlags, nuint dwBytes);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint GlobalFree(nint hMem);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint GlobalLock(nint hMem);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GlobalUnlock(nint hMem);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nuint GlobalSize(nint hMem);
+
+    #endregion
+
+    #region Windows and message loop
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSG
+    {
+        public nint hwnd;
+        public uint message;
+        public nint wParam;
+        public nint lParam;
+        public uint time;
+        public POINT pt;
+    }
+
+    [LibraryImport("user32.dll")]
+    public static partial int GetMessageW(MSG* lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool TranslateMessage(MSG* lpMsg);
+
+    [LibraryImport("user32.dll")]
+    public static partial nint DispatchMessageW(MSG* lpMsg);
+
+    [LibraryImport("user32.dll")]
+    public static partial void PostQuitMessage(int nExitCode);
+
+    [LibraryImport("user32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    public static partial nint CreateWindowExW(uint dwExStyle, string lpClassName, string lpWindowName, uint dwStyle,
+        int x, int y, int nWidth, int nHeight, nint hWndParent, nint hMenu, nint hInstance, nint lpParam);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool DestroyWindow(nint hWnd);
+
+    [LibraryImport("user32.dll")]
+    public static partial nint DefWindowProcW(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool PostMessageW(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    [LibraryImport("user32.dll")]
+    public static partial nint SetWindowLongPtrW(nint hWnd, int nIndex, nint dwNewLong);
+
+    [LibraryImport("user32.dll")]
+    public static partial nint GetWindowLongPtrW(nint hWnd, int nIndex);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WNDCLASSEXW
+    {
+        public uint cbSize;
+        public uint style;
+        public delegate* unmanaged[Stdcall]<nint, uint, nint, nint, nint> lpfnWndProc;
+        public int cbClsExtra;
+        public int cbWndExtra;
+        public nint hInstance;
+        public nint hIcon;
+        public nint hCursor;
+        public nint hbrBackground;
+        public char* lpszMenuName;
+        public char* lpszClassName;
+        public nint hIconSm;
+    }
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial ushort RegisterClassExW(WNDCLASSEXW* lpwcx);
+
+    #endregion
+
+    #region OLE
+
+    [LibraryImport("ole32.dll")]
+    public static partial int OleInitialize(nint pvReserved);
+
+    [LibraryImport("ole32.dll")]
+    public static partial void OleUninitialize();
 
     #endregion
 }

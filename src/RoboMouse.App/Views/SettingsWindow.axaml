@@ -1,0 +1,72 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:RoboMouse.App.ViewModels"
+        xmlns:views="using:RoboMouse.App.Views"
+        xmlns:ic="using:FluentIcons.Avalonia"
+        x:Class="RoboMouse.App.Views.SettingsWindow"
+        x:DataType="vm:SettingsViewModel"
+        Title="RoboMouse"
+        Width="980" Height="720" MinWidth="840" MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        Icon="/Assets/app.ico"
+        Background="{DynamicResource AppWindowBackgroundBrush}">
+
+  <DockPanel>
+    <!-- Footer -->
+    <Border DockPanel.Dock="Bottom" Classes="footer">
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+        <Button Classes="accent" Content="Save" Command="{Binding SaveCommand}" IsDefault="True" />
+        <Button Content="Cancel" Click="OnCancelClick" IsCancel="True" />
+      </StackPanel>
+    </Border>
+
+    <Grid ColumnDefinitions="Auto,*">
+      <!-- Navigation pane -->
+      <Border Background="{DynamicResource AppNavBackgroundBrush}" Width="{StaticResource AppNavWidth}" Padding="12,16,12,16">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="12" Margin="8,4,8,24">
+            <Image Source="/Assets/logo.png" Width="36" Height="36" />
+            <StackPanel VerticalAlignment="Center">
+              <TextBlock Text="RoboMouse" FontSize="16" FontWeight="SemiBold" />
+              <TextBlock Classes="caption" Text="{Binding Version, StringFormat='Version {0}'}" />
+            </StackPanel>
+          </StackPanel>
+
+          <Border DockPanel.Dock="Bottom" Classes="card" Margin="0" Padding="12,10">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Ellipse Classes="dot" Fill="{Binding StatusTone, Converter={x:Static views:StatusToneToBrushConverter.Instance}}" />
+              <StackPanel>
+                <TextBlock Text="{Binding StatusText}" FontSize="13" TextTrimming="CharacterEllipsis" MaxWidth="150" />
+                <TextBlock Classes="caption" Text="{Binding MachineName}" TextTrimming="CharacterEllipsis" MaxWidth="150" />
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <ListBox Classes="nav" ItemsSource="{Binding Pages}" SelectedItem="{Binding SelectedPage}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:NavigationItem">
+                <Grid ColumnDefinitions="Auto,Auto,*">
+                  <!-- WinUI-style selection indicator -->
+                  <Border Width="3" Height="16" CornerRadius="2" Margin="-8,0,13,0"
+                          Background="{DynamicResource SystemControlHighlightAccentBrush}"
+                          IsVisible="{Binding $parent[ListBoxItem].IsSelected}" />
+                  <ic:SymbolIcon Grid.Column="1" Symbol="{Binding Icon}" FontSize="18" Margin="0,0,12,0" VerticalAlignment="Center" />
+                  <TextBlock Grid.Column="2" Text="{Binding Title}" VerticalAlignment="Center" />
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
+
+      <!-- Pages: each stays alive so unsaved edits and layout drags survive switching -->
+      <Panel Grid.Column="1">
+        <views:GeneralPageView DataContext="{Binding General}" IsVisible="{Binding IsActive}" />
+        <views:NetworkPageView DataContext="{Binding Network}" IsVisible="{Binding IsActive}" />
+        <views:PeersPageView DataContext="{Binding Peers}" IsVisible="{Binding IsActive}" />
+        <views:LayoutPageView DataContext="{Binding Layout}" IsVisible="{Binding IsActive}" />
+      </Panel>
+    </Grid>
+  </DockPanel>
+
+</Window>

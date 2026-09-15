@@ -85,6 +85,16 @@ public sealed class RoboMouseService : IDisposable
         return _pairingKey;
     }
 
+    /// <summary>
+    /// Converter between PNG and Windows DIB clipboard images, supplied by the app (the core has no
+    /// image codec). Without one, images still sync as PNG where the source offers it.
+    /// </summary>
+    public IClipboardImageCodec? ClipboardImageCodec
+    {
+        get => _clipboardManager.ImageCodec;
+        set => _clipboardManager.ImageCodec = value;
+    }
+
     /// <summary>Whether the service is enabled.</summary>
     public bool Enabled
     {

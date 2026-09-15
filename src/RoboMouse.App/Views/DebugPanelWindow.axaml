@@ -1,0 +1,77 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:RoboMouse.App.ViewModels"
+        xmlns:views="using:RoboMouse.App.Views"
+        x:Class="RoboMouse.App.Views.DebugPanelWindow"
+        x:DataType="vm:DebugPanelViewModel"
+        Title="RoboMouse Debug"
+        Width="320" Height="560"
+        Topmost="True" ShowInTaskbar="False" CanResize="False"
+        WindowStartupLocation="Manual"
+        Icon="/Assets/app.ico"
+        Background="{DynamicResource AppWindowBackgroundBrush}">
+
+  <StackPanel Margin="16" Spacing="4">
+    <TextBlock Classes="subtitle" Text="Mouse debug" Margin="0,0,0,8" />
+
+    <Border Classes="card">
+      <StackPanel Spacing="4">
+        <Grid ColumnDefinitions="90,*">
+          <TextBlock Classes="muted" Text="Status" />
+          <TextBlock Grid.Column="1" Text="{Binding Status}" Classes="body-strong" />
+        </Grid>
+        <Grid ColumnDefinitions="90,*">
+          <TextBlock Classes="muted" Text="Peer" />
+          <TextBlock Grid.Column="1" Text="{Binding Peer}" />
+        </Grid>
+        <Grid ColumnDefinitions="90,*">
+          <TextBlock Classes="muted" Text="Position" />
+          <TextBlock Grid.Column="1" Text="{Binding Position}" />
+        </Grid>
+      </StackPanel>
+    </Border>
+
+    <TextBlock Classes="section" Text="Link" Margin="0,12,0,6" />
+    <Border Classes="card">
+      <StackPanel Spacing="4">
+        <Grid ColumnDefinitions="90,*">
+          <TextBlock Classes="muted" Text="Round trip" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+            <Ellipse Classes="dot" Fill="{Binding RoundTripTone, Converter={x:Static views:StatusToneToBrushConverter.Instance}}" />
+            <TextBlock Text="{Binding RoundTrip}" />
+          </StackPanel>
+        </Grid>
+        <Grid ColumnDefinitions="90,*">
+          <TextBlock Classes="muted" Text="Motion rate" />
+          <TextBlock Grid.Column="1" Text="{Binding Rate}" />
+        </Grid>
+      </StackPanel>
+    </Border>
+
+    <TextBlock Classes="section" Text="Motion (raw counts)" Margin="0,12,0,6" />
+    <Border Classes="card">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="4">
+          <Grid ColumnDefinitions="90,*">
+            <TextBlock Classes="muted" Text="Last" />
+            <TextBlock Grid.Column="1" Text="{Binding LastDelta}" FontFamily="Cascadia Mono, Consolas, monospace" />
+          </Grid>
+          <Grid ColumnDefinitions="90,*">
+            <TextBlock Classes="muted" Text="Total" />
+            <TextBlock Grid.Column="1" Text="{Binding TotalDelta}" FontFamily="Cascadia Mono, Consolas, monospace" />
+          </Grid>
+        </StackPanel>
+        <views:DirectionIndicator Grid.Column="1" Width="64" Height="64" DeltaX="{Binding DirectionX}" DeltaY="{Binding DirectionY}" />
+      </Grid>
+    </Border>
+
+    <TextBlock Classes="section" Text="Recent samples" Margin="0,12,0,6" />
+    <Border Classes="card panel" Height="150">
+      <ListBox Classes="rows" ItemsSource="{Binding History}" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="11" />
+    </Border>
+
+    <Button Content="Copy to clipboard" Command="{Binding CopyCommand}" HorizontalAlignment="Stretch"
+            HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+  </StackPanel>
+
+</Window>

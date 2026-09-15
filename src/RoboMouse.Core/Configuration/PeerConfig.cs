@@ -25,7 +25,6 @@ public class PeerConfig
     /// <summary>
     /// Position of this peer's screen relative to the local screen.
     /// </summary>
-    [JsonConverter(typeof(JsonStringEnumConverter))]
     public ScreenPosition Position { get; set; } = ScreenPosition.Right;
 
     /// <summary>

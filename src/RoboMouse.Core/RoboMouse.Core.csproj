@@ -1,16 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <RootNamespace>RoboMouse.Core</RootNamespace>
-    <UseWindowsForms>true</UseWindowsForms>
-    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
     <Version>1.0.0</Version>
     <Authors>Tim Dodd</Authors>
     <Product>RoboMouse</Product>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RoboMouse.Core.Tests" />
+  </ItemGroup>
 
 </Project>
