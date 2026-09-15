@@ -29,10 +29,12 @@ public sealed record Hotkey(Keys Key, bool Ctrl, bool Alt, bool Shift, bool Win)
                 default:
                     if (key != null)
                         return null;
-                    if (Enum.TryParse<Keys>(raw, ignoreCase: true, out var parsed) && parsed != Keys.None)
-                        key = parsed;
-                    else if (raw.Length == 1 && char.IsDigit(raw[0]))
+                    if (raw.Length == 1 && char.IsAsciiDigit(raw[0]))
                         key = Keys.D0 + (raw[0] - '0');
+                    else if (raw.All(char.IsAsciiDigit))
+                        return null; // Enum.TryParse would accept "3" as Keys.Cancel; only names are valid here
+                    else if (Enum.TryParse<Keys>(raw, ignoreCase: true, out var parsed) && parsed != Keys.None)
+                        key = parsed;
                     else
                         return null;
                     break;
