@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace RoboMouse.Core.Input;
@@ -6,10 +6,13 @@ namespace RoboMouse.Core.Input;
 /// <summary>
 /// Global low-level mouse hook for capturing all mouse input.
 /// </summary>
-public sealed class MouseHook : IDisposable
+public sealed unsafe class MouseHook : IDisposable
 {
-    private IntPtr _hookId = IntPtr.Zero;
-    private readonly NativeMethods.LowLevelMouseProc _proc;
+    // Low-level hooks call back through a static unmanaged entry point; one hook per process is all
+    // the app ever installs, so the instance is kept in a static.
+    private static MouseHook? s_current;
+
+    private nint _hookId;
     private bool _disposed;
 
     /// <summary>
@@ -20,36 +23,30 @@ public sealed class MouseHook : IDisposable
     /// <summary>
     /// Whether the hook is currently active.
     /// </summary>
-    public bool IsHooked => _hookId != IntPtr.Zero;
-
-    public MouseHook()
-    {
-        _proc = HookCallback;
-    }
+    public bool IsHooked => _hookId != 0;
 
     /// <summary>
     /// Installs the global mouse hook.
     /// </summary>
     public void Install()
     {
-        if (_hookId != IntPtr.Zero)
+        if (_hookId != 0)
             return;
 
-        using var process = Process.GetCurrentProcess();
-        using var module = process.MainModule;
+        if (s_current != null && s_current != this && s_current._hookId != 0)
+            throw new InvalidOperationException("A mouse hook is already installed.");
+        s_current = this;
 
-        if (module == null)
-            throw new InvalidOperationException("Could not get main module for hook installation.");
-
-        _hookId = NativeMethods.SetWindowsHookEx(
+        _hookId = NativeMethods.SetWindowsHookExW(
             NativeMethods.WH_MOUSE_LL,
-            _proc,
-            NativeMethods.GetModuleHandle(module.ModuleName),
+            &HookCallback,
+            NativeMethods.GetModuleHandleW(null),
             0);
 
-        if (_hookId == IntPtr.Zero)
+        if (_hookId == 0)
         {
-            var error = Marshal.GetLastWin32Error();
+            var error = Marshal.GetLastPInvokeError();
+            s_current = null;
             throw new InvalidOperationException($"Failed to install mouse hook. Error code: {error}");
         }
     }
@@ -59,32 +56,45 @@ public sealed class MouseHook : IDisposable
     /// </summary>
     public void Uninstall()
     {
-        if (_hookId == IntPtr.Zero)
+        if (_hookId == 0)
             return;
 
         NativeMethods.UnhookWindowsHookEx(_hookId);
-        _hookId = IntPtr.Zero;
+        _hookId = 0;
+        if (s_current == this)
+            s_current = null;
     }
 
-    private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    private static nint HookCallback(int nCode, nint wParam, nint lParam)
     {
+        var hook = s_current;
+        if (hook == null)
+            return NativeMethods.CallNextHookEx(0, nCode, wParam, lParam);
+
         if (nCode >= 0)
         {
-            var hookStruct = Marshal.PtrToStructure<NativeMethods.MSLLHOOKSTRUCT>(lParam);
-            var eventArgs = CreateEventArgs((int)wParam, hookStruct);
-
-            if (eventArgs != null)
+            try
             {
-                MouseEvent?.Invoke(this, eventArgs);
-
-                if (eventArgs.Handled)
+                var eventArgs = CreateEventArgs((int)wParam, *(NativeMethods.MSLLHOOKSTRUCT*)lParam);
+                if (eventArgs != null)
                 {
-                    return (IntPtr)1; // Block the event
+                    hook.MouseEvent?.Invoke(hook, eventArgs);
+
+                    if (eventArgs.Handled)
+                    {
+                        return 1; // Block the event
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                // Never let an exception escape into the hook chain.
+                Logging.SimpleLogger.Log("MouseHook", ex.ToString());
             }
         }
 
-        return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
+        return NativeMethods.CallNextHookEx(hook._hookId, nCode, wParam, lParam);
     }
 
     private static MouseEventArgs? CreateEventArgs(int wParam, NativeMethods.MSLLHOOKSTRUCT hookStruct)

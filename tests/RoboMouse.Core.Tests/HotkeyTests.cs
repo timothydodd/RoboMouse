@@ -1,4 +1,3 @@
-using System.Windows.Forms;
 using RoboMouse.Core.Input;
 using Xunit;
 

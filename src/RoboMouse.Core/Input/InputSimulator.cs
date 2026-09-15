@@ -1,14 +1,13 @@
 using System.Runtime.InteropServices;
-using System.Windows.Forms;
 
 namespace RoboMouse.Core.Input;
 
 /// <summary>
 /// Simulates mouse and keyboard input using the Windows SendInput API.
 /// </summary>
-public static class InputSimulator
+public static unsafe class InputSimulator
 {
-    private static readonly int InputSize = Marshal.SizeOf<NativeMethods.INPUT>();
+    private static readonly int InputSize = sizeof(NativeMethods.INPUT);
 
     #region Mouse Simulation
 
@@ -253,7 +252,8 @@ public static class InputSimulator
             }
         };
 
-        NativeMethods.SendInput(2, inputs, InputSize);
+        fixed (NativeMethods.INPUT* p = inputs)
+            NativeMethods.SendInput(2, p, InputSize);
     }
 
     private static uint GetKeyboardFlags(KeyboardEventType eventType, bool isExtended)
@@ -306,7 +306,7 @@ public static class InputSimulator
             Right = right,
             Bottom = bottom
         };
-        NativeMethods.ClipCursor(ref rect);
+        NativeMethods.ClipCursor(&rect);
     }
 
     /// <summary>
@@ -314,7 +314,7 @@ public static class InputSimulator
     /// </summary>
     public static void ReleaseCursorClip()
     {
-        NativeMethods.ClipCursor(IntPtr.Zero);
+        NativeMethods.ClipCursor(null);
     }
 
     /// <summary>
@@ -364,7 +364,9 @@ public static class InputSimulator
         // Replace all system cursors with blank cursor
         foreach (var cursorId in AllCursorIds)
         {
-            var blankCursor = NativeMethods.CreateCursor(IntPtr.Zero, 0, 0, 32, 32, andPlane, xorPlane);
+            nint blankCursor;
+            fixed (byte* and = andPlane, xor = xorPlane)
+                blankCursor = NativeMethods.CreateCursor(0, 0, 0, 32, 32, and, xor);
             if (blankCursor != IntPtr.Zero)
             {
                 // SetSystemCursor destroys the cursor handle, so we don't need to destroy it
@@ -379,7 +381,7 @@ public static class InputSimulator
     public static void RestoreSystemCursor()
     {
         // Restore default cursors from system
-        NativeMethods.SystemParametersInfo(NativeMethods.SPI_SETCURSORS, 0, IntPtr.Zero, 0);
+        NativeMethods.SystemParametersInfoW(NativeMethods.SPI_SETCURSORS, 0, 0, 0);
     }
 
     #endregion
@@ -416,7 +418,10 @@ public static class InputSimulator
     /// </summary>
     private static bool SendInputs(params NativeMethods.INPUT[] inputs)
     {
-        var result = NativeMethods.SendInput((uint)inputs.Length, inputs, InputSize);
-        return result == inputs.Length;
+        fixed (NativeMethods.INPUT* p = inputs)
+        {
+            var result = NativeMethods.SendInput((uint)inputs.Length, p, InputSize);
+            return result == inputs.Length;
+        }
     }
 }

@@ -13,7 +13,7 @@ public class FramingTests
     {
         var a = MouseMessage.Motion(3, -4).Serialize();
         var b = new PingMessage().Serialize();
-        var c = new KeyboardMessage { KeyCode = System.Windows.Forms.Keys.A, EventType = KeyboardEventType.KeyDown }.Serialize();
+        var c = new KeyboardMessage { KeyCode = Keys.A, EventType = KeyboardEventType.KeyDown }.Serialize();
         var data = a.Concat(b).Concat(c).ToArray();
 
         var messages = new List<ProtocolMessage>();
@@ -23,7 +23,7 @@ public class FramingTests
         Assert.Collection(messages,
             m => Assert.Equal((3, -4), (((MouseMessage)m).DeltaX, ((MouseMessage)m).DeltaY)),
             m => Assert.IsType<PingMessage>(m),
-            m => Assert.Equal(System.Windows.Forms.Keys.A, ((KeyboardMessage)m).KeyCode));
+            m => Assert.Equal(Keys.A, ((KeyboardMessage)m).KeyCode));
     }
 
     [Fact]

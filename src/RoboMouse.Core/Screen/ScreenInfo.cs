@@ -1,11 +1,14 @@
-using System.Windows.Forms;
+using System.Drawing;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using RoboMouse.Core.Input;
 
 namespace RoboMouse.Core.Screen;
 
 /// <summary>
-/// Information about the local screen configuration.
+/// Information about the local screen configuration, read from the monitor APIs.
 /// </summary>
-public class ScreenInfo
+public unsafe class ScreenInfo
 {
     /// <summary>
     /// Primary screen bounds.
@@ -24,18 +27,40 @@ public class ScreenInfo
 
     public ScreenInfo()
     {
-        PrimaryBounds = System.Windows.Forms.Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-        VirtualBounds = SystemInformation.VirtualScreen;
-        AllScreenBounds = System.Windows.Forms.Screen.AllScreens.Select(s => s.Bounds).ToList();
+        var monitors = EnumerateMonitors();
+        PrimaryBounds = monitors.FirstOrDefault(m => m.Primary).Bounds;
+        if (PrimaryBounds.IsEmpty)
+            PrimaryBounds = monitors.Count > 0 ? monitors[0].Bounds : new Rectangle(0, 0, 1920, 1080);
+        VirtualBounds = GetVirtualScreen();
+        AllScreenBounds = monitors.Select(m => m.Bounds).ToList();
+    }
+
+    /// <summary>The bounding rectangle of all monitors, from the system metrics.</summary>
+    public static Rectangle GetVirtualScreen()
+    {
+        var (x, y, w, h) = InputSimulator.GetVirtualScreenBounds();
+        if (w <= 0 || h <= 0)
+            return new Rectangle(0, 0, 1920, 1080);
+        return new Rectangle(x, y, w, h);
+    }
+
+    /// <summary>The primary monitor's working area (excluding the taskbar).</summary>
+    public static Rectangle GetPrimaryWorkingArea()
+    {
+        var primary = EnumerateMonitors().FirstOrDefault(m => m.Primary);
+        return primary.WorkingArea.IsEmpty ? new Rectangle(0, 0, 1920, 1080) : primary.WorkingArea;
     }
 
     /// <summary>
-    /// Gets the screen that contains the specified point.
+    /// Gets the screen that contains the specified point (or the nearest one).
     /// </summary>
     public Rectangle GetScreenAt(int x, int y)
     {
-        var screen = System.Windows.Forms.Screen.FromPoint(new Point(x, y));
-        return screen.Bounds;
+        var monitor = NativeMethods.MonitorFromPoint(new NativeMethods.POINT { X = x, Y = y }, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        var info = new NativeMethods.MONITORINFO { cbSize = (uint)sizeof(NativeMethods.MONITORINFO) };
+        if (monitor != 0 && NativeMethods.GetMonitorInfoW(monitor, &info))
+            return ToRectangle(info.rcMonitor);
+        return PrimaryBounds;
     }
 
     /// <summary>
@@ -73,6 +98,42 @@ public class ScreenInfo
 
         return null;
     }
+
+    private readonly record struct Monitor(Rectangle Bounds, Rectangle WorkingArea, bool Primary);
+
+    [ThreadStatic]
+    private static List<Monitor>? t_enumerating;
+
+    private static List<Monitor> EnumerateMonitors()
+    {
+        var list = new List<Monitor>();
+        t_enumerating = list;
+        try
+        {
+            NativeMethods.EnumDisplayMonitors(0, null, &MonitorCallback, 0);
+        }
+        finally
+        {
+            t_enumerating = null;
+        }
+        return list;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    private static int MonitorCallback(nint hMonitor, nint hdc, NativeMethods.RECT* rect, nint data)
+    {
+        var info = new NativeMethods.MONITORINFO { cbSize = (uint)sizeof(NativeMethods.MONITORINFO) };
+        if (NativeMethods.GetMonitorInfoW(hMonitor, &info))
+        {
+            t_enumerating?.Add(new Monitor(
+                ToRectangle(info.rcMonitor),
+                ToRectangle(info.rcWork),
+                (info.dwFlags & NativeMethods.MONITORINFOF_PRIMARY) != 0));
+        }
+        return 1; // continue
+    }
+
+    private static Rectangle ToRectangle(NativeMethods.RECT r) => Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
 }
 
 /// <summary>

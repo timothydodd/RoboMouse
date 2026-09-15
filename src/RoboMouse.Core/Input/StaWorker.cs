@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Windows.Forms;
 
 namespace RoboMouse.Core.Input;
 
@@ -8,11 +7,12 @@ namespace RoboMouse.Core.Input;
 /// as the clipboard data object that serves virtual files, receive their calls on this thread, so a
 /// slow operation (Explorer pulling a large file) never blocks the main UI thread or the input hooks.
 /// </summary>
-public sealed class StaWorker : IDisposable
+public sealed unsafe class StaWorker : IDisposable
 {
     private readonly Thread _thread;
     private readonly ManualResetEventSlim _ready = new(false);
-    private Control? _pump;
+    private MessageWindow? _pump;
+    private Exception? _startupError;
     private bool _disposed;
 
     public StaWorker(string name)
@@ -21,35 +21,50 @@ public sealed class StaWorker : IDisposable
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
         _ready.Wait();
+        if (_startupError != null)
+            throw new InvalidOperationException("The STA worker could not start.", _startupError);
     }
 
     private void Run()
     {
         // SetApartmentState only calls CoInitialize. The OLE clipboard (OleSetClipboard) needs OleInitialize,
-        // which the main WinForms thread gets implicitly but a hand-made thread does not.
-        var hr = OleInitialize(IntPtr.Zero);
+        // which a UI framework's main thread gets implicitly but a hand-made thread does not.
+        var hr = NativeMethods.OleInitialize(0);
         if (hr < 0)
-            Marshal.ThrowExceptionForHR(hr);
+        {
+            _startupError = Marshal.GetExceptionForHR(hr);
+            _ready.Set();
+            return;
+        }
 
         try
         {
-            _pump = new Control();
-            _pump.CreateControl();
-            _ = _pump.Handle;
-            _ready.Set();
-            Application.Run();
+            try
+            {
+                _pump = new MessageWindow();
+            }
+            catch (Exception ex)
+            {
+                _startupError = ex;
+                return;
+            }
+            finally
+            {
+                _ready.Set();
+            }
+
+            NativeMethods.MSG msg;
+            while (NativeMethods.GetMessageW(&msg, 0, 0, 0) > 0)
+            {
+                NativeMethods.TranslateMessage(&msg);
+                NativeMethods.DispatchMessageW(&msg);
+            }
         }
         finally
         {
-            OleUninitialize();
+            NativeMethods.OleUninitialize();
         }
     }
-
-    [DllImport("ole32.dll")]
-    private static extern int OleInitialize(IntPtr pvReserved);
-
-    [DllImport("ole32.dll")]
-    private static extern void OleUninitialize();
 
     /// <summary>Runs <paramref name="action"/> on the STA thread and waits for it.</summary>
     public void Invoke(Action action)
@@ -57,10 +72,7 @@ public sealed class StaWorker : IDisposable
         if (_pump == null || _disposed)
             throw new ObjectDisposedException(nameof(StaWorker));
 
-        if (_pump.InvokeRequired)
-            _pump.Invoke(action);
-        else
-            action();
+        _pump.Invoke(action);
     }
 
     /// <summary>Runs <paramref name="func"/> on the STA thread and returns its result.</summary>
@@ -87,10 +99,11 @@ public sealed class StaWorker : IDisposable
 
         try
         {
-            _pump?.BeginInvoke(() =>
+            var pump = _pump;
+            pump?.BeginInvoke(() =>
             {
-                _pump.Dispose();
-                Application.ExitThread();
+                pump.Dispose();
+                NativeMethods.PostQuitMessage(0);
             });
         }
         catch { }

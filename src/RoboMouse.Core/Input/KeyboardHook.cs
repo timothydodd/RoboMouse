@@ -1,16 +1,18 @@
-using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Windows.Forms;
 
 namespace RoboMouse.Core.Input;
 
 /// <summary>
 /// Global low-level keyboard hook for capturing all keyboard input.
 /// </summary>
-public sealed class KeyboardHook : IDisposable
+public sealed unsafe class KeyboardHook : IDisposable
 {
-    private IntPtr _hookId = IntPtr.Zero;
-    private readonly NativeMethods.LowLevelKeyboardProc _proc;
+    // Low-level hooks call back through a static unmanaged entry point; one hook per process is all
+    // the app ever installs, so the instance is kept in a static.
+    private static KeyboardHook? s_current;
+
+    private nint _hookId;
     private bool _disposed;
 
     private const uint LLKHF_EXTENDED = 0x01;
@@ -24,36 +26,30 @@ public sealed class KeyboardHook : IDisposable
     /// <summary>
     /// Whether the hook is currently active.
     /// </summary>
-    public bool IsHooked => _hookId != IntPtr.Zero;
-
-    public KeyboardHook()
-    {
-        _proc = HookCallback;
-    }
+    public bool IsHooked => _hookId != 0;
 
     /// <summary>
     /// Installs the global keyboard hook.
     /// </summary>
     public void Install()
     {
-        if (_hookId != IntPtr.Zero)
+        if (_hookId != 0)
             return;
 
-        using var process = Process.GetCurrentProcess();
-        using var module = process.MainModule;
+        if (s_current != null && s_current != this && s_current._hookId != 0)
+            throw new InvalidOperationException("A keyboard hook is already installed.");
+        s_current = this;
 
-        if (module == null)
-            throw new InvalidOperationException("Could not get main module for hook installation.");
-
-        _hookId = NativeMethods.SetWindowsHookEx(
+        _hookId = NativeMethods.SetWindowsHookExW(
             NativeMethods.WH_KEYBOARD_LL,
-            _proc,
-            NativeMethods.GetModuleHandle(module.ModuleName),
+            &HookCallback,
+            NativeMethods.GetModuleHandleW(null),
             0);
 
-        if (_hookId == IntPtr.Zero)
+        if (_hookId == 0)
         {
-            var error = Marshal.GetLastWin32Error();
+            var error = Marshal.GetLastPInvokeError();
+            s_current = null;
             throw new InvalidOperationException($"Failed to install keyboard hook. Error code: {error}");
         }
     }
@@ -63,32 +59,45 @@ public sealed class KeyboardHook : IDisposable
     /// </summary>
     public void Uninstall()
     {
-        if (_hookId == IntPtr.Zero)
+        if (_hookId == 0)
             return;
 
         NativeMethods.UnhookWindowsHookEx(_hookId);
-        _hookId = IntPtr.Zero;
+        _hookId = 0;
+        if (s_current == this)
+            s_current = null;
     }
 
-    private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    private static nint HookCallback(int nCode, nint wParam, nint lParam)
     {
+        var hook = s_current;
+        if (hook == null)
+            return NativeMethods.CallNextHookEx(0, nCode, wParam, lParam);
+
         if (nCode >= 0)
         {
-            var hookStruct = Marshal.PtrToStructure<NativeMethods.KBDLLHOOKSTRUCT>(lParam);
-            var eventArgs = CreateEventArgs((int)wParam, hookStruct);
-
-            if (eventArgs != null)
+            try
             {
-                KeyboardEvent?.Invoke(this, eventArgs);
-
-                if (eventArgs.Handled)
+                var eventArgs = CreateEventArgs((int)wParam, *(NativeMethods.KBDLLHOOKSTRUCT*)lParam);
+                if (eventArgs != null)
                 {
-                    return (IntPtr)1; // Block the event
+                    hook.KeyboardEvent?.Invoke(hook, eventArgs);
+
+                    if (eventArgs.Handled)
+                    {
+                        return 1; // Block the event
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                // Never let an exception escape into the hook chain.
+                Logging.SimpleLogger.Log("KeyboardHook", ex.ToString());
             }
         }
 
-        return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
+        return NativeMethods.CallNextHookEx(hook._hookId, nCode, wParam, lParam);
     }
 
     private static KeyboardEventArgs? CreateEventArgs(int wParam, NativeMethods.KBDLLHOOKSTRUCT hookStruct)
