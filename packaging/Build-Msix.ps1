@@ -59,8 +59,10 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 # --- Manifest and assets ------------------------------------------------------------------------
 Copy-Item (Join-Path $PSScriptRoot "Assets") (Join-Path $stage "Assets") -Recurse
 $manifest = Get-Content (Join-Path $PSScriptRoot "Package.appxmanifest") -Raw
-$manifest = $manifest.Replace("__PACKAGE_NAME__", $PackageName).Replace("__PUBLISHER__", $Publisher) `
-    .Replace("__PUBLISHER_DISPLAY__", $PublisherDisplay).Replace("__VERSION__", $Version)
+$manifest = $manifest.Replace("__PACKAGE_NAME__", $PackageName)
+$manifest = $manifest.Replace("__PUBLISHER__", $Publisher)
+$manifest = $manifest.Replace("__PUBLISHER_DISPLAY__", $PublisherDisplay)
+$manifest = $manifest.Replace("__VERSION__", $Version)
 Set-Content (Join-Path $stage "AppxManifest.xml") $manifest -Encoding UTF8
 
 # --- Pack -----------------------------------------------------------------------------------------
