@@ -1,0 +1,17 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RoboMouse.App.ViewModels"
+             xmlns:views="using:RoboMouse.App.Views"
+             x:Class="RoboMouse.App.Views.LayoutPageView"
+             x:DataType="vm:LayoutPageViewModel">
+
+  <Grid Margin="{StaticResource AppPagePadding}" RowDefinitions="Auto,Auto,*" MaxWidth="860">
+    <TextBlock Classes="title" Text="Layout" />
+    <TextBlock Grid.Row="1" Classes="caption" Margin="0,0,0,12"
+               Text="Drag a peer screen to the edge of this screen where that computer sits. Its position along the edge is kept too. Faded screens are disabled peers. Changes are applied when you click Save." />
+    <Border Grid.Row="2" Classes="card panel">
+      <views:ScreenLayoutControl x:Name="Canvas" Settings="{Binding Settings}" />
+    </Border>
+  </Grid>
+
+</UserControl>

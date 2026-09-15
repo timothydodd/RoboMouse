@@ -16,29 +16,30 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
-    <!-- Native AOT: the UI is built in code (no XAML), so nothing needs reflection at run time. -->
+    <!-- XAML is compiled at build time and bindings are compiled (x:DataType), so nothing needs
+         reflection at run time and the app compiles ahead of time. -->
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <PublishAot>true</PublishAot>
     <IsAotCompatible>true</IsAotCompatible>
     <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
     <TrimMode>full</TrimMode>
     <IlcGenerateStackTraceData>true</IlcGenerateStackTraceData>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- AVLN3001: windows take their view model in the constructor, so the runtime XAML loader
+         (designer/hot reload) cannot create them; the app never loads XAML at run time. -->
+    <NoWarn>$(NoWarn);AVLN3001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.1.2" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.2" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.2" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="FluentIcons.Avalonia" Version="2.1.341" />
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Assets\offline.ico" LogicalName="RoboMouse.App.Assets.offline.ico" />
-    <EmbeddedResource Include="Assets\online.ico" LogicalName="RoboMouse.App.Assets.online.ico" />
-    <EmbeddedResource Include="Assets\controlling.ico" LogicalName="RoboMouse.App.Assets.controlling.ico" />
-    <EmbeddedResource Include="Assets\controlled.ico" LogicalName="RoboMouse.App.Assets.controlled.ico" />
-    <EmbeddedResource Include="Assets\disabled.ico" LogicalName="RoboMouse.App.Assets.disabled.ico" />
-    <EmbeddedResource Include="Assets\app.ico" LogicalName="RoboMouse.App.Assets.app.ico" />
-    <EmbeddedResource Include="Assets\logo.png" LogicalName="RoboMouse.App.Assets.logo.png" />
+    <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 
   <ItemGroup>

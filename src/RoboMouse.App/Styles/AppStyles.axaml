@@ -1,0 +1,176 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="using:RoboMouse.App.Views">
+  <!--
+    App-wide styles layered on the Fluent theme. Everything uses the theme's own brushes so the
+    windows follow the OS light/dark setting and accent colour.
+  -->
+
+  <Styles.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#FFFFFFFF" />
+          <SolidColorBrush x:Key="AppCardBorderBrush" Color="#14000000" />
+          <SolidColorBrush x:Key="AppNavBackgroundBrush" Color="#FFF3F3F3" />
+          <SolidColorBrush x:Key="AppWindowBackgroundBrush" Color="#FFF9F9F9" />
+          <SolidColorBrush x:Key="AppCanvasBrush" Color="#FF1B2030" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#0DFFFFFF" />
+          <SolidColorBrush x:Key="AppCardBorderBrush" Color="#19000000" />
+          <SolidColorBrush x:Key="AppNavBackgroundBrush" Color="#FF202020" />
+          <SolidColorBrush x:Key="AppWindowBackgroundBrush" Color="#FF272727" />
+          <SolidColorBrush x:Key="AppCanvasBrush" Color="#FF141821" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+
+      <!-- Status colours, readable on both variants -->
+      <SolidColorBrush x:Key="AppStatusOkBrush" Color="#FF22AA5A" />
+      <SolidColorBrush x:Key="AppStatusWarnBrush" Color="#FFEB821E" />
+      <SolidColorBrush x:Key="AppStatusErrorBrush" Color="#FFD63C3C" />
+      <SolidColorBrush x:Key="AppStatusIdleBrush" Color="#FF969EAA" />
+
+      <x:Double x:Key="AppNavWidth">220</x:Double>
+      <Thickness x:Key="AppPagePadding">36,28,36,28</Thickness>
+
+      <!-- Settings card: header + description on the left, the control on the right -->
+      <ControlTheme x:Key="{x:Type views:SettingCard}" TargetType="views:SettingCard">
+        <Setter Property="HorizontalContentAlignment" Value="Right" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Margin" Value="0,0,0,4" />
+        <Setter Property="Template">
+          <ControlTemplate>
+            <Border Background="{DynamicResource AppCardBackgroundBrush}"
+                    BorderBrush="{DynamicResource AppCardBorderBrush}"
+                    BorderThickness="1" CornerRadius="6" Padding="16,12" MinHeight="60">
+              <Grid ColumnDefinitions="*,24,Auto">
+                <StackPanel VerticalAlignment="Center" Spacing="2">
+                  <TextBlock Text="{TemplateBinding Header}" />
+                  <TextBlock Classes="caption" Text="{TemplateBinding Description}"
+                             IsVisible="{TemplateBinding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+                <ContentPresenter Grid.Column="2" Content="{TemplateBinding Content}"
+                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+              </Grid>
+            </Border>
+          </ControlTemplate>
+        </Setter>
+      </ControlTheme>
+    </ResourceDictionary>
+  </Styles.Resources>
+
+  <!-- Typography (WinUI type ramp) -->
+  <Style Selector="TextBlock.title">
+    <Setter Property="FontSize" Value="28" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="Margin" Value="0,0,0,20" />
+  </Style>
+  <Style Selector="TextBlock.subtitle">
+    <Setter Property="FontSize" Value="20" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+  <Style Selector="TextBlock.section">
+    <Setter Property="FontSize" Value="14" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="Margin" Value="0,20,0,8" />
+  </Style>
+  <Style Selector="TextBlock.section.first">
+    <Setter Property="Margin" Value="0,0,0,8" />
+  </Style>
+  <Style Selector="TextBlock.body-strong">
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+  <Style Selector="TextBlock.caption">
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}" />
+    <Setter Property="TextWrapping" Value="Wrap" />
+  </Style>
+  <Style Selector="TextBlock.muted">
+    <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}" />
+  </Style>
+
+  <!-- Settings card: one row with a title/description on the left and its control on the right -->
+  <Style Selector="Border.card">
+    <Setter Property="Background" Value="{DynamicResource AppCardBackgroundBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource AppCardBorderBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="6" />
+    <Setter Property="Padding" Value="16,12" />
+    <Setter Property="Margin" Value="0,0,0,4" />
+  </Style>
+  <Style Selector="Border.card.panel">
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="ClipToBounds" Value="True" />
+  </Style>
+  <Style Selector="Border.card TextBlock.caption">
+    <Setter Property="Margin" Value="0,2,0,0" />
+  </Style>
+
+  <!-- Navigation pane -->
+  <Style Selector="ListBox.nav">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="Padding" Value="0" />
+  </Style>
+  <Style Selector="ListBox.nav ListBoxItem">
+    <Setter Property="Padding" Value="12,0" />
+    <Setter Property="MinHeight" Value="38" />
+    <Setter Property="Margin" Value="0,0,0,2" />
+    <Setter Property="CornerRadius" Value="4" />
+  </Style>
+  <!-- Selected page: subtle fill, the accent bar in the item template does the highlighting -->
+  <Style Selector="ListBox.nav ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}" />
+  </Style>
+  <Style Selector="ListBox.nav ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListMediumBrush}" />
+  </Style>
+  <Style Selector="ListBox.nav ListBoxItem:selected TextBlock">
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+
+  <!-- Lists inside cards: flat, no border, row padding -->
+  <Style Selector="ListBox.rows">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="Padding" Value="4" />
+  </Style>
+  <Style Selector="ListBox.rows ListBoxItem">
+    <Setter Property="Padding" Value="12,8" />
+    <Setter Property="CornerRadius" Value="4" />
+  </Style>
+
+  <!-- Toolbar under a list -->
+  <Style Selector="StackPanel.toolbar">
+    <Setter Property="Orientation" Value="Horizontal" />
+    <Setter Property="Spacing" Value="8" />
+    <Setter Property="Margin" Value="0,8,0,0" />
+  </Style>
+
+  <!-- Dialog footer -->
+  <Style Selector="Border.footer">
+    <Setter Property="Background" Value="{DynamicResource AppNavBackgroundBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource AppCardBorderBrush}" />
+    <Setter Property="BorderThickness" Value="0,1,0,0" />
+    <Setter Property="Padding" Value="24,16" />
+  </Style>
+  <Style Selector="Border.footer Button">
+    <Setter Property="MinWidth" Value="96" />
+    <Setter Property="HorizontalContentAlignment" Value="Center" />
+  </Style>
+
+  <Style Selector="Ellipse.dot">
+    <Setter Property="Width" Value="9" />
+    <Setter Property="Height" Value="9" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+
+  <Style Selector="ToggleSwitch.compact">
+    <Setter Property="OnContent" Value="{x:Null}" />
+    <Setter Property="OffContent" Value="{x:Null}" />
+    <Setter Property="MinWidth" Value="0" />
+    <Setter Property="Margin" Value="0" />
+  </Style>
+</Styles>

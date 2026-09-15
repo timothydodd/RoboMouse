@@ -6,7 +6,7 @@ using Avalonia.Media;
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Screen;
 
-namespace RoboMouse.App.Windows;
+namespace RoboMouse.App.Views;
 
 /// <summary>
 /// Custom-drawn canvas for visual screen layout editing: drag a peer screen to the edge of this
@@ -14,7 +14,17 @@ namespace RoboMouse.App.Windows;
 /// </summary>
 public sealed class ScreenLayoutControl : Control
 {
-    private readonly AppSettings _settings;
+    public static readonly StyledProperty<AppSettings?> SettingsProperty =
+        AvaloniaProperty.Register<ScreenLayoutControl, AppSettings?>(nameof(Settings));
+
+    /// <summary>The settings whose peers are laid out. Offsets are written back by <see cref="SaveLayout"/>.</summary>
+    public AppSettings? Settings
+    {
+        get => GetValue(SettingsProperty);
+        set => SetValue(SettingsProperty, value);
+    }
+
+    private AppSettings _settings = new();
     private readonly List<ScreenRect> _screens = new();
     private ScreenRect? _localScreen;
     private ScreenRect? _selectedScreen;
@@ -27,14 +37,23 @@ public sealed class ScreenLayoutControl : Control
 
     private static readonly IBrush CanvasBrush = new SolidColorBrush(Color.FromRgb(24, 30, 44));
     private static readonly IBrush DotBrush = new SolidColorBrush(Color.FromRgb(48, 56, 74));
-    private static readonly Typeface TitleTypeface = new(Ui.BodyFont, FontStyle.Normal, FontWeight.SemiBold);
-    private static readonly Typeface SubTypeface = new(Ui.BodyFont);
+    private static readonly Typeface TitleTypeface = new(FontFamily.Default, FontStyle.Normal, FontWeight.SemiBold);
+    private static readonly Typeface SubTypeface = new(FontFamily.Default);
 
-    public ScreenLayoutControl(AppSettings settings)
+    public ScreenLayoutControl()
     {
-        _settings = settings;
         ClipToBounds = true;
         InitializeScreens();
+    }
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property == SettingsProperty)
+        {
+            _settings = change.GetNewValue<AppSettings?>() ?? new AppSettings();
+            Reload();
+        }
     }
 
     /// <summary>Rebuilds the canvas from the current peer list (after peers are added, edited or removed).</summary>
@@ -46,6 +65,19 @@ public sealed class ScreenLayoutControl : Control
         InvalidateVisual();
     }
 
+    /// <summary>The virtual screen, or a stand-in where the monitor API is unavailable (headless previews).</summary>
+    private static System.Drawing.Rectangle GetLocalBounds()
+    {
+        try
+        {
+            return ScreenInfo.GetVirtualScreen();
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or PlatformNotSupportedException)
+        {
+            return new System.Drawing.Rectangle(0, 0, 2560, 1440);
+        }
+    }
+
     private double CanvasWidth => Bounds.Width > 0 ? Bounds.Width : 600;
     private double CanvasHeight => Bounds.Height > 0 ? Bounds.Height : 400;
 
@@ -54,7 +86,7 @@ public sealed class ScreenLayoutControl : Control
         _screens.Clear();
 
         // The whole desktop (all monitors), since edges are detected on the virtual screen.
-        var localBounds = ScreenInfo.GetVirtualScreen();
+        var localBounds = GetLocalBounds();
         _scaleFactor = FitScale(localBounds);
 
         _localScreen = new ScreenRect
@@ -174,8 +206,8 @@ public sealed class ScreenLayoutControl : Control
         Color fill, edge;
         if (screen.IsLocal)
         {
-            fill = Color.FromRgb(30, 100, 230);
-            edge = Color.FromRgb(120, 170, 255);
+            fill = this.FindResource("SystemAccentColor") is Color accent ? accent : Color.FromRgb(30, 100, 230);
+            edge = this.FindResource("SystemAccentColorLight1") is Color light ? light : Color.FromRgb(120, 170, 255);
         }
         else if (disabled)
         {

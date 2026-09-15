@@ -73,7 +73,12 @@ Never do per-event file logging on the input path: the hook callback has a syste
 
 ### UI (`src/RoboMouse.App/`)
 
-Avalonia 12, built entirely in C# (no XAML) so nothing needs reflection at run time. `App` sets the Fluent theme; `TrayController` owns the `TrayIcon`, its `NativeMenu` and the `RoboMouseService`; windows live in `Windows/` (`SettingsWindow`, `PeerSetupWindow`, `ScreenLayoutControl`, `EdgeHighlightWindow`, `DebugPanelWindow`). `Ui` holds the palette and control factories; `Dialogs` is the message-box replacement. Service events arrive on network threads and are marshalled with `Dispatcher.UIThread.Post`. `AvaloniaImageCodec` converts clipboard images between PNG and DIB for the core.
+Avalonia 12 with the Fluent theme, MVVM via CommunityToolkit.Mvvm, XAML views with compiled bindings (`x:DataType` everywhere; `AvaloniaUseCompiledBindingsByDefault` is on). Follows the OS light/dark setting (`RequestedThemeVariant="Default"`) and uses the theme's own `SystemControl*` brushes plus a few app tokens in `Styles/AppStyles.axaml` (cards, nav pane, status colours, the `SettingCard` control theme).
+
+- `ViewModels/`: `SettingsViewModel` (status + navigation) with one `PageViewModel` per page (General, Network, Peers, Layout), `PeerSetupViewModel`, `DebugPanelViewModel`. View models talk to the service only through `Services/IAppBackend` and to the UI only through `Services/IDialogService`, so they can be constructed without hooks, sockets or a desktop.
+- `Views/`: `SettingsWindow` (nav pane + the four page `UserControl`s, kept alive so unsaved edits survive switching), `PeerSetupWindow`, `MessageDialog`, `DebugPanelWindow`, plus the custom-drawn `ScreenLayoutControl` and `EdgeHighlightWindow`. `WindowDialogService` implements `IDialogService` for a window. `SettingCard` is the WinUI-style settings row.
+- `TrayController` owns the `TrayIcon`, its `NativeMenu` (rebuilt in `NeedsUpdate`) and the `RoboMouseService`; service events arrive on network threads and are marshalled with `Dispatcher.UIThread.Post`. `AvaloniaImageCodec` converts clipboard images between PNG and DIB for the core. Icons come from `FluentIcons.Avalonia` (vector, renders everywhere).
+- **Previewing the UI without Windows:** `tools/RoboMouse.UiPreview` renders every window with the headless platform and a fake backend: `dotnet run --project tools/RoboMouse.UiPreview -- <outDir>` writes light and dark PNGs. Pass resource keys after the directory to check what the theme defines. Use it after any UI change.
 
 ### Native AOT
 

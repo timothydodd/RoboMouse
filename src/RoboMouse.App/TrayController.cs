@@ -1,7 +1,10 @@
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
-using RoboMouse.App.Windows;
+using Avalonia.Platform;
+using RoboMouse.App.Services;
+using RoboMouse.App.ViewModels;
+using RoboMouse.App.Views;
 using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Logging;
@@ -19,6 +22,7 @@ public sealed class TrayController : IDisposable
 
     private readonly AppSettings _settings;
     private readonly RoboMouseService _service;
+    private readonly ServiceBackend _backend;
     private readonly IClassicDesktopStyleApplicationLifetime _lifetime;
     private readonly TrayIcon _trayIcon;
     private readonly NativeMenu _menu;
@@ -31,6 +35,8 @@ public sealed class TrayController : IDisposable
     private SettingsWindow? _settingsWindow;
 #if DEBUG
     private DebugPanelWindow? _debugPanel;
+    private readonly DebugPanelViewModel _debugViewModel = new();
+    private bool _debugPanelShown;
 #endif
     private EdgeHighlightWindow? _highlight;
     private bool _wasControllingRemote;
@@ -46,6 +52,7 @@ public sealed class TrayController : IDisposable
         {
             ClipboardImageCodec = new AvaloniaImageCodec()
         };
+        _backend = new ServiceBackend(_service);
 
         foreach (var state in Enum.GetValues<TrayState>())
             _icons[state] = CreateIcon(state);
@@ -215,7 +222,7 @@ public sealed class TrayController : IDisposable
         }
         catch (Exception ex)
         {
-            await Dialogs.ErrorAsync(null, $"Could not connect to {found.MachineName}: {ex.Message}");
+            await new WindowDialogService(null, _backend).ErrorAsync($"Could not connect to {found.MachineName}: {ex.Message}");
         }
         UpdateStatus();
     }
@@ -260,7 +267,7 @@ public sealed class TrayController : IDisposable
     {
         if (_settingsWindow == null)
         {
-            _settingsWindow = new SettingsWindow(_settings, _service);
+            _settingsWindow = new SettingsWindow(_settings, _backend);
             _settingsWindow.Closed += (s, e) => _settingsWindow = null;
             _settingsWindow.Show();
         }
@@ -308,7 +315,8 @@ public sealed class TrayController : IDisposable
 #if DEBUG
     private void OnMouseDebugUpdate(object? sender, MouseDebugEventArgs e)
     {
-        // Samples arrive on the input thread at up to 1000 Hz; the panel batches them and repaints on a timer.
+        // Samples arrive on the input thread at up to 1000 Hz; the view model batches them and the
+        // panel repaints on a timer.
         var data = new MouseDebugData
         {
             IsControlling = e.IsControlling,
@@ -318,24 +326,24 @@ public sealed class TrayController : IDisposable
             DeltaY = e.DeltaY,
             RoundTripMs = e.RoundTripMs
         };
-        _debugPanel?.UpdateData(data);
+        _debugViewModel.Record(data);
+
+        var show = _settings.DebugPanelEnabled && data.IsControlling;
+        if (show == _debugPanelShown)
+            return;
+        _debugPanelShown = show;
 
         OnUi(() =>
         {
-            if (!_settings.DebugPanelEnabled)
+            if (show)
             {
-                if (_debugPanel is { IsVisible: true })
-                    _debugPanel.Hide();
-                return;
-            }
-
-            _debugPanel ??= new DebugPanelWindow();
-            _debugPanel.UpdateData(data);
-
-            if (data.IsControlling && !_debugPanel.IsVisible)
+                _debugPanel ??= new DebugPanelWindow(_debugViewModel);
                 _debugPanel.ShowOnEdge(_service.ActivePeer?.Position.ToString());
-            else if (!data.IsControlling && _debugPanel.IsVisible)
+            }
+            else if (_debugPanel is { IsVisible: true })
+            {
                 _debugPanel.Hide();
+            }
         });
     }
 #endif
@@ -375,7 +383,7 @@ public sealed class TrayController : IDisposable
             _ => "offline"
         };
 
-        using var stream = Ui.OpenAsset($"{name}.ico");
+        using var stream = AssetLoader.Open(new Uri($"avares://RoboMouse.App/Assets/{name}.ico"));
         return new WindowIcon(stream);
     }
 

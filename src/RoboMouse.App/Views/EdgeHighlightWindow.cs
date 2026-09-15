@@ -6,7 +6,7 @@ using Avalonia.Threading;
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Screen;
 
-namespace RoboMouse.App.Windows;
+namespace RoboMouse.App.Views;
 
 /// <summary>
 /// Click-through, transparent overlay across the whole desktop that briefly marks where the mouse
@@ -15,7 +15,10 @@ namespace RoboMouse.App.Windows;
 /// </summary>
 public sealed partial class EdgeHighlightWindow : Window
 {
-    private static readonly Color Accent = Color.FromRgb(30, 100, 230);
+    private static Color Accent =>
+        Application.Current?.TryGetResource("SystemAccentColor", null, out var value) == true && value is Color color
+            ? color
+            : Color.FromRgb(30, 100, 230);
 
     private readonly HighlightSurface _surface = new();
     private DispatcherTimer? _fadeTimer;

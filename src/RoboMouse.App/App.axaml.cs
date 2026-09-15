@@ -1,8 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
-using Avalonia.Styling;
-using Avalonia.Themes.Fluent;
+using Avalonia.Markup.Xaml;
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Logging;
 
@@ -12,16 +11,14 @@ namespace RoboMouse.App;
 /// The Avalonia application. There is no main window: the app lives in the tray and opens windows on
 /// demand, so the lifetime only ends when the user chooses Exit.
 /// </summary>
-public sealed class App : Application
+public partial class App : Application
 {
     private TrayController? _tray;
     private AppSettings? _settings;
 
     public override void Initialize()
     {
-        Styles.Add(new FluentTheme());
-        RequestedThemeVariant = ThemeVariant.Light;
-        Ui.RegisterGlobalStyles(this);
+        AvaloniaXamlLoader.Load(this);
     }
 
     public override void OnFrameworkInitializationCompleted()

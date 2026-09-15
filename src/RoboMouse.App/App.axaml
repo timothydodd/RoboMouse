@@ -1,0 +1,12 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="RoboMouse.App.App"
+             RequestedThemeVariant="Default">
+  <!-- Default = follow the OS light/dark setting. -->
+
+  <Application.Styles>
+    <FluentTheme />
+    <StyleInclude Source="avares://RoboMouse.App/Styles/AppStyles.axaml" />
+  </Application.Styles>
+
+</Application>

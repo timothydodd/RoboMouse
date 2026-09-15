@@ -106,9 +106,13 @@ RoboMouse.sln
 │   │   │   └── Protocol/      # Binary message protocol
 │   │   └── Screen/            # Screen edge detection
 │   └── RoboMouse.App/         # Avalonia tray application (Native AOT)
-│       └── Windows/           # Settings, peer setup, layout and overlay windows
-└── tests/
-    └── RoboMouse.Core.Tests/  # Unit tests
+│       ├── ViewModels/        # MVVM view models (CommunityToolkit.Mvvm)
+│       ├── Views/             # XAML windows and pages, custom-drawn controls
+│       └── Styles/            # App styles on top of the Fluent theme
+├── tests/
+│   └── RoboMouse.Core.Tests/  # Unit tests
+└── tools/
+    └── RoboMouse.UiPreview/   # Renders the windows headlessly to PNG (any OS)
 ```
 
 ## Copying Files Between Machines
