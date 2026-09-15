@@ -1,3 +1,4 @@
+using Avalonia.Controls;
 using RoboMouse.Core.Configuration;
 
 namespace RoboMouse.App;
@@ -25,7 +26,7 @@ internal static class PeerPositions
     /// Moves <paramref name="peer"/> to <paramref name="position"/>. If another peer already occupies that
     /// edge the user is offered a swap. Returns true when the position changed; saves settings on success.
     /// </summary>
-    public static bool TrySet(AppSettings settings, PeerConfig peer, ScreenPosition position, IWin32Window? owner)
+    public static async Task<bool> TrySetAsync(AppSettings settings, PeerConfig peer, ScreenPosition position, Window? owner)
     {
         if (peer.Position == position)
             return false;
@@ -33,12 +34,12 @@ internal static class PeerPositions
         var occupant = settings.Peers.FirstOrDefault(p => p != peer && p.Position == position);
         if (occupant != null)
         {
-            var answer = MessageBox.Show(owner,
+            var swap = await Dialogs.ShowAsync(owner,
                 $"{occupant.Name} is already {Describe(position).ToLower()} of this screen.\n\n" +
                 $"Swap them so {occupant.Name} moves {Describe(peer.Position).ToLower()}?",
-                "Edge already in use", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                "Edge already in use", DialogButtons.YesNo, DialogIcon.Question);
 
-            if (answer != DialogResult.Yes)
+            if (swap != DialogResult.Yes)
                 return false;
 
             occupant.Position = peer.Position;

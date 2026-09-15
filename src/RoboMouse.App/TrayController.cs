@@ -1,4 +1,7 @@
-using RoboMouse.App.Forms;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Threading;
+using RoboMouse.App.Windows;
 using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Logging;
@@ -7,50 +10,85 @@ using RoboMouse.Core.Network;
 namespace RoboMouse.App;
 
 /// <summary>
-/// Application context for the system tray application. The tray icon's colour reflects state;
-/// everything else lives in the Settings window.
+/// Owns the tray icon and the service. The tray icon's colour reflects state; everything else lives
+/// in the Settings window.
 /// </summary>
-public class TrayApplicationContext : ApplicationContext
+public sealed class TrayController : IDisposable
 {
     private enum TrayState { Disabled, Disconnected, Connected, Controlling, Controlled }
 
-    private readonly NotifyIcon _trayIcon;
     private readonly AppSettings _settings;
     private readonly RoboMouseService _service;
-    private readonly ContextMenuStrip _contextMenu;
-    private readonly Dictionary<TrayState, Icon> _icons = new();
+    private readonly IClassicDesktopStyleApplicationLifetime _lifetime;
+    private readonly TrayIcon _trayIcon;
+    private readonly NativeMenu _menu;
+    private readonly Dictionary<TrayState, WindowIcon> _icons = new();
 
-    // Service callbacks arrive on network threads. A ContextMenuStrip has no window handle until it is first
-    // shown, so its InvokeRequired lies until then; this control has its handle forced at startup.
-    private readonly Control _uiMarshal;
+    private readonly NativeMenuItem _statusItem;
+    private readonly NativeMenuItem _enableItem;
+    private readonly NativeMenuItem _peersItem;
 
-    private ToolStripMenuItem _statusItem = null!;
-    private ToolStripMenuItem _enableItem = null!;
-    private ToolStripMenuItem _peersItem = null!;
-
-    private SettingsForm? _settingsForm;
+    private SettingsWindow? _settingsWindow;
 #if DEBUG
-    private DebugPanelForm? _debugPanel;
+    private DebugPanelWindow? _debugPanel;
 #endif
-    private EdgeHighlightForm? _highlight;
+    private EdgeHighlightWindow? _highlight;
     private bool _wasControllingRemote;
     private ScreenPosition _lastControlledEdge = ScreenPosition.Right;
+    private bool _disposed;
 
-    public TrayApplicationContext(AppSettings settings)
+    public TrayController(AppSettings settings, IClassicDesktopStyleApplicationLifetime lifetime)
     {
         _settings = settings;
-        _uiMarshal = new Control();
-        _uiMarshal.CreateControl();
-        _ = _uiMarshal.Handle;
+        _lifetime = lifetime;
 
-        _service = new RoboMouseService(settings);
+        _service = new RoboMouseService(settings)
+        {
+            ClipboardImageCodec = new AvaloniaImageCodec()
+        };
+
+        foreach (var state in Enum.GetValues<TrayState>())
+            _icons[state] = CreateIcon(state);
+
+        _statusItem = new NativeMenuItem("Disconnected") { IsEnabled = false };
+        _enableItem = new NativeMenuItem("Enabled") { ToggleType = MenuItemToggleType.CheckBox, IsChecked = _settings.Enabled };
+        _enableItem.Click += OnEnableToggled;
+        _peersItem = new NativeMenuItem("Peers") { Menu = new NativeMenu() };
+        var settingsItem = new NativeMenuItem("Settings...");
+        settingsItem.Click += (s, e) => ShowSettings();
+        var exitItem = new NativeMenuItem("Exit");
+        exitItem.Click += OnExit;
+
+        _menu = new NativeMenu();
+        _menu.Items.Add(_statusItem);
+        _menu.Items.Add(new NativeMenuItemSeparator());
+        _menu.Items.Add(_enableItem);
+        _menu.Items.Add(_peersItem);
+        _menu.Items.Add(settingsItem);
+        _menu.Items.Add(new NativeMenuItemSeparator());
+        _menu.Items.Add(exitItem);
+        _menu.NeedsUpdate += (s, e) =>
+        {
+            UpdateStatus();
+            UpdatePeersMenu();
+        };
+
+        _trayIcon = new TrayIcon
+        {
+            Icon = _icons[TrayState.Disconnected],
+            ToolTipText = "RoboMouse",
+            Menu = _menu,
+            IsVisible = true
+        };
+        _trayIcon.Clicked += (s, e) => ShowSettings();
+        TrayIcon.SetIcons(Avalonia.Application.Current!, new TrayIcons { _trayIcon });
 
         _service.PeerConnected += (s, e) => OnUi(UpdateStatus);
         _service.PeerDisconnected += (s, e) => OnUi(UpdateStatus);
         _service.ControlStateChanged += (s, e) => OnUi(OnControlStateChanged);
         _service.EnabledChanged += (s, e) => OnUi(() =>
         {
-            _enableItem.Checked = _service.Enabled;
+            _enableItem.IsChecked = _service.Enabled;
             _settings.Save();
             UpdateStatus();
         });
@@ -58,21 +96,6 @@ public class TrayApplicationContext : ApplicationContext
 #if DEBUG
         _service.MouseDebugUpdate += OnMouseDebugUpdate;
 #endif
-
-        foreach (var state in Enum.GetValues<TrayState>())
-            _icons[state] = CreateIcon(state);
-
-        _contextMenu = CreateContextMenu();
-
-        _trayIcon = new NotifyIcon
-        {
-            Icon = _icons[TrayState.Disconnected],
-            Text = "RoboMouse",
-            Visible = true,
-            ContextMenuStrip = _contextMenu
-        };
-
-        _trayIcon.DoubleClick += (s, e) => ShowSettings();
 
         _service.Start();
         UpdateStatus();
@@ -96,52 +119,14 @@ public class TrayApplicationContext : ApplicationContext
         OnUi(UpdateStatus);
     }
 
-    private ContextMenuStrip CreateContextMenu()
-    {
-        var menu = new ContextMenuStrip();
-
-        _statusItem = new ToolStripMenuItem("Disconnected") { Enabled = false };
-        menu.Items.Add(_statusItem);
-
-        menu.Items.Add(new ToolStripSeparator());
-
-        _enableItem = new ToolStripMenuItem("Enabled")
-        {
-            Checked = _settings.Enabled,
-            CheckOnClick = true
-        };
-        _enableItem.CheckedChanged += OnEnableToggled;
-        menu.Items.Add(_enableItem);
-
-        _peersItem = new ToolStripMenuItem("Peers");
-        menu.Items.Add(_peersItem);
-
-        var settingsItem = new ToolStripMenuItem("Settings...");
-        settingsItem.Click += (s, e) => ShowSettings();
-        menu.Items.Add(settingsItem);
-
-        menu.Items.Add(new ToolStripSeparator());
-
-        var exitItem = new ToolStripMenuItem("Exit");
-        exitItem.Click += OnExit;
-        menu.Items.Add(exitItem);
-
-        menu.Opening += (s, e) =>
-        {
-            UpdateStatus();
-            UpdatePeersMenu();
-        };
-
-        return menu;
-    }
-
     /// <summary>
     /// Configured peers (ticked when enabled; click to switch one off or on), then any machine
     /// discovered on the network that is not configured yet (pick an edge to add and connect).
     /// </summary>
     private void UpdatePeersMenu()
     {
-        _peersItem.DropDownItems.Clear();
+        var items = _peersItem.Menu!.Items;
+        items.Clear();
 
         foreach (var peer in _settings.Peers)
         {
@@ -152,19 +137,20 @@ public class TrayApplicationContext : ApplicationContext
                     ? "not connected"
                     : connection.RoundTripMs >= 0 ? $"{connection.RoundTripMs} ms" : "connected";
 
-            var item = new ToolStripMenuItem($"{peer.Name}  ({PeerPositions.Describe(peer.Position)}, {detail})")
+            var item = new NativeMenuItem($"{peer.Name}  ({PeerPositions.Describe(peer.Position)}, {detail})")
             {
-                Checked = peer.Enabled,
-                ToolTipText = peer.Enabled ? "Click to disable this peer" : "Click to enable this peer",
-                ForeColor = connection != null || !peer.Enabled ? SystemColors.ControlText : SystemColors.GrayText
+                ToggleType = MenuItemToggleType.CheckBox,
+                IsChecked = peer.Enabled,
+                ToolTip = peer.Enabled ? "Click to disable this peer" : "Click to enable this peer"
             };
+            var captured = peer;
             item.Click += async (s, e) =>
             {
-                try { await _service.SetPeerEnabledAsync(peer, !peer.Enabled); }
-                catch (Exception ex) { SimpleLogger.Log("Peers", $"Toggle {peer.Name}: {ex.Message}"); }
+                try { await _service.SetPeerEnabledAsync(captured, !captured.Enabled); }
+                catch (Exception ex) { SimpleLogger.Log("Peers", $"Toggle {captured.Name}: {ex.Message}"); }
                 OnUi(UpdateStatus);
             };
-            _peersItem.DropDownItems.Add(item);
+            items.Add(item);
         }
 
         var configuredIds = _settings.Peers.Select(p => p.Id).ToHashSet();
@@ -177,35 +163,35 @@ public class TrayApplicationContext : ApplicationContext
             .ToList();
 
         if (_settings.Peers.Count > 0 && discovered.Count > 0)
-            _peersItem.DropDownItems.Add(new ToolStripSeparator());
+            items.Add(new NativeMenuItemSeparator());
 
         foreach (var found in discovered)
         {
-            var item = new ToolStripMenuItem($"{found.MachineName}  ({found.Address}, new)");
+            var submenu = new NativeMenu();
             foreach (var position in PeerPositions.All)
             {
                 var captured = position;
                 var taken = _settings.Peers.FirstOrDefault(p => p.Position == position);
-                var positionItem = new ToolStripMenuItem(
+                var positionItem = new NativeMenuItem(
                     taken == null
                         ? $"Add {PeerPositions.Describe(position).ToLower()} of this screen"
                         : $"{PeerPositions.Describe(position)} of this screen (used by {taken.Name})")
                 {
-                    Enabled = taken == null
+                    IsEnabled = taken == null
                 };
-                positionItem.Click += (s, e) => AddDiscoveredPeer(found, captured);
-                item.DropDownItems.Add(positionItem);
+                positionItem.Click += (s, e) => _ = AddDiscoveredPeerAsync(found, captured);
+                submenu.Items.Add(positionItem);
             }
-            _peersItem.DropDownItems.Add(item);
+            items.Add(new NativeMenuItem($"{found.MachineName}  ({found.Address}, new)") { Menu = submenu });
         }
 
-        if (_peersItem.DropDownItems.Count == 0)
+        if (items.Count == 0)
         {
-            _peersItem.DropDownItems.Add(new ToolStripMenuItem("No peers configured or found") { Enabled = false });
+            items.Add(new NativeMenuItem("No peers configured or found") { IsEnabled = false });
         }
     }
 
-    private async void AddDiscoveredPeer(DiscoveredPeer found, ScreenPosition position)
+    private async Task AddDiscoveredPeerAsync(DiscoveredPeer found, ScreenPosition position)
     {
         try
         {
@@ -229,8 +215,7 @@ public class TrayApplicationContext : ApplicationContext
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Could not connect to {found.MachineName}: {ex.Message}", "RoboMouse",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            await Dialogs.ErrorAsync(null, $"Could not connect to {found.MachineName}: {ex.Message}");
         }
         UpdateStatus();
     }
@@ -265,29 +250,33 @@ public class TrayApplicationContext : ApplicationContext
         else
             state = connectedPeers.Count > 0 ? TrayState.Connected : TrayState.Disconnected;
 
-        _statusItem.Text = status;
+        _statusItem.Header = status;
         _trayIcon.Icon = _icons[state];
-        _trayIcon.Text = $"RoboMouse - {status}".Length > 63 ? $"RoboMouse - {status}"[..63] : $"RoboMouse - {status}";
+        var tip = $"RoboMouse - {status}";
+        _trayIcon.ToolTipText = tip.Length > 63 ? tip[..63] : tip;
     }
 
     private void ShowSettings()
     {
-        if (_settingsForm == null || _settingsForm.IsDisposed)
+        if (_settingsWindow == null)
         {
-            _settingsForm = new SettingsForm(_settings, _service);
+            _settingsWindow = new SettingsWindow(_settings, _service);
+            _settingsWindow.Closed += (s, e) => _settingsWindow = null;
+            _settingsWindow.Show();
         }
-
-        _settingsForm.Show();
-        _settingsForm.BringToFront();
-        _settingsForm.Activate();
+        else
+        {
+            _settingsWindow.Show();
+            _settingsWindow.Activate();
+        }
     }
 
     private void OnEnableToggled(object? sender, EventArgs e)
     {
-        if (_service.Enabled == _enableItem.Checked)
-            return;
-        _settings.Enabled = _enableItem.Checked;
-        _service.Enabled = _enableItem.Checked;
+        var enabled = !_service.Enabled;
+        _enableItem.IsChecked = enabled;
+        _settings.Enabled = enabled;
+        _service.Enabled = enabled;
         _settings.Save();
         UpdateStatus();
     }
@@ -304,8 +293,7 @@ public class TrayApplicationContext : ApplicationContext
         var isLocalAgain = _wasControllingRemote && !_service.IsControllingRemote && !_service.IsControlledByRemote;
         if (_settings.EdgeHighlight != EdgeHighlightStyle.None && (_service.IsControlledByRemote || isLocalAgain))
         {
-            if (_highlight == null || _highlight.IsDisposed)
-                _highlight = new EdgeHighlightForm();
+            _highlight ??= new EdgeHighlightWindow();
             _highlight.Flash(_settings.EdgeHighlight, _service.IsControlledByRemote ? _service.EntryEdge : _lastControlledEdge);
         }
 
@@ -320,28 +308,8 @@ public class TrayApplicationContext : ApplicationContext
 #if DEBUG
     private void OnMouseDebugUpdate(object? sender, MouseDebugEventArgs e)
     {
-        if (!_settings.DebugPanelEnabled)
-        {
-            if (_debugPanel is { IsDisposed: false, Visible: true })
-                _debugPanel.Hide();
-            return;
-        }
-
-        if (_debugPanel == null || _debugPanel.IsDisposed)
-        {
-            _debugPanel = new DebugPanelForm();
-        }
-
-        if (e.IsControlling && !_debugPanel.Visible)
-        {
-            _debugPanel.ShowOnEdge(_service.ActivePeer?.Position.ToString());
-        }
-        else if (!e.IsControlling && _debugPanel.Visible)
-        {
-            _debugPanel.Hide();
-        }
-
-        _debugPanel.UpdateData(new MouseDebugData
+        // Samples arrive on the input thread at up to 1000 Hz; the panel batches them and repaints on a timer.
+        var data = new MouseDebugData
         {
             IsControlling = e.IsControlling,
             PeerName = e.PeerName,
@@ -349,34 +317,53 @@ public class TrayApplicationContext : ApplicationContext
             DeltaX = e.DeltaX,
             DeltaY = e.DeltaY,
             RoundTripMs = e.RoundTripMs
+        };
+        _debugPanel?.UpdateData(data);
+
+        OnUi(() =>
+        {
+            if (!_settings.DebugPanelEnabled)
+            {
+                if (_debugPanel is { IsVisible: true })
+                    _debugPanel.Hide();
+                return;
+            }
+
+            _debugPanel ??= new DebugPanelWindow();
+            _debugPanel.UpdateData(data);
+
+            if (data.IsControlling && !_debugPanel.IsVisible)
+                _debugPanel.ShowOnEdge(_service.ActivePeer?.Position.ToString());
+            else if (!data.IsControlling && _debugPanel.IsVisible)
+                _debugPanel.Hide();
         });
     }
 #endif
 
     private void OnExit(object? sender, EventArgs e)
     {
-        _trayIcon.Visible = false;
+        _trayIcon.IsVisible = false;
         _service.Dispose();
-        Application.Exit();
+        _lifetime.Shutdown();
     }
 
     /// <summary>Runs an action on the UI thread, now if already there, otherwise queued.</summary>
     private void OnUi(Action action)
     {
-        if (_uiMarshal.IsDisposed)
+        if (_disposed)
             return;
 
-        if (_uiMarshal.InvokeRequired)
-            _uiMarshal.BeginInvoke(action);
-        else
+        if (Dispatcher.UIThread.CheckAccess())
             action();
+        else
+            Dispatcher.UIThread.Post(action);
     }
 
     /// <summary>
-    /// Loads the embedded tray icon for a state. The tray uses the small sizes; Windows picks the
-    /// best match from the multi-size .ico for the current DPI.
+    /// Loads the embedded tray icon for a state. Windows picks the best size from the multi-size .ico
+    /// for the current DPI.
     /// </summary>
-    private static Icon CreateIcon(TrayState state)
+    private static WindowIcon CreateIcon(TrayState state)
     {
         var name = state switch
         {
@@ -388,29 +375,23 @@ public class TrayApplicationContext : ApplicationContext
             _ => "offline"
         };
 
-        using var stream = typeof(TrayApplicationContext).Assembly
-            .GetManifestResourceStream($"RoboMouse.App.Assets.{name}.ico")
-            ?? throw new InvalidOperationException($"Missing embedded icon '{name}'.");
-
-        var size = SystemInformation.SmallIconSize;
-        return new Icon(stream, size.Width, size.Height);
+        using var stream = Ui.OpenAsset($"{name}.ico");
+        return new WindowIcon(stream);
     }
 
-    protected override void Dispose(bool disposing)
+    public void Dispose()
     {
-        if (disposing)
-        {
-            _trayIcon.Dispose();
-            _service.Dispose();
-            _uiMarshal.Dispose();
-            _settingsForm?.Dispose();
+        if (_disposed)
+            return;
+        _disposed = true;
+
+        _trayIcon.IsVisible = false;
+        _trayIcon.Dispose();
+        _service.Dispose();
+        _settingsWindow?.Close();
 #if DEBUG
-            _debugPanel?.Dispose();
+        _debugPanel?.Close();
 #endif
-            _highlight?.Dispose();
-            foreach (var icon in _icons.Values)
-                icon.Dispose();
-        }
-        base.Dispose(disposing);
+        _highlight?.Close();
     }
 }

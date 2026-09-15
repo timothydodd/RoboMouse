@@ -13,4 +13,8 @@
     <Product>RoboMouse</Product>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="RoboMouse.Core.Tests" />
+  </ItemGroup>
+
 </Project>

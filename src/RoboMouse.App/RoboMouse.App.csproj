@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
-    <UseWindowsForms>true</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>RoboMouse.App</RootNamespace>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Version>1.0.0</Version>
@@ -15,7 +15,21 @@
     <Product>RoboMouse</Product>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- Native AOT: the UI is built in code (no XAML), so nothing needs reflection at run time. -->
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
+    <TrimMode>full</TrimMode>
+    <IlcGenerateStackTraceData>true</IlcGenerateStackTraceData>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.2" />
+  </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\offline.ico" LogicalName="RoboMouse.App.Assets.offline.ico" />
@@ -23,6 +37,8 @@
     <EmbeddedResource Include="Assets\controlling.ico" LogicalName="RoboMouse.App.Assets.controlling.ico" />
     <EmbeddedResource Include="Assets\controlled.ico" LogicalName="RoboMouse.App.Assets.controlled.ico" />
     <EmbeddedResource Include="Assets\disabled.ico" LogicalName="RoboMouse.App.Assets.disabled.ico" />
+    <EmbeddedResource Include="Assets\app.ico" LogicalName="RoboMouse.App.Assets.app.ico" />
+    <EmbeddedResource Include="Assets\logo.png" LogicalName="RoboMouse.App.Assets.logo.png" />
   </ItemGroup>
 
   <ItemGroup>

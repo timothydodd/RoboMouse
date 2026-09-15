@@ -69,11 +69,21 @@ Never do per-event file logging on the input path: the hook callback has a syste
 ### Distribution
 
 - `packaging/` holds the MSIX manifest (`runFullTrust` + `allowElevation`, startup task), Store assets, and `Build-Msix.ps1`. `StartupRegistration` picks the startup task when packaged and the Run key otherwise.
-- `.github/workflows/build.yml` builds/tests on every push, publishes a single-file zip and (with Store secrets set) the MSIX on `v*` tags.
+- `.github/workflows/build.yml` builds/tests on every push, publishes a Native AOT zip and (with Store secrets set) the MSIX on `v*` tags.
+
+### UI (`src/RoboMouse.App/`)
+
+Avalonia 12, built entirely in C# (no XAML) so nothing needs reflection at run time. `App` sets the Fluent theme; `TrayController` owns the `TrayIcon`, its `NativeMenu` and the `RoboMouseService`; windows live in `Windows/` (`SettingsWindow`, `PeerSetupWindow`, `ScreenLayoutControl`, `EdgeHighlightWindow`, `DebugPanelWindow`). `Ui` holds the palette and control factories; `Dialogs` is the message-box replacement. Service events arrive on network threads and are marshalled with `Dispatcher.UIThread.Post`. `AvaloniaImageCodec` converts clipboard images between PNG and DIB for the core.
+
+### Native AOT
+
+- The app project has `PublishAot`; `dotnet publish -r win-x64` produces a native executable. This only works on Windows with the VS C++ build tools, so verify AOT publishes in CI or on the user's machine. `dotnet build` and the tests run anywhere.
+- Keep everything AOT-clean: source-generated JSON (`SettingsJsonContext`), `LibraryImport` for P/Invoke, `[UnmanagedCallersOnly]` callbacks for hooks and window procedures, `GeneratedComInterface`/`GeneratedComClass` for COM (`VirtualFileDataObject`). No `System.Windows.Forms`, no `System.Drawing.Common`, no reflection-based serialization or Avalonia bindings.
+- `Keys` is the core's own enum with the Windows virtual-key values; the names match the old Windows Forms names so saved hotkeys parse.
 
 ### Windows-Specific
 
-- Target framework: `net10.0-windows`
-- Uses Windows Forms for system tray UI
-- P/Invoke calls in `NativeMethods.cs` for hooks and input simulation
+- Core targets `net10.0` (marked `SupportedOSPlatform("windows")`); the app targets `net10.0-windows10.0.19041.0` for the Store startup task API.
+- `MessageWindow` is a Win32 message-only window with an invoke queue; it backs `RawMouseInput`, the clipboard listener and `StaWorker`.
+- P/Invoke declarations live in `NativeMethods.cs`
 - Settings stored in `%AppData%/RoboMouse/settings.json`
