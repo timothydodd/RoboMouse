@@ -306,15 +306,17 @@ public sealed unsafe partial class VirtualFileDataObject : VirtualFileDataObject
             }
             catch (Exception ex)
             {
-                Logging.SimpleLogger.Log("Files", $"Read of {_entry.RelativePath} failed: {ex.Message}");
+                Logging.SimpleLogger.Log("Files", $"Read of {_entry.RelativePath} at {_position} failed: {ex}");
                 if (pcbRead != null)
                     *pcbRead = (uint)total;
                 return Native.STG_E_READFAULT;
             }
 
+            // Always S_OK: pcbRead carries the count, and a short read at end of file is normal. Explorer's
+            // copy engine treats any other HRESULT (S_FALSE included) as a read error.
             if (pcbRead != null)
                 *pcbRead = (uint)total;
-            return total == cb ? Native.S_OK : Native.S_FALSE;
+            return Native.S_OK;
         }
 
         public int Seek(long dlibMove, uint dwOrigin, ulong* plibNewPosition)
