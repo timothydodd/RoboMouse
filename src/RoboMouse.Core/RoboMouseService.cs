@@ -488,6 +488,7 @@ public sealed class RoboMouseService : IDisposable
 
         connection.MessageReceived += OnMessageReceived;
         connection.Disconnected += (s, e) => RemoveConnection(connection);
+        connection.Start();
 
         if (replaced == null)
             PeerConnected?.Invoke(this, connection);
@@ -529,6 +530,7 @@ public sealed class RoboMouseService : IDisposable
                 // does that itself) until the tester hangs up; never treat it as a peer.
                 SimpleLogger.Log("Accept", $"Connection test from {connection.PeerName}");
                 connection.Disconnected += (s, e) => connection.Dispose();
+                connection.Start();
                 return;
 
             case ConnectionKind.Transfer:
@@ -546,6 +548,7 @@ public sealed class RoboMouseService : IDisposable
                     }
                     connection.Dispose();
                 };
+                connection.Start();
                 return;
         }
 
@@ -555,6 +558,7 @@ public sealed class RoboMouseService : IDisposable
         {
             SimpleLogger.Log("Accept", $"Refusing connection from disabled peer {connection.PeerName}");
             connection.Disconnected += (s, e) => connection.Dispose();
+            connection.Start();
             _ = connection.DisconnectAsync();
             return;
         }
@@ -637,6 +641,7 @@ public sealed class RoboMouseService : IDisposable
             probe = await PeerConnection.ConnectAsync(
                 address, port, GetPairingKey(), _settings.MachineId, _settings.MachineName, width, height,
                 _settings.LocalPort, ct, ConnectionKind.Probe);
+            probe.Start();
 
             result.ConnectMs = (int)sw.ElapsedMilliseconds;
             result.PeerName = probe.PeerName;

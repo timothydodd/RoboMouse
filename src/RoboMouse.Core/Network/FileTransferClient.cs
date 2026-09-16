@@ -83,13 +83,11 @@ public sealed class FileTransferClient : IDisposable
         connection.MessageReceived += OnMessage;
         connection.Disconnected += (s, e) =>
         {
-            lock (_lock)
-            {
-                if (ReferenceEquals(_connection, connection))
-                    _connection = null;
-            }
+            // No lock here: Fetch holds it while it waits, and this must be able to wake it.
+            Interlocked.CompareExchange(ref _connection, null, connection);
             _pending?.TrySetException(new IOException($"Transfer connection to {PeerName} was lost."));
         };
+        connection.Start();
         _connection = connection;
         SimpleLogger.Log("Files", $"Opened transfer connection to {PeerName}");
         return connection;

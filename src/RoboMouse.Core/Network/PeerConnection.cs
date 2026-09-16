@@ -171,8 +171,6 @@ public sealed class PeerConnection : IDisposable
         connection.PeerScreenHeight = ack.ScreenHeight;
         connection.PeerListenPort = ack.ListenPort;
 
-        connection.StartThreads();
-
         SimpleLogger.Log("Connect", $"Connected to {ack.MachineName} ({ack.ScreenWidth}x{ack.ScreenHeight})");
         return connection;
     }
@@ -229,14 +227,21 @@ public sealed class PeerConnection : IDisposable
         };
 
         await connection.WriteDirectAsync(ack, ct);
-        connection.StartThreads();
-
         SimpleLogger.Log("Accept", $"Accepted {handshake.MachineName} from {remoteEp} ({handshake.ScreenWidth}x{handshake.ScreenHeight})");
         return connection;
     }
 
-    private void StartThreads()
+    /// <summary>
+    /// Starts the send and receive threads and the ping timer. A new connection does nothing until
+    /// this is called, so the owner can attach <see cref="MessageReceived"/> first; otherwise a message
+    /// the peer sends straight after the handshake (a file request, say) is read while nobody is
+    /// listening and silently lost.
+    /// </summary>
+    public void Start()
     {
+        if (_disposed || _receiveThread != null)
+            return;
+
         _sendThread = new Thread(SendLoop)
         {
             Name = $"RoboMouse-Send-{PeerName}",
