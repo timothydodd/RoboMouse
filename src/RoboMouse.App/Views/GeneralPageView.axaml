@@ -1,0 +1,75 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RoboMouse.App.ViewModels"
+             xmlns:views="using:RoboMouse.App.Views"
+             x:Class="RoboMouse.App.Views.GeneralPageView"
+             x:DataType="vm:GeneralPageViewModel">
+
+  <ScrollViewer>
+    <StackPanel Margin="{StaticResource AppPagePadding}" MaxWidth="860" HorizontalAlignment="Stretch">
+      <TextBlock Classes="title" Text="General" />
+
+      <TextBlock Classes="section first" Text="This computer" />
+      <views:SettingCard Header="Machine name" Description="How this computer appears on the other machines.">
+        <TextBox Text="{Binding MachineName}" Width="260" />
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="Startup" />
+      <views:SettingCard Header="Start with Windows">
+        <ToggleSwitch IsChecked="{Binding StartWithWindows}" />
+      </views:SettingCard>
+      <views:SettingCard Header="Start minimized to the tray">
+        <ToggleSwitch IsChecked="{Binding StartMinimized}" />
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="Hotkey" />
+      <views:SettingCard Header="Toggle hotkey"
+                         Description="Releases control of another screen if you are stuck there; otherwise turns sharing on or off.">
+        <TextBox Text="{Binding ToggleHotkey}" Width="200" PlaceholderText="Ctrl+Alt+M" />
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="Clipboard" />
+      <views:SettingCard Header="Share text and images" Description="What you copy on one machine can be pasted on the others.">
+        <ToggleSwitch IsChecked="{Binding ShareClipboard}" />
+      </views:SettingCard>
+      <views:SettingCard Header="Share copied files"
+                         Description="Paste them in Explorer on the other machine. Files transfer only when you paste, straight from the machine you copied them on.">
+        <ToggleSwitch IsChecked="{Binding ShareFiles}" />
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="Display" />
+      <views:SettingCard Header="When the mouse arrives on this screen">
+        <ComboBox ItemsSource="{Binding HighlightChoices}" SelectedItem="{Binding SelectedHighlight}" Width="280" />
+      </views:SettingCard>
+      <views:SettingCard Header="Debug panel" Description="Show motion and latency while controlling another screen."
+                         IsVisible="{Binding IsDebugBuild}">
+        <ToggleSwitch IsChecked="{Binding ShowDebugPanel}" />
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="Tray icon" />
+      <Border Classes="card">
+        <StackPanel Spacing="6">
+          <TextBlock Classes="caption" Text="The border colour of the tray icon shows what RoboMouse is doing:" Margin="0,0,0,4" />
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Ellipse Classes="dot" Fill="{StaticResource AppStatusIdleBrush}" />
+            <TextBlock Text="No peers connected" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Ellipse Classes="dot" Fill="{StaticResource AppStatusOkBrush}" />
+            <TextBlock Text="Connected" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Ellipse Classes="dot" Fill="{DynamicResource SystemControlHighlightAccentBrush}" />
+            <TextBlock Text="Controlling another screen" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Ellipse Classes="dot" Fill="{StaticResource AppStatusWarnBrush}" />
+            <TextBlock Text="Being controlled" />
+          </StackPanel>
+          <TextBlock Classes="caption" Text="A faded icon means sharing is switched off." Margin="0,4,0,0" />
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+
+</UserControl>

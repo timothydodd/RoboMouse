@@ -30,11 +30,11 @@ internal static class StartupRegistration
         {
             if (IsPackaged)
             {
-                var task = await Windows.ApplicationModel.StartupTask.GetAsync(TaskId);
+                var task = await global::Windows.ApplicationModel.StartupTask.GetAsync(TaskId);
                 if (enabled)
                 {
                     var state = await task.RequestEnableAsync();
-                    if (state == Windows.ApplicationModel.StartupTaskState.DisabledByUser)
+                    if (state == global::Windows.ApplicationModel.StartupTaskState.DisabledByUser)
                     {
                         SimpleLogger.Log("Startup", "Startup was disabled by the user in Windows Settings > Apps > Startup; it must be re-enabled there.");
                     }
@@ -51,7 +51,7 @@ internal static class StartupRegistration
                 return;
 
             if (enabled)
-                key.SetValue(RunValueName, $"\"{Application.ExecutablePath}\"");
+                key.SetValue(RunValueName, $"\"{Environment.ProcessPath}\"");
             else
                 key.DeleteValue(RunValueName, throwOnMissingValue: false);
         }

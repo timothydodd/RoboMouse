@@ -1,0 +1,87 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Styling;
+using Avalonia.Threading;
+using RoboMouse.App.Services;
+using RoboMouse.App.ViewModels;
+using RoboMouse.App.Views;
+
+namespace RoboMouse.UiPreview;
+
+/// <summary>
+/// Renders the app's windows headlessly and saves PNGs: <c>RoboMouse.UiPreview [outDir]</c>.
+/// Pass resource keys after the directory to print whether the theme defines them instead.
+/// </summary>
+internal static class Program
+{
+    [STAThread]
+    public static int Main(string[] args)
+    {
+        var outDir = args.Length > 0 ? args[0] : "ui-preview";
+        Directory.CreateDirectory(outDir);
+
+        AppBuilder.Configure<RoboMouse.App.App>()
+            .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
+            .UseSkia()
+            .SetupWithoutStarting();
+
+        var app = Application.Current!;
+        if (args.Length > 1)
+        {
+            foreach (var key in args.Skip(1))
+            {
+                var found = app.TryGetResource(key, ThemeVariant.Light, out var value);
+                Console.WriteLine($"{key}: {(found ? value?.GetType().Name + " " + value : "MISSING")}");
+            }
+            return 0;
+        }
+
+        foreach (var variant in new[] { ThemeVariant.Light, ThemeVariant.Dark })
+        {
+            app.RequestedThemeVariant = variant;
+            var suffix = variant == ThemeVariant.Dark ? "-dark" : "";
+            var backend = new FakeBackend();
+            var settings = FakeBackend.SampleSettings();
+
+            var window = new SettingsWindow(settings, backend);
+            window.Show();
+            foreach (var page in window.ViewModel.Pages)
+            {
+                window.ViewModel.SelectedPage = page;
+                Capture(window, Path.Combine(outDir, $"settings-{page.Title.ToLowerInvariant()}{suffix}.png"));
+            }
+            window.Close();
+
+            var setup = new PeerSetupWindow(new PeerSetupViewModel(settings.Peers[0], settings, backend, new WindowDialogService(null, backend)));
+            setup.Show();
+            Capture(setup, Path.Combine(outDir, $"peer-setup{suffix}.png"));
+            setup.Close();
+
+            var message = new MessageDialog("Laptop is already left of this screen.\n\nSwap them so Laptop moves right?", "Edge already in use", DialogButtons.YesNoCancel, DialogIcon.Question);
+            message.Show();
+            Capture(message, Path.Combine(outDir, $"message{suffix}.png"));
+            message.Close();
+
+            var debugVm = new DebugPanelViewModel();
+            for (var i = 0; i < 8; i++)
+                debugVm.Record(new MouseDebugData { IsControlling = true, PeerName = "Laptop", PeerPosition = "Left", DeltaX = 12 - i, DeltaY = -4 + i, RoundTripMs = 3 });
+            var debug = new DebugPanelWindow(debugVm);
+            debug.Show();
+            debugVm.Flush();
+            Capture(debug, Path.Combine(outDir, $"debug{suffix}.png"));
+            debug.Close();
+        }
+
+        Console.WriteLine($"Screenshots written to {Path.GetFullPath(outDir)}");
+        return 0;
+    }
+
+    private static void Capture(Window window, string path)
+    {
+        Dispatcher.UIThread.RunJobs();
+        using var frame = window.CaptureRenderedFrame() ?? throw new InvalidOperationException("No frame rendered.");
+        frame.Save(path, Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
+        Console.WriteLine($"  {Path.GetFileName(path)}");
+    }
+}

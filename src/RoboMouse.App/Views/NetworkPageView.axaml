@@ -1,0 +1,46 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RoboMouse.App.ViewModels"
+             xmlns:views="using:RoboMouse.App.Views"
+             x:Class="RoboMouse.App.Views.NetworkPageView"
+             x:DataType="vm:NetworkPageViewModel">
+
+  <ScrollViewer>
+    <StackPanel Margin="{StaticResource AppPagePadding}" MaxWidth="860" HorizontalAlignment="Stretch">
+      <TextBlock Classes="title" Text="Network" />
+
+      <TextBlock Classes="section first" Text="Pairing code" />
+      <Border Classes="card">
+        <StackPanel Spacing="10">
+          <Grid ColumnDefinitions="*,8,Auto,8,Auto">
+            <TextBox Text="{Binding PairingCode}" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="15" />
+            <Button Grid.Column="2" Content="Copy" Command="{Binding CopyPairingCodeCommand}" />
+            <Button Grid.Column="4" Content="Generate new" Command="{Binding GeneratePairingCodeCommand}" />
+          </Grid>
+          <TextBlock Classes="caption"
+                     Text="Enter the same code on every machine. It authenticates peers and encrypts all traffic; a machine with a different code cannot connect. Existing connections keep their session until they reconnect." />
+        </StackPanel>
+      </Border>
+
+      <TextBlock Classes="section" Text="Ports" />
+      <views:SettingCard Header="Listen port" Description="TCP port other machines connect to.">
+        <NumericUpDown Value="{Binding LocalPort}" Minimum="1024" Maximum="65535" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="140" />
+      </views:SettingCard>
+      <views:SettingCard Header="Discovery port" Description="UDP port used to find machines on this subnet.">
+        <NumericUpDown Value="{Binding DiscoveryPort}" Minimum="1024" Maximum="65535" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="140" />
+      </views:SettingCard>
+      <views:SettingCard Header="Machine ID" Description="Port changes take effect after RoboMouse is restarted.">
+        <TextBox Text="{Binding MachineId}" IsReadOnly="True" Width="300" Classes="muted" />
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="Firewall" />
+      <views:SettingCard Header="Allow RoboMouse through Windows Firewall"
+                         Description="Adds inbound rules for the ports above from any address, on all network profiles. Needed when the other machine is on a different subnet: the rule Windows creates automatically is often limited to the local subnet. Requires administrator approval.">
+        <Button Content="Add rules…" Command="{Binding AllowThroughFirewallCommand}" />
+      </views:SettingCard>
+      <TextBlock Classes="caption" Margin="4,8,0,0"
+                 Text="Automatic discovery uses broadcast and never crosses subnets; add such peers by IP address." />
+    </StackPanel>
+  </ScrollViewer>
+
+</UserControl>

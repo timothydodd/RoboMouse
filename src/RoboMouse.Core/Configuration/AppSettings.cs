@@ -82,7 +82,6 @@ public class AppSettings
     /// <summary>
     /// Visual cue shown when the mouse arrives on this screen from another machine.
     /// </summary>
-    [JsonConverter(typeof(JsonStringEnumConverter))]
     public EdgeHighlightStyle EdgeHighlight { get; set; } = EdgeHighlightStyle.Fade;
 
     /// <summary>
@@ -113,7 +112,7 @@ public class AppSettings
             try
             {
                 var json = File.ReadAllText(configPath);
-                settings = JsonSerializer.Deserialize<AppSettings>(json, GetJsonOptions()) ?? new AppSettings();
+                settings = JsonSerializer.Deserialize(json, SettingsJsonContext.Default.AppSettings) ?? new AppSettings();
             }
             catch
             {
@@ -147,17 +146,20 @@ public class AppSettings
             Directory.CreateDirectory(directory);
         }
 
-        var json = JsonSerializer.Serialize(this, GetJsonOptions());
+        var json = JsonSerializer.Serialize(this, SettingsJsonContext.Default.AppSettings);
         File.WriteAllText(configPath, json);
     }
+}
 
-    private static JsonSerializerOptions GetJsonOptions()
-    {
-        return new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            Converters = { new JsonStringEnumConverter() }
-        };
-    }
+/// <summary>
+/// Source-generated serializer metadata for the settings file: camelCase names, enums as strings,
+/// indented output. Generated at build time so no reflection is needed at run time.
+/// </summary>
+[JsonSourceGenerationOptions(
+    WriteIndented = true,
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    UseStringEnumConverter = true)]
+[JsonSerializable(typeof(AppSettings))]
+internal partial class SettingsJsonContext : JsonSerializerContext
+{
 }

@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Windows.Forms;
 
 namespace RoboMouse.Core.Input;
 
@@ -10,11 +9,12 @@ namespace RoboMouse.Core.Input;
 /// local cursor while still reading exact hardware motion.
 /// Must be created on a thread that pumps messages (the UI thread).
 /// </summary>
-public sealed class RawMouseInput : NativeWindow, IDisposable
+public sealed unsafe class RawMouseInput : IDisposable
 {
+    private readonly MessageWindow _window;
     private bool _registered;
     private bool _disposed;
-    private IntPtr _buffer;
+    private byte* _buffer;
     private uint _bufferSize;
 
     // For absolute-mode devices (tablets, some RDP/VM mice) we convert to deltas ourselves.
@@ -29,9 +29,10 @@ public sealed class RawMouseInput : NativeWindow, IDisposable
 
     public RawMouseInput()
     {
-        CreateHandle(new CreateParams { Parent = NativeMethods.HWND_MESSAGE });
-        _bufferSize = (uint)Marshal.SizeOf<NativeMethods.RAWINPUT>() + 64;
-        _buffer = Marshal.AllocHGlobal((int)_bufferSize);
+        _window = new MessageWindow();
+        _window.Message += OnMessage;
+        _bufferSize = (uint)sizeof(NativeMethods.RAWINPUT) + 64;
+        _buffer = (byte*)NativeMemory.Alloc(_bufferSize);
     }
 
     /// <summary>
@@ -42,20 +43,17 @@ public sealed class RawMouseInput : NativeWindow, IDisposable
         if (_registered)
             return;
 
-        var devices = new[]
+        var device = new NativeMethods.RAWINPUTDEVICE
         {
-            new NativeMethods.RAWINPUTDEVICE
-            {
-                usUsagePage = NativeMethods.HID_USAGE_PAGE_GENERIC,
-                usUsage = NativeMethods.HID_USAGE_GENERIC_MOUSE,
-                dwFlags = NativeMethods.RIDEV_INPUTSINK,
-                hwndTarget = Handle
-            }
+            usUsagePage = NativeMethods.HID_USAGE_PAGE_GENERIC,
+            usUsage = NativeMethods.HID_USAGE_GENERIC_MOUSE,
+            dwFlags = NativeMethods.RIDEV_INPUTSINK,
+            hwndTarget = _window.Handle
         };
 
-        if (!NativeMethods.RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<NativeMethods.RAWINPUTDEVICE>()))
+        if (!NativeMethods.RegisterRawInputDevices(&device, 1, (uint)sizeof(NativeMethods.RAWINPUTDEVICE)))
         {
-            throw new InvalidOperationException($"RegisterRawInputDevices failed. Error code: {Marshal.GetLastWin32Error()}");
+            throw new InvalidOperationException($"RegisterRawInputDevices failed. Error code: {Marshal.GetLastPInvokeError()}");
         }
 
         _registered = true;
@@ -70,63 +68,56 @@ public sealed class RawMouseInput : NativeWindow, IDisposable
         if (!_registered)
             return;
 
-        var devices = new[]
+        var device = new NativeMethods.RAWINPUTDEVICE
         {
-            new NativeMethods.RAWINPUTDEVICE
-            {
-                usUsagePage = NativeMethods.HID_USAGE_PAGE_GENERIC,
-                usUsage = NativeMethods.HID_USAGE_GENERIC_MOUSE,
-                dwFlags = NativeMethods.RIDEV_REMOVE,
-                hwndTarget = IntPtr.Zero
-            }
+            usUsagePage = NativeMethods.HID_USAGE_PAGE_GENERIC,
+            usUsage = NativeMethods.HID_USAGE_GENERIC_MOUSE,
+            dwFlags = NativeMethods.RIDEV_REMOVE,
+            hwndTarget = 0
         };
-        NativeMethods.RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<NativeMethods.RAWINPUTDEVICE>());
+        NativeMethods.RegisterRawInputDevices(&device, 1, (uint)sizeof(NativeMethods.RAWINPUTDEVICE));
         _registered = false;
     }
 
-    protected override void WndProc(ref Message m)
+    private void OnMessage(uint msg, nint wParam, nint lParam)
     {
-        if (m.Msg == NativeMethods.WM_INPUT && _registered)
-        {
-            HandleRawInput(m.LParam);
-        }
-
-        base.WndProc(ref m);
+        if (msg == NativeMethods.WM_INPUT && _registered)
+            HandleRawInput(lParam);
     }
 
-    private void HandleRawInput(IntPtr hRawInput)
+    private void HandleRawInput(nint hRawInput)
     {
         uint size = 0;
-        var headerSize = (uint)Marshal.SizeOf<NativeMethods.RAWINPUTHEADER>();
-        NativeMethods.GetRawInputData(hRawInput, NativeMethods.RID_INPUT, IntPtr.Zero, ref size, headerSize);
+        var headerSize = (uint)sizeof(NativeMethods.RAWINPUTHEADER);
+        NativeMethods.GetRawInputData(hRawInput, NativeMethods.RID_INPUT, null, &size, headerSize);
         if (size == 0)
             return;
 
         if (size > _bufferSize)
         {
-            Marshal.FreeHGlobal(_buffer);
+            NativeMemory.Free(_buffer);
             _bufferSize = size;
-            _buffer = Marshal.AllocHGlobal((int)_bufferSize);
+            _buffer = (byte*)NativeMemory.Alloc(_bufferSize);
         }
 
-        if (NativeMethods.GetRawInputData(hRawInput, NativeMethods.RID_INPUT, _buffer, ref size, headerSize) != size)
+        if (NativeMethods.GetRawInputData(hRawInput, NativeMethods.RID_INPUT, _buffer, &size, headerSize) != size)
             return;
 
-        var raw = Marshal.PtrToStructure<NativeMethods.RAWINPUT>(_buffer);
-        if (raw.header.dwType != NativeMethods.RIM_TYPEMOUSE)
+        var raw = (NativeMethods.RAWINPUT*)_buffer;
+        if (raw->header.dwType != NativeMethods.RIM_TYPEMOUSE)
             return;
 
         // hDevice is null for input injected via SendInput. We never want to echo our own injection.
-        if (raw.header.hDevice == IntPtr.Zero)
+        if (raw->header.hDevice == 0)
             return;
 
         int dx, dy;
-        if ((raw.mouse.usFlags & NativeMethods.MOUSE_MOVE_ABSOLUTE) != 0)
+        if ((raw->mouse.usFlags & NativeMethods.MOUSE_MOVE_ABSOLUTE) != 0)
         {
             // Absolute devices report 0..65535 over the (virtual) desktop; convert to a pixel delta.
             var (vx, vy, vw, vh) = InputSimulator.GetVirtualScreenBounds();
-            var absX = (int)(raw.mouse.lLastX / 65535.0 * vw) + vx;
-            var absY = (int)(raw.mouse.lLastY / 65535.0 * vh) + vy;
+            var absX = (int)(raw->mouse.lLastX / 65535.0 * vw) + vx;
+            var absY = (int)(raw->mouse.lLastY / 65535.0 * vh) + vy;
 
             if (!_haveLastAbsolute)
             {
@@ -143,8 +134,8 @@ public sealed class RawMouseInput : NativeWindow, IDisposable
         }
         else
         {
-            dx = raw.mouse.lLastX;
-            dy = raw.mouse.lLastY;
+            dx = raw->mouse.lLastX;
+            dy = raw->mouse.lLastY;
         }
 
         if (dx != 0 || dy != 0)
@@ -160,12 +151,13 @@ public sealed class RawMouseInput : NativeWindow, IDisposable
         _disposed = true;
 
         Stop();
-        DestroyHandle();
+        _window.Message -= OnMessage;
+        _window.Dispose();
 
-        if (_buffer != IntPtr.Zero)
+        if (_buffer != null)
         {
-            Marshal.FreeHGlobal(_buffer);
-            _buffer = IntPtr.Zero;
+            NativeMemory.Free(_buffer);
+            _buffer = null;
         }
     }
 }

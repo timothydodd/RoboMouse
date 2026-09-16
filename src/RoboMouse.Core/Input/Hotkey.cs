@@ -1,5 +1,3 @@
-using System.Windows.Forms;
-
 namespace RoboMouse.Core.Input;
 
 /// <summary>

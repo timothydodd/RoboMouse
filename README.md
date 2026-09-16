@@ -17,20 +17,21 @@ A Windows application that lets you share your mouse and keyboard across multipl
 ## Requirements
 
 - Windows 10/11
-- .NET 10 Desktop Runtime
 - Network connectivity between computers
+
+Releases are compiled ahead of time (Native AOT), so no .NET runtime needs to be installed.
 
 ## Getting Started
 
 ### Releases
 
 Every push to `main` is built and tested on GitHub Actions (see the Actions tab for the
-`RoboMouse-win-x64` artifact). Pushing a tag such as `v1.0.0` publishes a zipped single-file
+`RoboMouse-win-x64` artifact). Pushing a tag such as `v1.0.0` publishes a zipped Native AOT
 build as a GitHub Release automatically.
 
 ### Microsoft Store Package
 
-`packaging/Build-Msix.ps1` produces the MSIX for Store submission (self-contained, unsigned;
+`packaging/Build-Msix.ps1` produces the MSIX for Store submission (Native AOT, unsigned;
 Partner Center signs it). It needs the identity values from Partner Center > Product identity,
 supplied as parameters or as the `STORE_PACKAGE_NAME`, `STORE_PUBLISHER` and
 `STORE_PUBLISHER_DISPLAY` environment variables. The release workflow builds it on every tag when
@@ -42,11 +43,13 @@ The privacy policy required by the Store listing is in `docs/privacy.md`.
 ### Publishing a Release Build
 
 ```bash
-dotnet publish src/RoboMouse.App -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
+dotnet publish src/RoboMouse.App -c Release -r win-x64
 ```
 
-The output in `src/RoboMouse.App/bin/Release/net10.0-windows/win-x64/publish/` needs only the
-.NET 10 Desktop Runtime on the target machine.
+The app project has `PublishAot` enabled, so this compiles it to a native executable. It must run on
+Windows with the Visual Studio "Desktop development with C++" workload installed (the AOT compiler
+needs the MSVC linker). The output in `src/RoboMouse.App/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/`
+runs on any Windows 10/11 machine with no .NET runtime installed.
 
 ### Building from Source
 
@@ -62,7 +65,10 @@ dotnet build
 dotnet run --project src/RoboMouse.App
 ```
 
-Or build and run the executable directly from `bin/Debug/net10.0-windows/`.
+Or build and run the executable directly from `bin/Debug/net10.0-windows10.0.19041.0/`. A normal
+(JIT) build like this is fine for development; only `dotnet publish` does the ahead-of-time compile.
+`RoboMouse.Core` and the tests target plain `net10.0`, so `dotnet build` and `dotnet test` also work
+on Linux and macOS even though the app itself only runs on Windows.
 
 ## Usage
 
@@ -99,10 +105,14 @@ RoboMouse.sln
 │   │   ├── Network/           # Peer discovery and connections
 │   │   │   └── Protocol/      # Binary message protocol
 │   │   └── Screen/            # Screen edge detection
-│   └── RoboMouse.App/         # Windows Forms tray application
-│       └── Forms/             # Settings and layout forms
-└── tests/
-    └── RoboMouse.Core.Tests/  # Unit tests
+│   └── RoboMouse.App/         # Avalonia tray application (Native AOT)
+│       ├── ViewModels/        # MVVM view models (CommunityToolkit.Mvvm)
+│       ├── Views/             # XAML windows and pages, custom-drawn controls
+│       └── Styles/            # App styles on top of the Fluent theme
+├── tests/
+│   └── RoboMouse.Core.Tests/  # Unit tests
+└── tools/
+    └── RoboMouse.UiPreview/   # Renders the windows headlessly to PNG (any OS)
 ```
 
 ## Copying Files Between Machines

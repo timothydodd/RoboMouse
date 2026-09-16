@@ -1,0 +1,66 @@
+using RoboMouse.Core;
+using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Network;
+
+namespace RoboMouse.App.Services;
+
+/// <summary>A connected peer as the UI sees it.</summary>
+public sealed record ConnectedPeerInfo(string PeerId, string PeerName, int RoundTripMs);
+
+/// <summary>
+/// What the view models need from the running service. Keeping this behind an interface lets the
+/// windows be built and rendered without hooks, sockets or a Windows desktop (see tools/RoboMouse.UiPreview).
+/// </summary>
+public interface IAppBackend
+{
+    bool Enabled { get; }
+    bool IsControllingRemote { get; }
+    bool IsControlledByRemote { get; }
+    string? ActivePeerName { get; }
+
+    IReadOnlyList<ConnectedPeerInfo> ConnectedPeers { get; }
+    IReadOnlyList<DiscoveredPeer> DiscoveredPeers { get; }
+
+    ConnectedPeerInfo? GetConnection(string peerId);
+    bool IsPeerConnected(string peerId);
+
+    Task SetPeerEnabledAsync(PeerConfig peer, bool enabled);
+    Task ConnectToPeerAsync(PeerConfig peer, CancellationToken ct);
+    Task DisconnectFromPeerAsync(string peerId);
+    Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct);
+
+    void ApplyClipboardSetting();
+    void ApplyHotkeySetting();
+}
+
+/// <summary>The real backend: a thin adapter over <see cref="RoboMouseService"/>.</summary>
+public sealed class ServiceBackend : IAppBackend
+{
+    private readonly RoboMouseService _service;
+
+    public ServiceBackend(RoboMouseService service) => _service = service;
+
+    public bool Enabled => _service.Enabled;
+    public bool IsControllingRemote => _service.IsControllingRemote;
+    public bool IsControlledByRemote => _service.IsControlledByRemote;
+    public string? ActivePeerName => _service.ActivePeer?.Name;
+
+    public IReadOnlyList<ConnectedPeerInfo> ConnectedPeers =>
+        _service.ConnectedPeers.Select(c => new ConnectedPeerInfo(c.PeerId, c.PeerName, c.RoundTripMs)).ToList();
+
+    public IReadOnlyList<DiscoveredPeer> DiscoveredPeers => _service.DiscoveredPeers.ToList();
+
+    public ConnectedPeerInfo? GetConnection(string peerId)
+    {
+        var c = _service.GetConnection(peerId);
+        return c == null ? null : new ConnectedPeerInfo(c.PeerId, c.PeerName, c.RoundTripMs);
+    }
+
+    public bool IsPeerConnected(string peerId) => _service.IsPeerConnected(peerId);
+    public Task SetPeerEnabledAsync(PeerConfig peer, bool enabled) => _service.SetPeerEnabledAsync(peer, enabled);
+    public Task ConnectToPeerAsync(PeerConfig peer, CancellationToken ct) => _service.ConnectToPeerAsync(peer, ct);
+    public Task DisconnectFromPeerAsync(string peerId) => _service.DisconnectFromPeerAsync(peerId);
+    public Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct) => _service.TestConnectionAsync(address, port, ct);
+    public void ApplyClipboardSetting() => _service.ApplyClipboardSetting();
+    public void ApplyHotkeySetting() => _service.ApplyHotkeySetting();
+}

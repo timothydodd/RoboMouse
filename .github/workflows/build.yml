@@ -30,15 +30,18 @@ jobs:
       - name: Test
         run: dotnet test --configuration Release --no-build
 
-      - name: Publish single-file executable
+      # Native AOT: one self-contained native executable, no .NET runtime needed on the target.
+      # Needs the C++ build tools that ship with Visual Studio on the hosted Windows image.
+      - name: Publish (Native AOT)
         run: >
           dotnet publish src/RoboMouse.App
           --configuration Release
           --runtime win-x64
-          --self-contained false
-          -p:PublishSingleFile=true
-          -p:DebugType=none
           --output publish
+
+      - name: Drop debug symbols from the publish folder
+        shell: pwsh
+        run: Get-ChildItem publish -Filter *.pdb | Remove-Item
 
       - name: Upload build
         uses: actions/upload-artifact@v4

@@ -1,6 +1,5 @@
 using RoboMouse.Core.Input;
 using RoboMouse.Core.Network.Protocol;
-using System.Windows.Forms;
 using Xunit;
 using ProtocolMessage = RoboMouse.Core.Network.Protocol.Message;
 
