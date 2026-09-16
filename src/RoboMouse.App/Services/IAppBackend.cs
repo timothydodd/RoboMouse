@@ -1,6 +1,7 @@
 using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Network;
+using RoboMouse.Core.Network.Protocol;
 
 namespace RoboMouse.App.Services;
 
@@ -17,6 +18,8 @@ public interface IAppBackend
     bool IsControllingRemote { get; }
     bool IsControlledByRemote { get; }
     string? ActivePeerName { get; }
+    /// <summary>Why the controlled machine cannot apply our input right now, if it cannot.</summary>
+    InputBlockReason RemoteInputBlockReason { get; }
 
     IReadOnlyList<ConnectedPeerInfo> ConnectedPeers { get; }
     IReadOnlyList<DiscoveredPeer> DiscoveredPeers { get; }
@@ -44,6 +47,7 @@ public sealed class ServiceBackend : IAppBackend
     public bool IsControllingRemote => _service.IsControllingRemote;
     public bool IsControlledByRemote => _service.IsControlledByRemote;
     public string? ActivePeerName => _service.ActivePeer?.Name;
+    public InputBlockReason RemoteInputBlockReason => _service.RemoteInputBlockReason;
 
     public IReadOnlyList<ConnectedPeerInfo> ConnectedPeers =>
         _service.ConnectedPeers.Select(c => new ConnectedPeerInfo(c.PeerId, c.PeerName, c.RoundTripMs)).ToList();

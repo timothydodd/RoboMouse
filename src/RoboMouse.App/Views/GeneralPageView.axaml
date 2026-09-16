@@ -37,6 +37,12 @@
         <ToggleSwitch IsChecked="{Binding ShareFiles}" />
       </views:SettingCard>
 
+      <TextBlock Classes="section" Text="Edges" />
+      <views:SettingCard Header="Wrap around"
+                         Description="Pushing through an edge that has no PC comes out on the far side of the PC on the opposite edge, and a PC you are controlling hands the mouse back from any edge. With two PCs the screens form a loop.">
+        <ToggleSwitch IsChecked="{Binding WrapAround}" />
+      </views:SettingCard>
+
       <TextBlock Classes="section" Text="Display" />
       <views:SettingCard Header="When the mouse arrives on this screen">
         <ComboBox ItemsSource="{Binding HighlightChoices}" SelectedItem="{Binding SelectedHighlight}" Width="280" />

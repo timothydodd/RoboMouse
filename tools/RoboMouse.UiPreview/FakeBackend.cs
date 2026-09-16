@@ -13,6 +13,7 @@ internal sealed class FakeBackend : IAppBackend
     public bool IsControllingRemote => false;
     public bool IsControlledByRemote => false;
     public string? ActivePeerName => null;
+    public RoboMouse.Core.Network.Protocol.InputBlockReason RemoteInputBlockReason => RoboMouse.Core.Network.Protocol.InputBlockReason.None;
 
     public IReadOnlyList<ConnectedPeerInfo> ConnectedPeers { get; } = new[]
     {

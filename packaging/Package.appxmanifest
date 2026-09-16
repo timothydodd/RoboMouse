@@ -58,7 +58,5 @@
     <Capability Name="privateNetworkClientServer" />
     <!-- Win32 app with global input hooks and SendInput. -->
     <rescap:Capability Name="runFullTrust" />
-    <!-- The executable's manifest requests administrator so injected input reaches elevated windows. -->
-    <rescap:Capability Name="allowElevation" />
   </Capabilities>
 </Package>

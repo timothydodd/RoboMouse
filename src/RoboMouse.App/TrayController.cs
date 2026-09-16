@@ -254,7 +254,7 @@ public sealed class TrayController : IDisposable
         else if (_service.IsControllingRemote)
         {
             state = TrayState.Controlling;
-            status += $" (controlling {_service.ActivePeer?.Name})";
+            status += $" ({StatusText.Controlling(_service.ActivePeer?.Name, _service.RemoteInputBlockReason)})";
         }
         else if (_service.IsControlledByRemote)
         {

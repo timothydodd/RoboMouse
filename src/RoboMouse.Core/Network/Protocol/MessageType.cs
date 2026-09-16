@@ -23,6 +23,9 @@ public enum MessageType : byte
     /// <summary>Cursor leaving the peer's screen (returning control).</summary>
     CursorLeave = 0x21,
 
+    /// <summary>The controlled peer reports whether it can currently apply input (UAC prompt, elevated window).</summary>
+    InputStatus = 0x22,
+
     /// <summary>Clipboard data.</summary>
     Clipboard = 0x30,
 

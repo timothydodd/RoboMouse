@@ -386,6 +386,33 @@ public static unsafe class InputSimulator
 
     #endregion
 
+    #region Desktop
+
+    /// <summary>
+    /// True while the secure desktop (a UAC prompt, the lock screen or the sign-in screen) is the one
+    /// receiving input. A normal process cannot open that desktop at all, so failure to open counts too.
+    /// </summary>
+    public static bool IsSecureDesktopActive()
+    {
+        var desktop = NativeMethods.OpenInputDesktop(0, false, NativeMethods.DESKTOP_READOBJECTS);
+        if (desktop == 0)
+            return true;
+        try
+        {
+            var name = stackalloc char[64];
+            uint needed;
+            if (!NativeMethods.GetUserObjectInformationW(desktop, NativeMethods.UOI_NAME, name, 64 * sizeof(char), &needed))
+                return true;
+            return !new ReadOnlySpan<char>(name, 64).StartsWith("Default\0");
+        }
+        finally
+        {
+            NativeMethods.CloseDesktop(desktop);
+        }
+    }
+
+    #endregion
+
     #region Screen Info
 
     /// <summary>

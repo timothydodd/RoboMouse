@@ -137,7 +137,8 @@ public class MessageSerializationTests
         {
             EntryX = 0.75f,
             EntryY = 0.25f,
-            EntryEdge = Configuration.ScreenPosition.Left
+            EntryEdge = Configuration.ScreenPosition.Left,
+            WrapAround = true
         };
 
         var serialized = original.Serialize();
@@ -147,6 +148,21 @@ public class MessageSerializationTests
         Assert.Equal(original.EntryX, deserialized.EntryX, precision: 5);
         Assert.Equal(original.EntryY, deserialized.EntryY, precision: 5);
         Assert.Equal(original.EntryEdge, deserialized.EntryEdge);
+        Assert.True(deserialized.WrapAround);
+        Assert.False((ProtocolMessage.Deserialize(new CursorEnterMessage().Serialize()) as CursorEnterMessage)!.WrapAround);
+    }
+
+    [Theory]
+    [InlineData(InputBlockReason.None)]
+    [InlineData(InputBlockReason.SecureDesktop)]
+    [InlineData(InputBlockReason.ElevatedWindow)]
+    public void InputStatusMessage_RoundTrip_PreservesReason(InputBlockReason reason)
+    {
+        var deserialized = ProtocolMessage.Deserialize(new InputStatusMessage { Reason = reason }.Serialize()) as InputStatusMessage;
+
+        Assert.NotNull(deserialized);
+        Assert.Equal(reason, deserialized.Reason);
+        Assert.Equal(reason != InputBlockReason.None, deserialized.IsBlocked);
     }
 
     [Fact]

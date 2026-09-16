@@ -71,23 +71,11 @@ Also upload `store-icon-300x300.png` (Store logo) and `store-hero-2400x1200.png`
 IARC questionnaire: no user-generated content, no communication between users beyond the user's own
 devices, no purchases, no location, no personal data collection. Expect "Everyone".
 
-## Capabilities and restricted capability justification
+## Capabilities
 
-The manifest declares `runFullTrust` (granted automatically for desktop apps) and `allowElevation`,
-which needs a justification in the submission. Suggested text:
-
-> RoboMouse installs low-level mouse and keyboard hooks to detect when the pointer reaches the edge
-> of the screen and injects input on the receiving PC with SendInput. Windows User Interface
-> Privilege Isolation prevents a non-elevated process from seeing input directed at an elevated
-> window or from sending input to one. Without elevation, sharing silently stops working whenever an
-> elevated application (Task Manager, an installer, an admin console) is in the foreground on either
-> PC. The app requests elevation at launch for this reason only; it does not modify the system, and
-> the only privileged operation it performs on request is adding two inbound Windows Firewall rules
-> for its own ports when the user clicks that button.
-
-If the reviewer declines `allowElevation`, the fallback is to set `requestedExecutionLevel` to
-`asInvoker` in `src/RoboMouse.App/app.manifest`, remove the capability from the package manifest, and
-document the elevated-window limitation.
+The manifest declares `runFullTrust` (granted automatically for desktop apps), `internetClient` and
+`privateNetworkClientServer`. No restricted capability needs a justification: the app runs as a
+normal user, so there is no UAC prompt at launch and nothing to justify to the reviewer.
 
 ## Notes for certification testers
 
@@ -95,9 +83,7 @@ document the elevated-window limitation.
 > test machine can only exercise the settings window and the tray icon. To test sharing: install on
 > two PCs on one network, open Settings on each, enter the same pairing code on both under Network,
 > then on one PC open the Peers page, select the other PC under "Found on this network" and click
-> "Add selected". Moving the mouse off the chosen edge of the screen then controls the other PC. The
-> app runs elevated so that input reaches elevated windows on the other PC (see the allowElevation
-> justification).
+> "Add selected". Moving the mouse off the chosen edge of the screen then controls the other PC.
 
 ## Submission checklist
 
@@ -107,7 +93,6 @@ document the elevated-window limitation.
 - [ ] Package built by CI from a `v*` tag (unsigned; the Store signs it), downloaded from the
       `RoboMouse-msix` artifact of that run
 - [ ] Version is `x.y.z.0` (the tag `v1.0.0` becomes `1.0.0.0`; the script enforces the trailing 0)
-- [ ] `allowElevation` justification pasted into the Submission options page
 - [ ] Notes for certification pasted into the Submission options page
 - [ ] Age rating questionnaire completed
 - [ ] Listing text, search terms and "What's new" entered

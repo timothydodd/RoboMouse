@@ -22,6 +22,22 @@
         </StackPanel>
       </Border>
 
+      <TextBlock Classes="section" Text="This computer" />
+      <Border Classes="card">
+        <StackPanel Spacing="4">
+          <TextBlock Text="IP addresses" />
+          <TextBlock Classes="caption" Text="Enter one of these on another machine to add this PC by address." Margin="0,0,0,6" />
+          <ItemsControl ItemsSource="{Binding Addresses}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="x:String">
+                <TextBlock Text="{Binding}" FontFamily="Cascadia Mono, Consolas, monospace" Margin="0,2" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <TextBlock Classes="caption" Text="No network connection." IsVisible="{Binding !HasAddresses}" />
+        </StackPanel>
+      </Border>
+
       <TextBlock Classes="section" Text="Ports" />
       <views:SettingCard Header="Listen port" Description="TCP port other machines connect to.">
         <NumericUpDown Value="{Binding LocalPort}" Minimum="1024" Maximum="65535" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="140" />

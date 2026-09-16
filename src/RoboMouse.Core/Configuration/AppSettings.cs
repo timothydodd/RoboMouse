@@ -70,6 +70,12 @@ public class AppSettings
     public string? ToggleHotkey { get; set; } = "Ctrl+Alt+M";
 
     /// <summary>
+    /// Pushing through an edge that has no peer comes out on the far side of the peer on the opposite
+    /// edge, and a controlled screen hands control back from any edge, so screens form a ring.
+    /// </summary>
+    public bool WrapAround { get; set; } = false;
+
+    /// <summary>
     /// Number of pixels from screen edge to trigger transition.
     /// </summary>
     public int EdgeThreshold { get; set; } = 0;

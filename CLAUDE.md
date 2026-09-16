@@ -50,8 +50,8 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 
 **Protocol** (`src/RoboMouse.Core/Network/Protocol/`):
 - Binary message format with 2-byte magic, version, type, length prefix, and timestamp (16-byte header)
-- Message types: Handshake (carries `ConnectionKind` and listen port), Mouse (relative deltas), Keyboard, Clipboard, FileOffer/FileOfferRevoked/FileRequest/FileChunk, CursorEnter/Leave, Ping/Pong
-- Protocol version 3; both peers must run the same version
+- Message types: Handshake (carries `ConnectionKind` and listen port), Mouse (relative deltas), Keyboard, Clipboard, FileOffer/FileOfferRevoked/FileRequest/FileChunk, CursorEnter (carries the wrap-around flag)/Leave, InputStatus (controlled side reports a UAC prompt or elevated window), Ping/Pong
+- Protocol version 4; both peers must run the same version
 
 ### Control Flow
 
@@ -60,7 +60,9 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 3. While controlling: the hook swallows all local mouse/keyboard events; raw motion deltas and button/wheel/key events are posted to the peer
 4. Controlled peer places its cursor on the entry edge and injects each delta relatively; it tracks whether its cursor is pinned on the entry edge while the controller keeps pushing into it
 5. When pushed through the entry edge, the controlled peer sends `CursorLeaveMessage` with the normalized edge position and releases any held keys/buttons
-6. Controller restores its cursor one pixel inside the matching local edge and resumes local control (short cooldown prevents immediate re-entry)
+6. Controller restores its cursor one pixel inside the local edge opposite the one the cursor left through and resumes local control (short cooldown prevents immediate re-entry)
+
+With `WrapAround` on, an edge with no peer routes to the peer on the opposite edge (entering from its far side) and the controlled peer hands back from any edge, so two screens form a ring. The app runs as a normal user (no UAC prompt at launch); when the controlled machine cannot apply input (secure desktop or an elevated window in front) it sends `InputStatus` and the controller shows why. Driving the secure desktop needs a service, planned later.
 
 The keyboard hook checks the toggle hotkey (`Hotkey`) before anything else: while controlling it releases control; otherwise it toggles `Enabled`. Hooks stay installed while the service runs so this works when disabled.
 
@@ -68,7 +70,7 @@ Never do per-event file logging on the input path: the hook callback has a syste
 
 ### Distribution
 
-- `packaging/` holds the MSIX manifest (`runFullTrust` + `allowElevation`, startup task), Store assets, and `Build-Msix.ps1`. `StartupRegistration` picks the startup task when packaged and the Run key otherwise.
+- `packaging/` holds the MSIX manifest (`runFullTrust`, startup task), Store assets, and `Build-Msix.ps1`. `StartupRegistration` picks the startup task when packaged and the Run key otherwise.
 - `.github/workflows/build.yml` builds/tests on every push, publishes a Native AOT zip and (with Store secrets set) the MSIX on `v*` tags.
 
 ### UI (`src/RoboMouse.App/`)

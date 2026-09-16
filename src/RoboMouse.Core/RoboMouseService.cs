@@ -53,7 +53,11 @@ public sealed class RoboMouseService : IDisposable
     private volatile bool _isControlledByRemote;
     private PeerConnection? _controllerConnection;
     private ScreenPosition _entryEdge;
+    private bool _controllerWrapsAround;
     private int _edgeOvershoot;
+    private InputBlockReason _localBlockReason;
+    private System.Threading.Timer? _desktopPollTimer;
+    private volatile InputBlockReason _remoteBlockReason;
     private readonly HashSet<MouseEventType> _heldButtons = new();
     private readonly Dictionary<Keys, (uint ScanCode, bool Extended)> _heldKeys = new();
 
@@ -117,6 +121,12 @@ public sealed class RoboMouseService : IDisposable
 
     /// <summary>The local edge the remote cursor came in on while <see cref="IsControlledByRemote"/>.</summary>
     public ScreenPosition EntryEdge => _entryEdge;
+
+    /// <summary>
+    /// While controlling a remote: why that machine cannot apply our input right now (a UAC prompt, an
+    /// elevated window), or <see cref="InputBlockReason.None"/>. Changes raise <see cref="ControlStateChanged"/>.
+    /// </summary>
+    public InputBlockReason RemoteInputBlockReason => _remoteBlockReason;
 
     /// <summary>The currently active peer configuration.</summary>
     public PeerConfig? ActivePeer => _activePeer;
@@ -785,6 +795,11 @@ public sealed class RoboMouseService : IDisposable
             return;
 
         var targetPeer = GetPeerAtEdge(edge.Edge);
+        if (targetPeer == null && _settings.WrapAround)
+        {
+            // No peer on this edge: wrap to the peer on the opposite edge, arriving from its far side.
+            targetPeer = GetPeerAtEdge(CursorManager.GetOppositeEdge(edge.Edge));
+        }
         if (targetPeer == null)
             return;
 
@@ -881,12 +896,16 @@ public sealed class RoboMouseService : IDisposable
         var bounds = _screenInfo.PrimaryBounds;
         InputSimulator.MoveTo(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2);
 
-        var entryEdge = CursorManager.GetOppositeEdge(peer.Position);
+        // The cursor appears on the peer's edge opposite the one it left here (its left edge when we
+        // left through our right). With wrap-around that is not necessarily the edge facing this screen.
+        var entryEdge = CursorManager.GetOppositeEdge(edge.Edge);
+        _remoteBlockReason = InputBlockReason.None;
         var enterMsg = new CursorEnterMessage
         {
             EntryEdge = entryEdge,
             EntryX = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? 0f : edge.NormalizedPosition,
-            EntryY = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? edge.NormalizedPosition : 0f
+            EntryY = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? edge.NormalizedPosition : 0f,
+            WrapAround = _settings.WrapAround
         };
         connection.Post(enterMsg);
 
@@ -908,6 +927,7 @@ public sealed class RoboMouseService : IDisposable
         _isControllingRemote = false;
         _activeConnection = null;
         _activePeer = null;
+        _remoteBlockReason = InputBlockReason.None;
 
         _rawMouse.Stop();
         InputSimulator.RestoreSystemCursor();
@@ -942,9 +962,11 @@ public sealed class RoboMouseService : IDisposable
         Interlocked.Exchange(ref _returnCooldownUntil, Environment.TickCount64 + ReturnCooldownMs);
         EndRemoteControl(notifyPeer: false);
 
-        // Land one pixel inside the edge so only a deliberate push back toward it re-enters.
-        var (x, y) = _cursorManager.GetEdgePoint(peer.Position, normalized);
-        var (nudgeX, nudgeY) = peer.Position switch
+        // Land one pixel inside the local edge facing the one the cursor left through: the peer's
+        // entry edge on a normal return, or the far edge when it wrapped around.
+        var localEdge = CursorManager.GetOppositeEdge(msg.ExitEdge);
+        var (x, y) = _cursorManager.GetEdgePoint(localEdge, normalized);
+        var (nudgeX, nudgeY) = localEdge switch
         {
             ScreenPosition.Left => (1, 0),
             ScreenPosition.Right => (-1, 0),
@@ -978,6 +1000,15 @@ public sealed class RoboMouseService : IDisposable
 
                 case CursorEnterMessage enterMsg:
                     HandleCursorEnter(enterMsg, connection);
+                    break;
+
+                case InputStatusMessage statusMsg:
+                    if (_isControllingRemote && connection == _activeConnection && statusMsg.Reason != _remoteBlockReason)
+                    {
+                        _remoteBlockReason = statusMsg.Reason;
+                        SimpleLogger.Log("Control", $"{connection.PeerName} input status: {statusMsg.Reason}");
+                        ControlStateChanged?.Invoke(this, EventArgs.Empty);
+                    }
                     break;
 
                 case CursorLeaveMessage leaveMsg:
@@ -1016,9 +1047,13 @@ public sealed class RoboMouseService : IDisposable
 
         _controllerConnection = connection;
         _entryEdge = msg.EntryEdge;
+        _controllerWrapsAround = msg.WrapAround;
         _edgeOvershoot = 0;
         _injectionBlocked = false;
+        _localBlockReason = InputBlockReason.None;
         _isControlledByRemote = true;
+        _desktopPollTimer?.Dispose();
+        _desktopPollTimer = new System.Threading.Timer(_ => ReportInputStatus(), null, 250, 250);
 
         var normalized = msg.EntryEdge is ScreenPosition.Left or ScreenPosition.Right ? msg.EntryY : msg.EntryX;
         _cursorManager.PlaceAtEdge(msg.EntryEdge, normalized);
@@ -1083,6 +1118,7 @@ public sealed class RoboMouseService : IDisposable
             {
                 _injectionBlocked = false;
                 SimpleLogger.Log("Input", "Injected input accepted again");
+                ReportInputStatus();
             }
             return;
         }
@@ -1091,6 +1127,7 @@ public sealed class RoboMouseService : IDisposable
         {
             _injectionBlocked = true;
             SimpleLogger.Log("Input", "Injected input is being blocked (elevated window in front?); moving cursor directly");
+            ReportInputStatus();
         }
 
         var (x, y) = InputSimulator.GetCursorPosition();
@@ -1106,7 +1143,9 @@ public sealed class RoboMouseService : IDisposable
         var (x, y) = InputSimulator.GetCursorPosition();
         var bounds = _screenInfo.VirtualBounds;
 
-        var (pinned, push) = _entryEdge switch
+        // Which edge the cursor is pinned against while being pushed further into it. Normally only the
+        // entry edge hands control back; with wrap-around any edge does.
+        static (bool pinned, int push) Probe(ScreenPosition edge, int x, int y, int dx, int dy, System.Drawing.Rectangle bounds) => edge switch
         {
             ScreenPosition.Left => (x <= bounds.Left, -dx),
             ScreenPosition.Right => (x >= bounds.Right - 1, dx),
@@ -1114,6 +1153,23 @@ public sealed class RoboMouseService : IDisposable
             ScreenPosition.Bottom => (y >= bounds.Bottom - 1, dy),
             _ => (false, 0)
         };
+
+        var exitEdge = _entryEdge;
+        var (pinned, push) = Probe(_entryEdge, x, y, dx, dy, bounds);
+        if (_controllerWrapsAround && (!pinned || push <= 0))
+        {
+            foreach (var edge in new[] { ScreenPosition.Left, ScreenPosition.Right, ScreenPosition.Top, ScreenPosition.Bottom })
+            {
+                if (edge == _entryEdge)
+                    continue;
+                var probe = Probe(edge, x, y, dx, dy, bounds);
+                if (probe.pinned && probe.push > 0)
+                {
+                    (exitEdge, pinned, push) = (edge, true, probe.push);
+                    break;
+                }
+            }
+        }
 
         if (!pinned || push <= 0)
         {
@@ -1125,12 +1181,12 @@ public sealed class RoboMouseService : IDisposable
         if (_edgeOvershoot < ReturnOvershootCounts)
             return;
 
-        var normalized = _cursorManager.GetNormalizedPositionOnEdge(_entryEdge, x, y);
+        var normalized = _cursorManager.GetNormalizedPositionOnEdge(exitEdge, x, y);
         var leave = new CursorLeaveMessage
         {
-            ExitEdge = _entryEdge,
-            ExitX = _entryEdge is ScreenPosition.Left or ScreenPosition.Right ? 0f : normalized,
-            ExitY = _entryEdge is ScreenPosition.Left or ScreenPosition.Right ? normalized : 0f
+            ExitEdge = exitEdge,
+            ExitX = exitEdge is ScreenPosition.Left or ScreenPosition.Right ? 0f : normalized,
+            ExitY = exitEdge is ScreenPosition.Left or ScreenPosition.Right ? normalized : 0f
         };
 
         var connection = _controllerConnection;
@@ -1167,6 +1223,9 @@ public sealed class RoboMouseService : IDisposable
         _isControlledByRemote = false;
         _controllerConnection = null;
         _edgeOvershoot = 0;
+        _desktopPollTimer?.Dispose();
+        _desktopPollTimer = null;
+        _localBlockReason = InputBlockReason.None;
 
         ReleaseHeldInput();
 
@@ -1181,6 +1240,36 @@ public sealed class RoboMouseService : IDisposable
         }
 
         ControlStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Tells the controller whether its input is currently landing. Runs on the desktop poll timer while
+    /// controlled and whenever SendInput starts or stops failing; only changes are sent.
+    /// </summary>
+    private void ReportInputStatus()
+    {
+        var connection = _controllerConnection;
+        if (!_isControlledByRemote || connection == null)
+            return;
+
+        InputBlockReason reason;
+        try
+        {
+            reason = InputSimulator.IsSecureDesktopActive() ? InputBlockReason.SecureDesktop
+                : _injectionBlocked ? InputBlockReason.ElevatedWindow
+                : InputBlockReason.None;
+        }
+        catch (Exception ex)
+        {
+            SimpleLogger.Log("Input", $"Desktop check failed: {ex.Message}");
+            return;
+        }
+
+        if (reason == _localBlockReason)
+            return;
+        _localBlockReason = reason;
+        SimpleLogger.Log("Input", $"Input status for {connection.PeerName}: {reason}");
+        connection.Post(new InputStatusMessage { Reason = reason });
     }
 
     private void ReleaseHeldInput()
@@ -1430,6 +1519,7 @@ public sealed class RoboMouseService : IDisposable
             _transferServers.Clear();
         }
 
+        _desktopPollTimer?.Dispose();
         _rawMouse.Dispose();
         _mouseHook.Dispose();
         _keyboardHook.Dispose();

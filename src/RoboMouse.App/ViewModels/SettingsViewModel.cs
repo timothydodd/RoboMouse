@@ -80,7 +80,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         var connected = _backend.ConnectedPeers;
         (StatusText, StatusTone) = !_backend.Enabled ? ("Sharing off", StatusTone.Idle)
-            : _backend.IsControllingRemote ? ($"Controlling {_backend.ActivePeerName}", StatusTone.Accent)
+            : _backend.IsControllingRemote ? (RoboMouse.App.StatusText.Controlling(_backend.ActivePeerName, _backend.RemoteInputBlockReason),
+                _backend.RemoteInputBlockReason == Core.Network.Protocol.InputBlockReason.None ? StatusTone.Accent : StatusTone.Warning)
             : _backend.IsControlledByRemote ? ("Being controlled", StatusTone.Warning)
             : connected.Count == 0 ? ("Not connected", StatusTone.Idle)
             : connected.Count == 1 ? ($"Connected to {connected[0].PeerName}", StatusTone.Ok)
@@ -122,6 +123,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _settings.Clipboard.Enabled = General.ShareClipboard;
         _settings.Clipboard.SyncFiles = General.ShareFiles;
         _settings.EdgeHighlight = General.SelectedHighlight.Style;
+        _settings.WrapAround = General.WrapAround;
         _settings.DebugPanelEnabled = General.ShowDebugPanel;
         _settings.LocalPort = (int)Network.LocalPort;
         _settings.DiscoveryPort = (int)Network.DiscoveryPort;
@@ -161,6 +163,7 @@ public sealed partial class GeneralPageViewModel : PageViewModel
     [ObservableProperty] private bool _shareClipboard;
     [ObservableProperty] private bool _shareFiles;
     [ObservableProperty] private HighlightChoice _selectedHighlight;
+    [ObservableProperty] private bool _wrapAround;
     [ObservableProperty] private bool _showDebugPanel;
 
     public bool IsDebugBuild =>
@@ -179,6 +182,7 @@ public sealed partial class GeneralPageViewModel : PageViewModel
         _shareClipboard = settings.Clipboard.Enabled;
         _shareFiles = settings.Clipboard.SyncFiles;
         _selectedHighlight = HighlightChoices.FirstOrDefault(c => c.Style == settings.EdgeHighlight) ?? HighlightChoices[2];
+        _wrapAround = settings.WrapAround;
         _showDebugPanel = settings.DebugPanelEnabled;
     }
 }
@@ -192,6 +196,29 @@ public sealed partial class NetworkPageViewModel : PageViewModel
     [ObservableProperty] private decimal _localPort;
     [ObservableProperty] private decimal _discoveryPort;
     public string MachineId { get; }
+
+    /// <summary>This computer's IPv4 addresses, one per connected adapter, for typing into another machine.</summary>
+    public IReadOnlyList<string> Addresses { get; } = GetLocalAddresses();
+    public bool HasAddresses => Addresses.Count > 0;
+
+    private static IReadOnlyList<string> GetLocalAddresses()
+    {
+        try
+        {
+            return System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up
+                            && n.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                .SelectMany(n => n.GetIPProperties().UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                                && !a.Address.ToString().StartsWith("169.254.", StringComparison.Ordinal))
+                    .Select(a => $"{a.Address}  ·  {n.Name}"))
+                .ToList();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
 
     public NetworkPageViewModel(AppSettings settings, IDialogService dialogs)
     {

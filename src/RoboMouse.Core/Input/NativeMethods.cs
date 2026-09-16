@@ -458,6 +458,24 @@ internal static unsafe partial class NativeMethods
 
     #endregion
 
+    #region Desktops
+
+    public const uint DESKTOP_READOBJECTS = 0x0001;
+    public const int UOI_NAME = 2;
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial nint OpenInputDesktop(uint dwFlags, [MarshalAs(UnmanagedType.Bool)] bool fInherit, uint dwDesiredAccess);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseDesktop(nint hDesktop);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetUserObjectInformationW(nint hObj, int nIndex, char* pvInfo, uint nLength, uint* lpnLengthNeeded);
+
+    #endregion
+
     #region OLE
 
     [LibraryImport("ole32.dll")]

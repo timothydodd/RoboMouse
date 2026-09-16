@@ -25,13 +25,22 @@ public class CursorEnterMessage : Message
     /// </summary>
     public ScreenPosition EntryEdge { get; set; }
 
+    /// <summary>
+    /// When set, the controlled peer hands control back from any edge it is pushed through, not only
+    /// the entry edge, so the cursor can wrap around to the far side of the controller's screen.
+    /// </summary>
+    public bool WrapAround { get; set; }
+
+    private const byte FlagWrapAround = 0x01;
+
     protected override byte[] SerializePayload()
     {
-        var buffer = new byte[9]; // 4 + 4 + 1
+        var buffer = new byte[10]; // 4 + 4 + 1 + 1
 
         BinaryPrimitives.WriteSingleLittleEndian(buffer.AsSpan(0), EntryX);
         BinaryPrimitives.WriteSingleLittleEndian(buffer.AsSpan(4), EntryY);
         buffer[8] = (byte)EntryEdge;
+        buffer[9] = WrapAround ? FlagWrapAround : (byte)0;
 
         return buffer;
     }
@@ -42,7 +51,8 @@ public class CursorEnterMessage : Message
         {
             EntryX = BinaryPrimitives.ReadSingleLittleEndian(payload),
             EntryY = BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(4)),
-            EntryEdge = (ScreenPosition)payload[8]
+            EntryEdge = (ScreenPosition)payload[8],
+            WrapAround = payload.Length > 9 && (payload[9] & FlagWrapAround) != 0
         };
     }
 }
