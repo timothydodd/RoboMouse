@@ -64,7 +64,12 @@ Upload in this order:
 5. `05-peer-setup.png` – add/edit peer dialog
 6. `06-layout-dark.png` – dark theme
 
-Also upload `store-icon-300x300.png` (Store logo) and `store-hero-2400x1200.png` (hero image, optional).
+### Super hero art (16:9)
+
+`store-hero-1920x1080.png` and `store-hero-3840x2160.png` in this folder, regenerated with
+`dotnet run --project tools/RoboMouse.UiPreview -- --hero docs/store`. Upload the 16:9 image in the
+Store listing's "Super hero" slot (it accepts 1920x1080 and 3840x2160). Also upload
+`store-icon-300x300.png` as the Store logo.
 
 ## Age rating
 

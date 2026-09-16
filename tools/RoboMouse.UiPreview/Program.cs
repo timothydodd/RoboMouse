@@ -20,7 +20,8 @@ internal static class Program
     public static int Main(string[] args)
     {
         var store = args.Length > 0 && args[0] == "--store";
-        if (store)
+        var hero = args.Length > 0 && args[0] == "--hero";
+        if (store || hero)
             args = args.Skip(1).ToArray();
         var outDir = args.Length > 0 ? args[0] : "ui-preview";
         Directory.CreateDirectory(outDir);
@@ -36,6 +37,12 @@ internal static class Program
         {
             StoreScreenshots.Render(outDir);
             Console.WriteLine($"Store screenshots written to {Path.GetFullPath(outDir)}");
+            return 0;
+        }
+        if (hero)
+        {
+            StoreHero.Render(outDir);
+            Console.WriteLine($"Hero art written to {Path.GetFullPath(outDir)}");
             return 0;
         }
         if (args.Length > 1)
