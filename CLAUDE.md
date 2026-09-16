@@ -82,6 +82,23 @@ Avalonia 12 with the Fluent theme, MVVM via CommunityToolkit.Mvvm, XAML views wi
 - `TrayController` owns the `TrayIcon`, its `NativeMenu` (rebuilt in `NeedsUpdate`) and the `RoboMouseService`; service events arrive on network threads and are marshalled with `Dispatcher.UIThread.Post`. `AvaloniaImageCodec` converts clipboard images between PNG and DIB for the core. Icons come from `FluentIcons.Avalonia` (vector, renders everywhere).
 - **Previewing the UI without Windows:** `tools/RoboMouse.UiPreview` renders every window with the headless platform and a fake backend: `dotnet run --project tools/RoboMouse.UiPreview -- <outDir>` writes light and dark PNGs. Pass resource keys after the directory to check what the theme defines. Use it after any UI change.
 
+### Desktop service (UAC / secure desktop) — in progress
+
+Separate from the Store app, shipped in the direct-download installer, to drive the secure desktop
+(UAC prompts, lock screen, sign-in) where a normal-user process cannot. See `plans/uac-service.md`
+for the design and security boundary. New projects:
+
+- `RoboMouse.Contracts` — dependency-free pipe names, message envelope (`PipeMessage`) and transport
+  (`PipeConnection`), shared by app/service/helper. Round-trip tests in the Core test project.
+- `RoboMouse.Service` — LocalSystem Windows service (SCM plumbing in `ServiceNative`/`Program`,
+  `DesktopMonitor` polls the active desktop/session, `ControlPipeServer` hosts the ACL'd control pipe
+  and verifies the caller is RoboMouse.App in the console session). Run with `--console` to test.
+- `RoboMouse.Helper` — per-desktop SYSTEM input process the service will spawn (skeleton).
+
+Phase 1 (contracts + skeletons that build) is done; the input abstraction, real input relay, app
+integration and installer are Phases 2-5 in the plan. Nothing here is wired into the app's runtime
+path yet, and the SYSTEM parts need real-Windows testing (CI only proves they compile).
+
 ### Native AOT
 
 - The app project has `PublishAot`; `dotnet publish -r win-x64` produces a native executable. This only works on Windows with the VS C++ build tools, so verify AOT publishes in CI or on the user's machine. `dotnet build` and the tests run anywhere.

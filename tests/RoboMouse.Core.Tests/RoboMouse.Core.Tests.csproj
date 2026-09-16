@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\RoboMouse.Core\RoboMouse.Core.csproj" />
+    <ProjectReference Include="..\..\src\RoboMouse.Contracts\RoboMouse.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

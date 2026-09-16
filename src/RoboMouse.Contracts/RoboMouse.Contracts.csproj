@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Dependency-free types shared by the app, the service and the helper: the pipe names, the
+       message envelope and the input intents that cross the pipe. No Windows-specific API here so
+       it builds anywhere and unit-tests on any OS. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsAotCompatible>true</IsAotCompatible>
+    <RootNamespace>RoboMouse.Contracts</RootNamespace>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+</Project>

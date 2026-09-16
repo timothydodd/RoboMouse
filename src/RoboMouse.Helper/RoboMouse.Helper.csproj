@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Per-desktop input helper, launched by the service as SYSTEM bound to a specific desktop. Runs
+       only the input layer and relays it over a pipe the service hands it. Native AOT. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>RoboMouse.Helper</RootNamespace>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <IsAotCompatible>true</IsAotCompatible>
+    <PublishAot>true</PublishAot>
+    <AssemblyName>RoboMouse.Helper</AssemblyName>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RoboMouse.Contracts\RoboMouse.Contracts.csproj" />
+    <ProjectReference Include="..\RoboMouse.Core\RoboMouse.Core.csproj" />
+  </ItemGroup>
+
+</Project>
