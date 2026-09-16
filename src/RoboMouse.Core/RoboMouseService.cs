@@ -67,13 +67,36 @@ public sealed class RoboMouseService : IDisposable
     private string? _pairingKeySource;
     private byte[]? _pairingKey;
 
-    // File sharing: what we currently offer (serving side) and what we currently hold from a peer (paste side)
-    private FileOfferSource? _localOffer;
+    // File sharing. Offers are kept by id on both sides: what we offer (serving side) and what we hold
+    // from peers (paste side). A superseded or revoked offer stays servable for a grace period after its
+    // last read, so a paste that is still copying is not cut off when the clipboard moves on. Offers are
+    // relayed to every other peer, so a machine in the middle of a chain proxies reads between its neighbours.
     private readonly object _fileLock = new();
     private readonly List<PeerConnection> _transferServers = new();
-    private readonly Dictionary<string, FileTransferClient> _transferClients = new();
-    private string? _remoteOfferPeerId;
-    private string? _remoteOfferId;
+    private readonly Dictionary<string, LocalOffer> _localOffers = new();
+    private readonly Dictionary<string, RemoteOffer> _remoteOffers = new();
+    private string? _currentLocalOfferId;
+    private string? _currentRemoteOfferId;
+    private System.Threading.Timer? _offerSweepTimer;
+    private string? _lastClipboardHash;
+
+    /// <summary>How long a retired offer stays readable after its last request.</summary>
+    private static readonly TimeSpan OfferGrace = TimeSpan.FromSeconds(60);
+
+    private sealed class LocalOffer
+    {
+        public required FileOfferSource Source { get; init; }
+        public bool Retired { get; set; }
+        public long LastUsedTicks { get; set; } = Environment.TickCount64;
+    }
+
+    private sealed class RemoteOffer
+    {
+        public required string PeerId { get; init; }
+        public required FileTransferClient Client { get; init; }
+        public bool Retired { get; set; }
+        public long LastUsedTicks { get; set; } = Environment.TickCount64;
+    }
 
     /// <summary>
     /// The key derived from the pairing code. Derivation is deliberately slow, so it is cached until the code changes.
@@ -221,6 +244,7 @@ public sealed class RoboMouseService : IDisposable
         _enabled = _settings.Enabled;
 
         _reconnectTimer = new System.Threading.Timer(_ => _ = ReconnectConfiguredPeersAsync(), null, ReconnectIntervalMs, ReconnectIntervalMs);
+        _offerSweepTimer = new System.Threading.Timer(_ => SweepRetiredOffers(), null, OfferGrace, OfferGrace);
     }
 
     /// <summary>Stops the service.</summary>
@@ -228,6 +252,8 @@ public sealed class RoboMouseService : IDisposable
     {
         _reconnectTimer?.Dispose();
         _reconnectTimer = null;
+        _offerSweepTimer?.Dispose();
+        _offerSweepTimer = null;
 
         _enabled = false;
         OnEnabledChanged();
@@ -1023,7 +1049,7 @@ public sealed class RoboMouseService : IDisposable
                     break;
 
                 case ClipboardMessage clipMsg:
-                    HandleRemoteClipboard(clipMsg);
+                    HandleRemoteClipboard(clipMsg, connection);
                     break;
 
                 case FileOfferMessage offer:
@@ -1322,21 +1348,44 @@ public sealed class RoboMouseService : IDisposable
         if (!_enabled || !_settings.Clipboard.Enabled)
             return;
 
-        lock (_connectionLock)
-        {
-            foreach (var connection in _connections.Values)
-            {
-                connection.Post(message);
-            }
-        }
+        _lastClipboardHash = HashOf(message);
+        PostToPeers(message, except: null);
     }
 
-    private void HandleRemoteClipboard(ClipboardMessage msg)
+    private void HandleRemoteClipboard(ClipboardMessage msg, PeerConnection from)
     {
         if (!_settings.Clipboard.Enabled)
             return;
 
+        // Peers only connect to their neighbours, so pass it on to ours. The hash stops the same content
+        // going round a ring for ever.
+        var hash = HashOf(msg);
+        if (hash == _lastClipboardHash)
+            return;
+        _lastClipboardHash = hash;
+
         _clipboardManager.SetClipboard(msg);
+        PostToPeers(msg, except: from);
+    }
+
+    private static string HashOf(ClipboardMessage message)
+    {
+        Span<byte> hash = stackalloc byte[32];
+        System.Security.Cryptography.SHA256.HashData(message.Data, hash);
+        return $"{(int)message.ContentType}:{Convert.ToHexString(hash)}";
+    }
+
+    /// <summary>Posts a message to every connected peer except the one it came from.</summary>
+    private void PostToPeers(ProtocolMessage message, PeerConnection? except)
+    {
+        lock (_connectionLock)
+        {
+            foreach (var connection in _connections.Values)
+            {
+                if (connection != except)
+                    connection.Post(message);
+            }
+        }
     }
 
     #endregion
@@ -1350,43 +1399,43 @@ public sealed class RoboMouseService : IDisposable
         if (!_enabled || !_settings.Clipboard.Enabled || !_settings.Clipboard.SyncFiles)
             return;
 
-        FileOfferSource? previous;
+        var previous = RetireLocalOffer();
         lock (_fileLock)
         {
-            previous = _localOffer;
-            _localOffer = offer;
+            _localOffers[offer.OfferId] = new LocalOffer { Source = offer };
+            _currentLocalOfferId = offer.OfferId;
         }
 
         SimpleLogger.Log("Files", $"Offering {offer.Entries.Count} item(s), {offer.TotalSize / 1024.0 / 1024.0:0.#} MB");
 
-        var message = offer.ToMessage();
-        lock (_connectionLock)
-        {
-            foreach (var connection in _connections.Values)
-            {
-                if (previous != null)
-                    connection.Post(new FileOfferRevokedMessage { OfferId = previous.OfferId });
-                connection.Post(message);
-            }
-        }
+        if (previous != null)
+            PostToPeers(new FileOfferRevokedMessage { OfferId = previous }, except: null);
+        PostToPeers(offer.ToMessage(), except: null);
     }
 
     private void OnLocalFilesCleared(object? sender, EventArgs e)
     {
-        FileOfferSource? previous;
+        var previous = RetireLocalOffer();
+        if (previous != null)
+            PostToPeers(new FileOfferRevokedMessage { OfferId = previous }, except: null);
+    }
+
+    /// <summary>
+    /// Takes the current local offer off the market. It stays readable for the grace period so a paste
+    /// already in progress can finish. Returns its id, or null if there was none.
+    /// </summary>
+    private string? RetireLocalOffer()
+    {
         lock (_fileLock)
         {
-            previous = _localOffer;
-            _localOffer = null;
-        }
-
-        if (previous == null)
-            return;
-
-        lock (_connectionLock)
-        {
-            foreach (var connection in _connections.Values)
-                connection.Post(new FileOfferRevokedMessage { OfferId = previous.OfferId });
+            var id = _currentLocalOfferId;
+            _currentLocalOfferId = null;
+            if (id != null && _localOffers.TryGetValue(id, out var offer))
+            {
+                offer.Retired = true;
+                offer.LastUsedTicks = Environment.TickCount64;
+            }
+            return id;
         }
     }
 
@@ -1395,12 +1444,7 @@ public sealed class RoboMouseService : IDisposable
         if (sender is not PeerConnection connection || message is not FileRequestMessage request)
             return;
 
-        FileOfferSource? offer;
-        lock (_fileLock)
-        {
-            offer = _localOffer;
-        }
-
+        var length = Math.Clamp(request.Length, 0, FileTransferClient.ChunkSize);
         var reply = new FileChunkMessage
         {
             OfferId = request.OfferId,
@@ -1408,19 +1452,57 @@ public sealed class RoboMouseService : IDisposable
             Offset = request.Offset
         };
 
-        try
+        FileOfferSource? local = null;
+        FileTransferClient? relay = null;
+        lock (_fileLock)
         {
-            if (offer == null || offer.OfferId != request.OfferId)
-                reply.Error = "Those files are no longer on the clipboard of the other machine.";
-            else
-                reply.Data = offer.Read(request.EntryIndex, request.Offset, Math.Clamp(request.Length, 0, FileTransferClient.ChunkSize));
-        }
-        catch (Exception ex)
-        {
-            reply.Error = ex.Message;
+            if (_localOffers.TryGetValue(request.OfferId, out var localOffer))
+            {
+                localOffer.LastUsedTicks = Environment.TickCount64;
+                local = localOffer.Source;
+            }
+            else if (_remoteOffers.TryGetValue(request.OfferId, out var remoteOffer))
+            {
+                remoteOffer.LastUsedTicks = Environment.TickCount64;
+                relay = remoteOffer.Client;
+            }
         }
 
-        connection.Post(reply);
+        if (local != null)
+        {
+            try
+            {
+                reply.Data = local.Read(request.EntryIndex, request.Offset, length);
+            }
+            catch (Exception ex)
+            {
+                reply.Error = ex.Message;
+            }
+            connection.Post(reply);
+            return;
+        }
+
+        if (relay == null)
+        {
+            reply.Error = "Those files are no longer on the clipboard of the other machine.";
+            connection.Post(reply);
+            return;
+        }
+
+        // The offer belongs to one of our other peers: pull the chunk from there and pass it on. This
+        // waits on the network, so it must not block the receive thread (which also answers pings).
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                reply.Data = relay.Fetch(request.OfferId, request.EntryIndex, request.Offset, length);
+            }
+            catch (Exception ex)
+            {
+                reply.Error = ex.Message;
+            }
+            connection.Post(reply);
+        });
     }
 
     // Paste side: an offer from a peer becomes virtual files on our clipboard, fetched on demand.
@@ -1441,11 +1523,9 @@ public sealed class RoboMouseService : IDisposable
         FileTransferClient client;
         lock (_fileLock)
         {
-            if (_transferClients.TryGetValue(connection.PeerId, out var old))
-            {
-                old.Dispose();
-                _transferClients.Remove(connection.PeerId);
-            }
+            // Our own offer coming back round a ring, or one we already hold via another peer.
+            if (_localOffers.ContainsKey(offer.OfferId) || _remoteOffers.ContainsKey(offer.OfferId))
+                return;
 
             var peerName = connection.PeerName;
             client = new FileTransferClient(peerName, async ct =>
@@ -1455,48 +1535,96 @@ public sealed class RoboMouseService : IDisposable
                     address.ToString(), port, GetPairingKey(), _settings.MachineId, _settings.MachineName,
                     width, height, _settings.LocalPort, ct, ConnectionKind.Transfer);
             });
-            _transferClients[connection.PeerId] = client;
-            _remoteOfferPeerId = connection.PeerId;
-            _remoteOfferId = offer.OfferId;
+
+            RetireRemoteOfferLocked(_currentRemoteOfferId);
+            _remoteOffers[offer.OfferId] = new RemoteOffer { PeerId = connection.PeerId, Client = client };
+            _currentRemoteOfferId = offer.OfferId;
         }
 
         var offerId = offer.OfferId;
         _clipboardManager.SetVirtualFiles(offer, (index, offset, length) => client.Fetch(offerId, index, offset, length));
+
+        // Pass it on so peers that are not connected to the source can paste it too, through us.
+        PostToPeers(offer, except: connection);
     }
 
     private void HandleRemoteOfferRevoked(FileOfferRevokedMessage revoked, PeerConnection connection)
     {
-        bool current;
+        bool known;
         lock (_fileLock)
         {
-            current = _remoteOfferPeerId == connection.PeerId && _remoteOfferId == revoked.OfferId;
+            known = _remoteOffers.TryGetValue(revoked.OfferId, out var offer)
+                    && offer.PeerId == connection.PeerId && !offer.Retired;
+            if (known)
+                RetireRemoteOfferLocked(revoked.OfferId);
         }
-        if (!current)
+        if (!known)
             return;
 
         _clipboardManager.ClearVirtualFiles(revoked.OfferId);
-        ForgetRemoteOffer(connection.PeerId);
+        PostToPeers(revoked, except: connection);
     }
 
+    /// <summary>Retires every offer held from a peer that has gone away.</summary>
     private void ForgetRemoteOffer(string peerId)
     {
-        FileTransferClient? client = null;
-        string? offerId = null;
+        var retired = new List<string>();
         lock (_fileLock)
         {
-            if (_transferClients.Remove(peerId, out var found))
-                client = found;
-            if (_remoteOfferPeerId == peerId)
+            foreach (var (id, offer) in _remoteOffers)
             {
-                offerId = _remoteOfferId;
-                _remoteOfferPeerId = null;
-                _remoteOfferId = null;
+                if (offer.PeerId == peerId && !offer.Retired)
+                {
+                    RetireRemoteOfferLocked(id);
+                    retired.Add(id);
+                }
             }
         }
 
-        if (offerId != null)
-            _clipboardManager.ClearVirtualFiles(offerId);
-        client?.Dispose();
+        foreach (var id in retired)
+        {
+            _clipboardManager.ClearVirtualFiles(id);
+            PostToPeers(new FileOfferRevokedMessage { OfferId = id }, except: null);
+        }
+    }
+
+    /// <summary>Marks a remote offer as no longer current; its transfer client lives on until it has been idle for the grace period.</summary>
+    private void RetireRemoteOfferLocked(string? offerId)
+    {
+        if (offerId == null)
+            return;
+        if (_remoteOffers.TryGetValue(offerId, out var offer))
+        {
+            offer.Retired = true;
+            offer.LastUsedTicks = Environment.TickCount64;
+        }
+        if (_currentRemoteOfferId == offerId)
+            _currentRemoteOfferId = null;
+    }
+
+    /// <summary>Drops retired offers nobody has read from for the grace period.</summary>
+    private void SweepRetiredOffers()
+    {
+        var clients = new List<FileTransferClient>();
+        var cutoff = Environment.TickCount64 - (long)OfferGrace.TotalMilliseconds;
+        lock (_fileLock)
+        {
+            foreach (var (id, offer) in _localOffers.ToList())
+            {
+                if (offer.Retired && offer.LastUsedTicks < cutoff)
+                    _localOffers.Remove(id);
+            }
+            foreach (var (id, offer) in _remoteOffers.ToList())
+            {
+                if (offer.Retired && offer.LastUsedTicks < cutoff)
+                {
+                    _remoteOffers.Remove(id);
+                    clients.Add(offer.Client);
+                }
+            }
+        }
+        foreach (var client in clients)
+            client.Dispose();
     }
 
     #endregion
@@ -1511,9 +1639,10 @@ public sealed class RoboMouseService : IDisposable
 
         lock (_fileLock)
         {
-            foreach (var client in _transferClients.Values)
-                client.Dispose();
-            _transferClients.Clear();
+            foreach (var offer in _remoteOffers.Values)
+                offer.Client.Dispose();
+            _remoteOffers.Clear();
+            _localOffers.Clear();
             foreach (var server in _transferServers)
                 server.Dispose();
             _transferServers.Clear();
