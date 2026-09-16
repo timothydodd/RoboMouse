@@ -71,7 +71,7 @@ Never do per-event file logging on the input path: the hook callback has a syste
 ### Distribution
 
 - `packaging/` holds the MSIX manifest (`runFullTrust`, startup task), Store assets, and `Build-Msix.ps1`. `StartupRegistration` picks the startup task when packaged and the Run key otherwise.
-- `.github/workflows/build.yml` builds/tests on every push, publishes a Native AOT zip and (with Store secrets set) the MSIX on `v*` tags.
+- `.github/workflows/build.yml` builds/tests on every push, publishes a Native AOT zip and (with Store secrets set) the MSIX on `v*` tags. The version comes from the tag (`v1.2.3` → assembly 1.2.3, package 1.2.3.0) and is passed as `-p:Version`; the `<Version>` in the csproj files is only the fallback for local builds, so bump it when tagging.
 
 ### UI (`src/RoboMouse.App/`)
 

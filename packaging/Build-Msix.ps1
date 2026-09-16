@@ -53,7 +53,9 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item $stage -ItemType Directory | Out-Null
 
 Write-Host "Publishing Native AOT win-x64..."
-dotnet publish (Join-Path $root "src\RoboMouse.App") -c Release -r win-x64 -o $stage
+# The assembly carries the same number as the package (without the fourth, Store-reserved part).
+$appVersion = ($Version.Split(".") | Select-Object -First 3) -join "."
+dotnet publish (Join-Path $root "src\RoboMouse.App") -c Release -r win-x64 -o $stage -p:Version=$appVersion
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 Get-ChildItem $stage -Filter *.pdb | Remove-Item
 
