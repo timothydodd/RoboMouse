@@ -44,6 +44,7 @@ $sdkBin = Get-ChildItem $kits -Directory -Filter "10.*" | Sort-Object Name -Desc
     ForEach-Object { Join-Path $_.FullName "x64" } | Where-Object { Test-Path (Join-Path $_ "makeappx.exe") } | Select-Object -First 1
 if (-not $sdkBin) { throw "makeappx.exe not found. Install the Windows 10/11 SDK (Visual Studio Installer > Individual components)." }
 $makeappx = Join-Path $sdkBin "makeappx.exe"
+$makepri = Join-Path $sdkBin "makepri.exe"
 $signtool = Join-Path $sdkBin "signtool.exe"
 
 # --- Publish (Native AOT: a self-contained native executable, so the Store package needs no runtime) --
@@ -64,6 +65,17 @@ $manifest = $manifest.Replace("__PUBLISHER__", $Publisher)
 $manifest = $manifest.Replace("__PUBLISHER_DISPLAY__", $PublisherDisplay)
 $manifest = $manifest.Replace("__VERSION__", $Version)
 Set-Content (Join-Path $stage "AppxManifest.xml") $manifest -Encoding UTF8
+
+# --- Resource index -------------------------------------------------------------------------------
+# The manifest refers to plain names (Assets\StoreLogo.png) while the files carry scale qualifiers
+# (StoreLogo.scale-100.png, ...). resources.pri maps one to the other and lets Windows pick the right
+# size for the display; without it makeappx rejects the manifest.
+$priConfig = Join-Path $root "artifacts\priconfig.xml"
+& $makepri createconfig /cf $priConfig /dq en-US /pv 10.0.0 /o
+if ($LASTEXITCODE -ne 0) { throw "makepri createconfig failed" }
+& $makepri new /pr $stage /cf $priConfig /of (Join-Path $stage "resources.pri") /mn (Join-Path $stage "AppxManifest.xml") /o
+if ($LASTEXITCODE -ne 0) { throw "makepri new failed" }
+Remove-Item $priConfig
 
 # --- Pack -----------------------------------------------------------------------------------------
 New-Item $Output -ItemType Directory -Force | Out-Null
