@@ -115,17 +115,23 @@ internal static class StoreScreenshots
         });
 
         // The window: 1:1 pixels, rounded corners, soft shadow, hovering below the headline.
+        // Two layers: the outer one carries the shadow (a clipped element would cut its own shadow
+        // off), the inner one clips the screenshot to the rounded corners.
         var windowCard = new Border
         {
             Width = frame.PixelSize.Width,
             Height = frame.PixelSize.Height,
             CornerRadius = new CornerRadius(10),
-            ClipToBounds = true,
-            BoxShadow = BoxShadows.Parse("0 28 70 0 #59000000, 0 4 12 0 #33000000"),
+            BoxShadow = BoxShadows.Parse("0 40 90 0 #80000000, 0 12 28 0 #40000000"),
             Background = Brushes.White,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Bottom,
-            Child = new Image { Source = frame, Stretch = Stretch.None }
+            Child = new Border
+            {
+                CornerRadius = new CornerRadius(10),
+                ClipToBounds = true,
+                Child = new Image { Source = frame, Stretch = Stretch.None }
+            }
         };
         // Centre the window in the space below the headline (which ends around y=210).
         const int headerHeight = 210;
