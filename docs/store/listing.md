@@ -53,8 +53,9 @@ sync, share mouse
 
 Generate with `dotnet run --project tools/RoboMouse.UiPreview -- --store docs/store/screenshots`
 (the listing images are committed under `docs/store/screenshots/`).
-They are rendered from the real windows at 1366x768 (the Store minimum for desktop). Upload in
-this order:
+Each is a 1920x1080 marketing frame: a gradient backdrop, a headline and the real window rendered
+1:1 floating below it. Titles, subtitles and colours are in `tools/RoboMouse.UiPreview/StoreScreenshots.cs`.
+Upload in this order:
 
 1. `01-general.png` – settings, General page
 2. `02-network.png` – pairing code and ports

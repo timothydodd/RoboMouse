@@ -28,6 +28,7 @@ internal static class Program
         AppBuilder.Configure<RoboMouse.App.App>()
             .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
             .UseSkia()
+            .WithInterFont()
             .SetupWithoutStarting();
 
         var app = Application.Current!;
