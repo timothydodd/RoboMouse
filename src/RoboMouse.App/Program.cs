@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -7,7 +6,7 @@ using RoboMouse.Core.Logging;
 
 namespace RoboMouse.App;
 
-internal static partial class Program
+internal static class Program
 {
     [STAThread]
     public static int Main(string[] args)
@@ -20,13 +19,14 @@ internal static partial class Program
             return 0;
         }
 
-        // Ensure single instance
-        using var mutex = new Mutex(true, "RoboMouse_SingleInstance", out var isNew);
-        if (!isNew)
+        // One instance per session: a second launch just asks the running copy to show Settings.
+        using var instance = new SingleInstance();
+        if (!instance.IsFirstInstance)
         {
-            MessageBoxW(0, "RoboMouse is already running.", "RoboMouse", MB_OK | MB_ICONINFORMATION);
+            instance.SignalExistingInstance();
             return 0;
         }
+        Instance = instance;
 
         // Clear log file on startup
         SimpleLogger.ClearLog();
@@ -43,13 +43,10 @@ internal static partial class Program
         return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
     }
 
+    /// <summary>The single-instance guard of the running copy; the tray controller listens on it.</summary>
+    public static SingleInstance? Instance { get; private set; }
+
     public static AppBuilder BuildAvaloniaApp() =>
         AppBuilder.Configure<App>()
             .UsePlatformDetect();
-
-    private const uint MB_OK = 0x0;
-    private const uint MB_ICONINFORMATION = 0x40;
-
-    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int MessageBoxW(nint hWnd, string text, string caption, uint type);
 }

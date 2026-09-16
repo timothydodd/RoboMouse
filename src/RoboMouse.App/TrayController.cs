@@ -107,6 +107,13 @@ public sealed class TrayController : IDisposable
         _service.Start();
         UpdateStatus();
 
+        // A second launch of the app asks us to bring up Settings instead of running itself.
+        if (Program.Instance is { } instance)
+        {
+            instance.ShowRequested += () => OnUi(ShowSettings);
+            instance.Listen();
+        }
+
         _ = AutoConnectAsync();
     }
 
@@ -263,7 +270,7 @@ public sealed class TrayController : IDisposable
         _trayIcon.ToolTipText = tip.Length > 63 ? tip[..63] : tip;
     }
 
-    private void ShowSettings()
+    public void ShowSettings()
     {
         if (_settingsWindow == null)
         {
@@ -273,6 +280,8 @@ public sealed class TrayController : IDisposable
         }
         else
         {
+            if (_settingsWindow.WindowState == WindowState.Minimized)
+                _settingsWindow.WindowState = WindowState.Normal;
             _settingsWindow.Show();
             _settingsWindow.Activate();
         }
