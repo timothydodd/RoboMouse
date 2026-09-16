@@ -11,6 +11,7 @@ namespace RoboMouse.UiPreview;
 
 /// <summary>
 /// Renders the app's windows headlessly and saves PNGs: <c>RoboMouse.UiPreview [outDir]</c>.
+/// <c>--store &lt;outDir&gt;</c> writes the 1366x768 Store listing screenshots instead.
 /// Pass resource keys after the directory to print whether the theme defines them instead.
 /// </summary>
 internal static class Program
@@ -18,6 +19,9 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        var store = args.Length > 0 && args[0] == "--store";
+        if (store)
+            args = args.Skip(1).ToArray();
         var outDir = args.Length > 0 ? args[0] : "ui-preview";
         Directory.CreateDirectory(outDir);
 
@@ -27,6 +31,12 @@ internal static class Program
             .SetupWithoutStarting();
 
         var app = Application.Current!;
+        if (store)
+        {
+            StoreScreenshots.Render(outDir);
+            Console.WriteLine($"Store screenshots written to {Path.GetFullPath(outDir)}");
+            return 0;
+        }
         if (args.Length > 1)
         {
             foreach (var key in args.Skip(1))
