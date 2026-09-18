@@ -10,7 +10,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>RoboMouse.App</RootNamespace>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <Version>1.0.3</Version>
+    <Version>1.1.0</Version>
     <Authors>Tim Dodd</Authors>
     <Product>RoboMouse</Product>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
