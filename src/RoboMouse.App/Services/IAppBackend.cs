@@ -1,5 +1,6 @@
 using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Input;
 using RoboMouse.Core.Network;
 using RoboMouse.Core.Network.Protocol;
 
@@ -34,6 +35,16 @@ public interface IAppBackend
 
     void ApplyClipboardSetting();
     void ApplyHotkeySetting();
+
+    /// <summary>True when the separately installed desktop service (UAC / lock screen) is on this machine.</summary>
+    bool DesktopServiceInstalled { get; }
+    DesktopServiceState DesktopServiceState { get; }
+
+    /// <summary>
+    /// Starts or stops the desktop service as needed (one UAC prompt) and connects to or lets go of it.
+    /// Reads the setting already stored. Returns false when the service could not be started.
+    /// </summary>
+    Task<bool> ApplyDesktopServiceSettingAsync(bool enabled);
 }
 
 /// <summary>The real backend: a thin adapter over <see cref="RoboMouseService"/>.</summary>
@@ -67,4 +78,15 @@ public sealed class ServiceBackend : IAppBackend
     public Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct) => _service.TestConnectionAsync(address, port, ct);
     public void ApplyClipboardSetting() => _service.ApplyClipboardSetting();
     public void ApplyHotkeySetting() => _service.ApplyHotkeySetting();
+
+    public bool DesktopServiceInstalled => DesktopServiceControl.IsInstalled;
+    public DesktopServiceState DesktopServiceState => _service.DesktopServiceState;
+
+    public async Task<bool> ApplyDesktopServiceSettingAsync(bool enabled)
+    {
+        // Only touch the service (and prompt) when its running state has to change.
+        var ok = DesktopServiceControl.IsRunning == enabled || await DesktopServiceControl.SetRunningAsync(enabled);
+        _service.ApplyDesktopServiceSetting();
+        return ok || !enabled;
+    }
 }

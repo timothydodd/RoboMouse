@@ -13,5 +13,5 @@ public static class PipeNames
     public const string HelperPrefix = "RoboMouse.Helper.";
 
     /// <summary>Bumped when the pipe message set changes incompatibly; checked in the Hello exchange.</summary>
-    public const int ProtocolVersion = 1;
+    public const int ProtocolVersion = 2;
 }

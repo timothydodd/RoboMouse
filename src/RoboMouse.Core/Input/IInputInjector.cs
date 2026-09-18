@@ -9,6 +9,9 @@ namespace RoboMouse.Core.Input;
 /// </summary>
 public interface IInputInjector
 {
+    /// <summary>True while input applied here also lands on the secure desktop and elevated windows.</summary>
+    bool ReachesSecureDesktop { get; }
+
     /// <summary>Injects relative motion. Returns false when Windows rejected it (UIPI).</summary>
     bool MoveRelative(int deltaX, int deltaY);
 
@@ -26,6 +29,8 @@ public interface IInputInjector
 /// <summary>Injects from this process through <see cref="InputSimulator"/>.</summary>
 public sealed class InProcessInjector : IInputInjector
 {
+    public bool ReachesSecureDesktop => false;
+
     public bool MoveRelative(int deltaX, int deltaY) => InputSimulator.MoveRelative(deltaX, deltaY);
 
     public void MoveTo(int x, int y) => InputSimulator.MoveTo(x, y);

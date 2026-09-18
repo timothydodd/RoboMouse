@@ -17,8 +17,19 @@ internal static unsafe class Program
     private static readonly ManualResetEventSlim s_stop = new(false);
     private static ServiceNative.SERVICE_STATUS s_status;
 
+    private static string? s_appPath;
+    private static string? s_packageFamily;
+
+    /// <summary>
+    /// Options come from the service's registered command line, which only an administrator can set:
+    /// <c>--app-path</c> names the app exe allowed to connect (default: RoboMouse.App.exe beside the
+    /// service) and <c>--package-family</c> additionally allows the Store app with that identity.
+    /// </summary>
     public static int Main(string[] args)
     {
+        s_appPath = GetArg(args, "--app-path");
+        s_packageFamily = GetArg(args, "--package-family");
+
         if (args.Any(a => a.Equals("--console", StringComparison.OrdinalIgnoreCase)))
             return RunConsole();
 
@@ -37,10 +48,18 @@ internal static unsafe class Program
         return 0;
     }
 
+    private static string? GetArg(string[] args, string name)
+    {
+        for (var i = 0; i < args.Length - 1; i++)
+            if (args[i].Equals(name, StringComparison.OrdinalIgnoreCase))
+                return args[i + 1];
+        return null;
+    }
+
     private static int RunConsole()
     {
         Console.WriteLine("RoboMouse service (console mode). Ctrl+C to stop.");
-        s_worker = new ServiceWorker();
+        s_worker = new ServiceWorker(s_appPath, s_packageFamily);
         s_worker.Start();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; s_stop.Set(); };
         s_stop.Wait();
@@ -63,7 +82,7 @@ internal static unsafe class Program
 
         try
         {
-            s_worker = new ServiceWorker();
+            s_worker = new ServiceWorker(s_appPath, s_packageFamily);
             s_worker.Start();
         }
         catch (Exception ex)

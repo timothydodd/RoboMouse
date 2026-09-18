@@ -9,24 +9,21 @@ public enum PipeOpcode : byte
     // Handshake (either direction)
     Hello = 0x01,
 
-    // App -> service (and relayed service -> helper): what the local input layer should do
-    BeginControlling = 0x10,   // start capturing local input on the active desktop
-    EndControlling = 0x11,     // stop capturing, restore cursor
+    // App -> service, relayed service -> helper: input to apply on whichever desktop is active.
+    // The helper only ever injects; nothing is captured on its side (see plans/uac-service.md).
     InjectMotion = 0x12,       // relative mouse move (dx, dy)
     InjectButton = 0x13,       // mouse button/wheel event (MouseEventType + wheel delta)
     InjectKey = 0x14,          // keyboard event (vk, scan, event type, extended)
-    BeginControlled = 0x15,    // start injecting (a remote is driving this machine)
-    EndControlled = 0x16,      // stop injecting, release held input
-    HideCursor = 0x17,         // hide the local cursor while controlling
-    RestoreCursor = 0x18,
+    MoveTo = 0x19,             // absolute cursor placement (x, y)
+    QueryCursor = 0x1A,        // asks for a CursorPosition reply
 
-    // Service/helper -> app: captured local input and status
-    CapturedMotion = 0x20,     // raw hardware motion (dx, dy)
-    CapturedButton = 0x21,
-    CapturedKey = 0x22,
-    EdgeHit = 0x23,            // the pointer reached a screen edge (edge, normalized position)
+    // Helper -> service -> app
+    CursorPosition = 0x26,     // reply to QueryCursor (x, y)
+
+    // Service -> app: status
     DesktopChanged = 0x24,     // the active input desktop changed (isSecure, name)
-    HelperReady = 0x25,        // a helper attached for the named desktop
+    HelperReady = 0x25,        // a helper is attached and injection will land
+    HelperLost = 0x27,         // the helper went away; inject in-process until HelperReady again
 
     Error = 0xF0
 }
@@ -99,17 +96,6 @@ public readonly struct PipeMessage
          BinaryPrimitives.ReadUInt32LittleEndian(Payload.AsSpan(4)),
          BinaryPrimitives.ReadInt32LittleEndian(Payload.AsSpan(8)),
          Payload[12] != 0);
-
-    public static PipeMessage EdgeHit(int edge, float normalized)
-    {
-        var p = new byte[8];
-        BinaryPrimitives.WriteInt32LittleEndian(p.AsSpan(0), edge);
-        BinaryPrimitives.WriteSingleLittleEndian(p.AsSpan(4), normalized);
-        return new PipeMessage(PipeOpcode.EdgeHit, p);
-    }
-
-    public (int edge, float normalized) ReadEdgeHit() =>
-        (BinaryPrimitives.ReadInt32LittleEndian(Payload), BinaryPrimitives.ReadSingleLittleEndian(Payload.AsSpan(4)));
 
     public static PipeMessage DesktopChanged(bool isSecure, string name)
     {

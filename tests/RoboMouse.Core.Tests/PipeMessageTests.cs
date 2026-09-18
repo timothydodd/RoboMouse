@@ -39,12 +39,11 @@ public class PipeMessageTests
     }
 
     [Fact]
-    public void EdgeHit_RoundTrips()
+    public void CursorPosition_RoundTrips()
     {
-        var m = RoundTrip(PipeMessage.EdgeHit(3, 0.42f));
-        var (edge, normalized) = m.ReadEdgeHit();
-        Assert.Equal(3, edge);
-        Assert.Equal(0.42f, normalized, precision: 5);
+        var m = RoundTrip(PipeMessage.Motion(PipeOpcode.CursorPosition, -1920, 1079));
+        Assert.Equal(PipeOpcode.CursorPosition, m.Opcode);
+        Assert.Equal((-1920, 1079), m.ReadMotion());
     }
 
     [Theory]

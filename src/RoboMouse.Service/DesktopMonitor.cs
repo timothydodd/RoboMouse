@@ -1,10 +1,11 @@
 namespace RoboMouse.Service;
 
 /// <summary>
-/// Polls the active input desktop and console session and raises an event when either changes. The
-/// service uses this to know when a helper must be (re)launched onto a new desktop, including the
-/// secure "Winlogon" desktop of a UAC prompt or the lock screen. Polling avoids needing a window and
-/// a message pump inside the service; 250 ms is well under human reaction time for a desktop switch.
+/// Polls the console session and the input desktop and raises an event when either changes. The
+/// session is what the service acts on (a helper belongs to one session). The desktop name is only
+/// informational: run by the SCM this process is in session 0 and sees session 0's desktops, not the
+/// user's, which is why the helper follows the input desktop itself. Polling avoids needing a window
+/// and a message pump inside the service.
 /// </summary>
 internal sealed class DesktopMonitor : IDisposable
 {

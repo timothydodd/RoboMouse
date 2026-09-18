@@ -18,12 +18,22 @@ internal sealed partial class ControlPipeServer : IDisposable
 {
     private readonly CancellationTokenSource _cts = new();
     private readonly string _expectedAppPath;
+    private readonly string? _expectedPackageFamily;
     private Task? _loop;
 
-    /// <summary>Raised with a connected, verified app connection. The handler owns it until it closes.</summary>
-    public event Func<PipeConnection, CancellationToken, Task>? ClientConnected;
+    /// <summary>
+    /// Raised with a connected, verified app connection and the session the app runs in. The handler
+    /// owns the connection until it closes.
+    /// </summary>
+    public event Func<PipeConnection, uint, CancellationToken, Task>? ClientConnected;
 
-    public ControlPipeServer(string expectedAppPath) => _expectedAppPath = expectedAppPath;
+    /// <param name="expectedAppPath">Full path of the directly installed RoboMouse.App.exe.</param>
+    /// <param name="expectedPackageFamily">Package family name of the Store app, when that is allowed too.</param>
+    public ControlPipeServer(string expectedAppPath, string? expectedPackageFamily)
+    {
+        _expectedAppPath = expectedAppPath;
+        _expectedPackageFamily = expectedPackageFamily;
+    }
 
     public void Start()
     {
@@ -41,7 +51,7 @@ internal sealed partial class ControlPipeServer : IDisposable
                 using var server = CreateServer();
                 await server.WaitForConnectionAsync(ct).ConfigureAwait(false);
 
-                if (!IsCallerAllowed(server))
+                if (!IsCallerAllowed(server, out var appSession))
                 {
                     Log.Write("Rejected a pipe client that is not the app in the console session");
                     server.Disconnect();
@@ -51,7 +61,7 @@ internal sealed partial class ControlPipeServer : IDisposable
                 using var connection = new PipeConnection(server);
                 var handler = ClientConnected;
                 if (handler != null)
-                    await handler(connection, ct).ConfigureAwait(false);
+                    await handler(connection, appSession, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -82,22 +92,33 @@ internal sealed partial class ControlPipeServer : IDisposable
             inBufferSize: 0, outBufferSize: 0, security);
     }
 
-    /// <summary>The connecting process must be RoboMouse.App in the active console session.</summary>
-    private bool IsCallerAllowed(NamedPipeServerStream server)
+    /// <summary>
+    /// The connecting process must be RoboMouse.App in the active console session: either the exe at the
+    /// installed path, or (for the Store app, which lives under WindowsApps) RoboMouse.App.exe running
+    /// with our package identity. Neither location is writable by a normal user.
+    /// </summary>
+    private bool IsCallerAllowed(NamedPipeServerStream server, out uint appSession)
     {
+        appSession = 0;
         try
         {
-            var pid = GetNamedPipeClientProcessId(server.SafePipeHandle.DangerousGetHandle(), out var clientPid)
-                ? clientPid : 0u;
-            if (pid == 0)
+            if (!TryGetClientProcessId(server, out var pid))
                 return false;
 
             using var process = System.Diagnostics.Process.GetProcessById((int)pid);
-            var path = process.MainModule?.FileName;
-            if (path == null || !string.Equals(path, _expectedAppPath, StringComparison.OrdinalIgnoreCase))
+            appSession = (uint)process.SessionId;
+            if (appSession != ServiceNative.WTSGetActiveConsoleSessionId())
                 return false;
 
-            return (uint)process.SessionId == ServiceNative.WTSGetActiveConsoleSessionId();
+            var path = process.MainModule?.FileName;
+            if (path == null)
+                return false;
+            if (string.Equals(path, _expectedAppPath, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return _expectedPackageFamily != null
+                && string.Equals(Path.GetFileName(path), "RoboMouse.App.exe", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(GetPackageFamily(pid), _expectedPackageFamily, StringComparison.OrdinalIgnoreCase);
         }
         catch (Exception ex)
         {
@@ -105,6 +126,37 @@ internal sealed partial class ControlPipeServer : IDisposable
             return false;
         }
     }
+
+    public static bool TryGetClientProcessId(NamedPipeServerStream server, out uint pid) =>
+        GetNamedPipeClientProcessId(server.SafePipeHandle.DangerousGetHandle(), out pid) && pid != 0;
+
+    private static unsafe string? GetPackageFamily(uint pid)
+    {
+        const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        var handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (handle == 0)
+            return null;
+        try
+        {
+            var buffer = stackalloc char[256];
+            uint length = 256;
+            return GetPackageFamilyName(handle, &length, buffer) == 0 ? new string(buffer) : null;
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial nint OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CloseHandle(nint handle);
+
+    [LibraryImport("kernel32.dll")]
+    private static unsafe partial int GetPackageFamilyName(nint process, uint* packageFamilyNameLength, char* packageFamilyName);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

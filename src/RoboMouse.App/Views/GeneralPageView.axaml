@@ -43,6 +43,13 @@
         <ToggleSwitch IsChecked="{Binding WrapAround}" />
       </views:SettingCard>
 
+      <TextBlock Classes="section" Text="Secure desktop" IsVisible="{Binding DesktopServiceInstalled}" />
+      <views:SettingCard Header="Control UAC prompts and the lock screen"
+                         Description="{Binding DesktopServiceDescription}"
+                         IsVisible="{Binding DesktopServiceInstalled}">
+        <ToggleSwitch IsChecked="{Binding UseDesktopService}" />
+      </views:SettingCard>
+
       <TextBlock Classes="section" Text="Display" />
       <views:SettingCard Header="When the mouse arrives on this screen">
         <ComboBox ItemsSource="{Binding HighlightChoices}" SelectedItem="{Binding SelectedHighlight}" Width="280" />

@@ -6,16 +6,18 @@ using RoboMouse.Core.Input;
 namespace RoboMouse.Helper;
 
 /// <summary>
-/// Launched by the service as: <c>RoboMouse.Helper --pipe &lt;name&gt;</c>. Connects back to the service,
-/// completes the handshake and reports the desktop it is running on. Phase 1 stops there; Phase 3 adds
-/// the real input relay (install the hooks + raw input, forward captured events up, apply injection
-/// commands down) using the existing <see cref="MouseHook"/>, <see cref="KeyboardHook"/>,
-/// <see cref="RawMouseInput"/> and <see cref="InputSimulator"/>.
+/// Launched by the service into the console session as: <c>RoboMouse.Helper --pipe &lt;name&gt;</c>.
+/// Connects back to the service and applies the injection commands it relays from the app, on
+/// whichever desktop is receiving input (including the secure desktop). It injects and reports the
+/// cursor position; it installs no hooks and never reads input.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal static class Program
 {
-    public static async Task<int> Main(string[] args)
+    /// <summary>How often the inject thread checks that it is still on the input desktop.</summary>
+    private const long DesktopCheckMs = 100;
+
+    public static int Main(string[] args)
     {
         var pipeName = GetArg(args, "--pipe");
         if (pipeName == null)
@@ -25,31 +27,135 @@ internal static class Program
         }
 
         using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-        await client.ConnectAsync(5000).ConfigureAwait(false);
+        client.Connect(5000);
         using var pipe = new PipeConnection(client);
 
-        await pipe.SendAsync(PipeMessage.Hello()).ConfigureAwait(false);
-        await pipe.SendAsync(new PipeMessage(PipeOpcode.HelperReady)).ConfigureAwait(false);
-
-        while (pipe.IsConnected)
-        {
-            var message = await pipe.ReceiveAsync().ConfigureAwait(false);
-            if (message is null)
-                break;
-
-            switch (message.Value.Opcode)
-            {
-                case PipeOpcode.Hello:
-                    break;
-                // TODO Phase 3: BeginControlling/EndControlling install/remove hooks + raw input and
-                //   forward CapturedMotion/CapturedButton/CapturedKey/EdgeHit; Inject*/BeginControlled/
-                //   EndControlled drive InputSimulator; HideCursor/RestoreCursor.
-                default:
-                    break;
-            }
-        }
+        // Everything runs on this one plain thread so SetThreadDesktop is allowed and commands are
+        // applied strictly in the order the app sent them.
+        var thread = new Thread(() => Run(pipe)) { IsBackground = false, Name = "Inject" };
+        thread.Start();
+        thread.Join();
         return 0;
     }
+
+    private static void Run(PipeConnection pipe)
+    {
+        using var desktop = new InputDesktop();
+        var heldKeys = new Dictionary<int, (uint Scan, bool Extended)>();
+        var heldButtons = new HashSet<MouseEventType>();
+        long lastCheck = 0;
+
+        try
+        {
+            desktop.Follow();
+            Send(pipe, PipeMessage.Hello());
+            Send(pipe, new PipeMessage(PipeOpcode.HelperReady));
+
+            while (pipe.IsConnected)
+            {
+                var received = pipe.ReceiveAsync().GetAwaiter().GetResult();
+                if (received is null)
+                    break;
+                var message = received.Value;
+
+                var now = Environment.TickCount64;
+                if (now - lastCheck >= DesktopCheckMs)
+                {
+                    lastCheck = now;
+                    desktop.Follow();
+                }
+
+                switch (message.Opcode)
+                {
+                    case PipeOpcode.InjectMotion:
+                    {
+                        var (dx, dy) = message.ReadMotion();
+                        // A failed call right after a desktop switch means we are still on the old one.
+                        if (!InputSimulator.MoveRelative(dx, dy) && desktop.Follow())
+                            InputSimulator.MoveRelative(dx, dy);
+                        break;
+                    }
+                    case PipeOpcode.MoveTo:
+                    {
+                        var (x, y) = message.ReadMotion();
+                        InputSimulator.MoveTo(x, y);
+                        break;
+                    }
+                    case PipeOpcode.InjectButton:
+                    {
+                        var (eventType, wheelDelta) = message.ReadButton();
+                        var type = (MouseEventType)eventType;
+                        TrackButton(heldButtons, type);
+                        if (!InputSimulator.SimulateMouseEvent(type, wheelDelta: wheelDelta) && desktop.Follow())
+                            InputSimulator.SimulateMouseEvent(type, wheelDelta: wheelDelta);
+                        break;
+                    }
+                    case PipeOpcode.InjectKey:
+                    {
+                        var (vk, scan, eventType, extended) = message.ReadKey();
+                        var type = (KeyboardEventType)eventType;
+                        if (type is KeyboardEventType.KeyUp or KeyboardEventType.SysKeyUp)
+                            heldKeys.Remove(vk);
+                        else
+                            heldKeys[vk] = (scan, extended);
+                        if (!InputSimulator.SimulateKeyboardEvent((Keys)vk, scan, type, extended) && desktop.Follow())
+                            InputSimulator.SimulateKeyboardEvent((Keys)vk, scan, type, extended);
+                        break;
+                    }
+                    case PipeOpcode.QueryCursor:
+                    {
+                        var (x, y) = InputSimulator.GetCursorPosition();
+                        Send(pipe, PipeMessage.Motion(PipeOpcode.CursorPosition, x, y));
+                        break;
+                    }
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // The service went away or the pipe broke; fall through and let go of anything held.
+        }
+        finally
+        {
+            // Never leave a key or button stuck down on a desktop nobody else can reach.
+            desktop.Follow();
+            foreach (var (vk, (scan, extended)) in heldKeys)
+                InputSimulator.SimulateKeyboardEvent((Keys)vk, scan, KeyboardEventType.KeyUp, extended);
+            foreach (var button in heldButtons)
+                InputSimulator.SimulateMouseEvent(ReleaseOf(button));
+        }
+    }
+
+    private static void TrackButton(HashSet<MouseEventType> held, MouseEventType type)
+    {
+        switch (type)
+        {
+            case MouseEventType.LeftDown:
+            case MouseEventType.RightDown:
+            case MouseEventType.MiddleDown:
+            case MouseEventType.XButton1Down:
+            case MouseEventType.XButton2Down:
+                held.Add(type);
+                break;
+            case MouseEventType.LeftUp: held.Remove(MouseEventType.LeftDown); break;
+            case MouseEventType.RightUp: held.Remove(MouseEventType.RightDown); break;
+            case MouseEventType.MiddleUp: held.Remove(MouseEventType.MiddleDown); break;
+            case MouseEventType.XButton1Up: held.Remove(MouseEventType.XButton1Down); break;
+            case MouseEventType.XButton2Up: held.Remove(MouseEventType.XButton2Down); break;
+        }
+    }
+
+    private static MouseEventType ReleaseOf(MouseEventType down) => down switch
+    {
+        MouseEventType.LeftDown => MouseEventType.LeftUp,
+        MouseEventType.RightDown => MouseEventType.RightUp,
+        MouseEventType.MiddleDown => MouseEventType.MiddleUp,
+        MouseEventType.XButton1Down => MouseEventType.XButton1Up,
+        _ => MouseEventType.XButton2Up
+    };
+
+    private static void Send(PipeConnection pipe, PipeMessage message) =>
+        pipe.SendAsync(message).GetAwaiter().GetResult();
 
     private static string? GetArg(string[] args, string name)
     {

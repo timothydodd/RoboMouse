@@ -81,6 +81,12 @@ public class AppSettings
     public int EdgeThreshold { get; set; } = 0;
 
     /// <summary>
+    /// Apply a remote controller's input through the separately installed RoboMouse desktop service, so
+    /// UAC prompts, the lock screen and elevated windows can be driven. Ignored when it is not installed.
+    /// </summary>
+    public bool UseDesktopService { get; set; } = false;
+
+    /// <summary>
     /// Whether the debug panel is enabled.
     /// </summary>
     public bool DebugPanelEnabled { get; set; } = false;

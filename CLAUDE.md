@@ -89,15 +89,23 @@ Separate from the Store app, shipped in the direct-download installer, to drive 
 for the design and security boundary. New projects:
 
 - `RoboMouse.Contracts` — dependency-free pipe names, message envelope (`PipeMessage`) and transport
-  (`PipeConnection`), shared by app/service/helper. Round-trip tests in the Core test project.
-- `RoboMouse.Service` — LocalSystem Windows service (SCM plumbing in `ServiceNative`/`Program`,
-  `DesktopMonitor` polls the active desktop/session, `ControlPipeServer` hosts the ACL'd control pipe
-  and verifies the caller is RoboMouse.App in the console session). Run with `--console` to test.
-- `RoboMouse.Helper` — per-desktop SYSTEM input process the service will spawn (skeleton).
+  (`PipeConnection`), shared by app/service/helper. Pipe protocol version 2, checked in `Hello`.
+- `RoboMouse.Service` — LocalSystem Windows service (SCM plumbing in `ServiceNative`/`Program`).
+  `ControlPipeServer` hosts the ACL'd control pipe and verifies the caller is RoboMouse.App in the
+  console session (`--app-path`, or `--package-family` for the Store app). While an app is connected,
+  `ServiceWorker` keeps one `HelperHost` alive in the app's session and relays injection commands.
+  Run with `--console` to test.
+- `RoboMouse.Helper` — SYSTEM process in the user's session. **Injection only** (no hooks, no raw
+  input): one thread applies commands and follows the input desktop with `SetThreadDesktop`
+  (`InputDesktop`), so it reaches UAC prompts and the lock screen.
+- Core: everything applied on a controller's behalf goes through `IInputInjector`.
+  `DesktopServiceInjector` routes over the pipe when the service is ready and falls back to
+  `InProcessInjector` otherwise; `DesktopServiceControl` detects/starts the service. Setting:
+  `UseDesktopService`; the General page card only shows when the service is installed.
 
-Phase 1 (contracts + skeletons that build) is done; the input abstraction, real input relay, app
-integration and installer are Phases 2-5 in the plan. Nothing here is wired into the app's runtime
-path yet, and the SYSTEM parts need real-Windows testing (CI only proves they compile).
+Phases 1-4 are written; the SYSTEM parts have never run on real Windows (CI and WSL only prove they
+compile; the app side of the pipe has loopback tests). `packaging/Install-DevService.ps1` registers
+the service for testing. The installers (Phase 5) are not started.
 
 ### Native AOT
 

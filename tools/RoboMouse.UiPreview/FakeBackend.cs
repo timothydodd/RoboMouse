@@ -34,6 +34,9 @@ internal sealed class FakeBackend : IAppBackend
         Task.FromResult(new ConnectionTestResult { Success = true, PeerName = "Laptop", PeerScreenWidth = 2560, PeerScreenHeight = 1440, RoundTripMs = 2 });
     public void ApplyClipboardSetting() { }
     public void ApplyHotkeySetting() { }
+    public bool DesktopServiceInstalled => true;
+    public RoboMouse.Core.Input.DesktopServiceState DesktopServiceState => RoboMouse.Core.Input.DesktopServiceState.Active;
+    public Task<bool> ApplyDesktopServiceSettingAsync(bool enabled) => Task.FromResult(true);
 
     public static AppSettings SampleSettings() => new()
     {

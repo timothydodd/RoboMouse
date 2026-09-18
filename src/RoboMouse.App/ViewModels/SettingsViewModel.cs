@@ -56,7 +56,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _dialogs = dialogs;
         Version = version;
 
-        General = new GeneralPageViewModel(settings);
+        General = new GeneralPageViewModel(settings, backend.DesktopServiceInstalled, backend.DesktopServiceState);
         Network = new NetworkPageViewModel(settings, dialogs);
         Peers = new PeersPageViewModel(settings, backend, dialogs);
         Layout = new LayoutPageViewModel(settings);
@@ -125,6 +125,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         _settings.EdgeHighlight = General.SelectedHighlight.Style;
         _settings.WrapAround = General.WrapAround;
         _settings.DebugPanelEnabled = General.ShowDebugPanel;
+        var desktopServiceChanged = _settings.UseDesktopService != General.UseDesktopService;
+        _settings.UseDesktopService = General.UseDesktopService;
         _settings.LocalPort = (int)Network.LocalPort;
         _settings.DiscoveryPort = (int)Network.DiscoveryPort;
         Layout.Save();
@@ -132,6 +134,14 @@ public sealed partial class SettingsViewModel : ObservableObject
         _settings.Save();
         _backend.ApplyClipboardSetting();
         _backend.ApplyHotkeySetting();
+        if (desktopServiceChanged && !await _backend.ApplyDesktopServiceSettingAsync(_settings.UseDesktopService))
+        {
+            _settings.UseDesktopService = false;
+            _settings.Save();
+            General.UseDesktopService = false;
+            await _dialogs.WarnAsync("The RoboMouse desktop service could not be started, so UAC prompts and the lock screen stay out of reach. Approve the Windows prompt when turning this on.");
+            return;
+        }
         _ = StartupRegistration.ApplyAsync(_settings.StartWithWindows);
 
         CloseRequested?.Invoke(this, EventArgs.Empty);
@@ -165,6 +175,11 @@ public sealed partial class GeneralPageViewModel : PageViewModel
     [ObservableProperty] private HighlightChoice _selectedHighlight;
     [ObservableProperty] private bool _wrapAround;
     [ObservableProperty] private bool _showDebugPanel;
+    [ObservableProperty] private bool _useDesktopService;
+
+    /// <summary>The desktop service is a separate download; the card only appears once it is installed.</summary>
+    public bool DesktopServiceInstalled { get; }
+    public string DesktopServiceDescription { get; }
 
     public bool IsDebugBuild =>
 #if DEBUG
@@ -173,8 +188,17 @@ public sealed partial class GeneralPageViewModel : PageViewModel
         false;
 #endif
 
-    public GeneralPageViewModel(AppSettings settings)
+    public GeneralPageViewModel(AppSettings settings, bool desktopServiceInstalled = false, DesktopServiceState desktopServiceState = DesktopServiceState.Off)
     {
+        DesktopServiceInstalled = desktopServiceInstalled;
+        _useDesktopService = settings.UseDesktopService;
+        DesktopServiceDescription = "Lets the PC controlling this one click UAC prompts, sign in at the lock screen and use windows running as administrator. " + desktopServiceState switch
+        {
+            DesktopServiceState.Active => "Working now.",
+            DesktopServiceState.Connecting => "Waiting for the RoboMouse desktop service to answer.",
+            DesktopServiceState.Incompatible => "The installed desktop service is a different version from this app; update it.",
+            _ => "Windows asks for permission once when you turn this on."
+        };
         _machineName = settings.MachineName;
         _startWithWindows = settings.StartWithWindows;
         _startMinimized = settings.StartMinimized;

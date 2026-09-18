@@ -18,17 +18,21 @@ it does today, minus the secure-desktop cases.
 RoboMouse.App (normal user)  ── named pipe ──▶  RoboMouse.Service (LocalSystem)
    networking, UI, the brain                      desktop/session watch, spawns helpers
         ▲                                                    │ CreateProcessAsUser onto winsta0\<desktop>
-        └───────────── named pipe ◀──────────────  RoboMouse.Helper (SYSTEM, per desktop)
-                       input events / commands              hooks, raw input, SendInput
+                                                   RoboMouse.Helper (SYSTEM, in the app's session)
+                                                     SendInput / cursor position, follows the input desktop
 ```
 
 - **RoboMouse.Contracts** — a tiny shared library: the pipe message types and the pipe names. No
   Windows dependency, referenced by app, service and helper.
-- **RoboMouse.Service** — LocalSystem Windows service. Watches session-change and desktop-switch
-  events; whenever the input desktop changes it ensures a helper is running on it. Owns the control
-  pipe the app connects to. Never does networking.
-- **RoboMouse.Helper** — short-lived per-desktop process launched by the service with the SYSTEM
-  token bound to `winsta0\<desktop>`. **Injection only**: it applies `InputSimulator` calls and
+- **RoboMouse.Service** — LocalSystem Windows service. Owns the control pipe the app connects to
+  and, only while an app is connected, keeps one helper running in that app's session, relaying the
+  app's injection commands to it in order. Never does networking.
+- **RoboMouse.Helper** — started by the service with a copy of its SYSTEM token re-targeted at the
+  app's session (`SetTokenInformation(TokenSessionId)` + `CreateProcessAsUser`). One helper per
+  session, not per desktop: its single inject thread calls `OpenInputDesktop` + `SetThreadDesktop`
+  to follow input onto `Winlogon` and back (checked every 100 ms and on any failed `SendInput`), so
+  there is no process spawn at the moment a UAC prompt appears. It releases any held keys/buttons
+  when the pipe closes. **Injection only**: it applies `InputSimulator` calls and
   answers cursor-position queries. It installs no hooks and reads no raw input (see the seam below).
 - **RoboMouse.App** — unchanged brain. When the service is present and enabled, the app routes input
   through the service instead of injecting in-process, so the helper on the current desktop applies
@@ -48,7 +52,7 @@ a password logger by construction. The helper never sees a keystroke it was not 
 `SimulateMouseEvent`, `SimulateKeyboardEvent`:
 
 - `InProcessInjector` — today's `InputSimulator` calls (default).
-- `ServiceInjector` (Phase 3) — sends the same calls over the control pipe; the service forwards them
+- `DesktopServiceInjector` — sends the same calls over the control pipe; the service forwards them
   to the helper on the active desktop. `GetCursorPosition` has to go through it too, because
   `GetCursorPos` fails from a process that is not on the input desktop, and the return-edge check
   depends on it. Falls back to in-process when the pipe is down.
@@ -76,11 +80,15 @@ The service and helper run as SYSTEM and inject input, so the trust rules are ex
    console session's user; the service additionally checks the connecting process's image path is the
    installed `RoboMouse.App.exe` and that it runs in the active console session. No elevation, no
    other process, no other session.
-2. **The helper only acts on the desktop it was launched onto** and only on commands from the
-   service, over an inherited pipe handle, never a named endpoint other processes could reach.
+2. **The helper only takes commands from the service.** Its pipe has a random name, one instance and
+   an ACL admitting only the service's own identity (SYSTEM), and the service checks the connecting
+   pid is the helper it just started.
+   **Input never crosses sessions:** the helper runs in the session the verified app runs in, and is
+   stopped while another session owns the console (fast user switching).
 3. **The service does no networking and parses no untrusted data.** All network traffic stays in the
    normal-user app; the service only relays already-validated input intents.
-4. **The helper is spawned per desktop and dies with it**, so a captured token is never long-lived.
+4. **The helper exists only while the app is connected**, so nothing SYSTEM-level sits in the user's
+   session when RoboMouse is not running.
 5. Injection on the secure desktop is limited to what Winlogon allows (mouse move, click, keystrokes
    to the credential UI); the service never reads secure-desktop contents.
 
@@ -119,12 +127,15 @@ The service and helper run as SYSTEM and inject input, so the trust rules are ex
    wired but not yet driving input. Not referenced by the app's runtime path.
 2. **Injection seam** in Core (done): `IInputInjector` + `InProcessInjector`, `RoboMouseService`
    injects only through it. No behaviour change.
-3. **ServiceInjector + helper relay**: inject/cursor-query messages in Contracts, service spawns the
-   helper on the input desktop (`CreateProcessAsUser`, inherited pipe) and forwards to it, helper
-   applies them. Testable on Windows with `--console` from an elevated prompt via PsExec `-s`.
-4. **App integration**: detect the service, the enable toggle (one elevated `sc config`/`sc start`),
-   pass `ServiceInjector` to `RoboMouseService`, and stop reporting `InputStatus.SecureDesktop` while
-   the service path is live. Package-family caller check lands here.
+3. **Helper relay** (written, untested on Windows): pipe protocol 2 (`InjectMotion/Button/Key`,
+   `MoveTo`, `QueryCursor`/`CursorPosition`, `HelperReady`/`HelperLost`), `HelperHost`/`HelperLauncher`
+   in the service, the inject loop + `InputDesktop` in the helper.
+4. **App integration** (written, untested on Windows): `DesktopServiceInjector` (falls back to
+   in-process whenever the service is not ready; loopback-tested), `DesktopServiceControl`
+   (SCM query + one elevated `sc config`/`sc start`), the `UseDesktopService` setting and the General
+   page card shown only when the service is installed, `InputStatus` reports no block while routed.
+   The service accepts `--app-path` and `--package-family` (Store app) on its registered command
+   line. `packaging/Install-DevService.ps1` registers it for testing until the installer exists.
 5. **Installers + release workflow**: the two Inno Setup scripts under `packaging/installer/`, built
    and attached by `build.yml` on `v*` tags.
 6. (optional) Store packaging of the service.
@@ -135,3 +146,16 @@ Everything below the pipe (SYSTEM token, `CreateProcessAsUser` onto `winsta0\Win
 injection) can only be verified on real Windows, ideally two machines. CI confirms it compiles and
 the contract round-trips; correctness needs manual runs. Treat each phase as "builds + unit tests
 pass" until validated on Windows.
+
+### First Windows test checklist
+
+1. Build the app, run `packaging\Install-DevService.ps1` from an elevated PowerShell on the machine
+   that will be *controlled*, start the app, turn on the General page toggle (approve the one UAC).
+2. `%ProgramData%\RoboMouse\service.log` should show the app connecting and a helper pid; the app log
+   shows "Desktop service ready".
+3. From the other PC: move/click/type normally (regression), then trigger a UAC prompt and click
+   Yes, use an elevated window (Task Manager), lock with Win+L and sign back in, hand the mouse back
+   across the edge while a UAC prompt is up.
+4. Known limits: Ctrl+Alt+Del cannot be injected with SendInput (needs `SendSAS` + policy), so a
+   machine that requires it at sign-in still needs a local keypress; the pre-login screen after a
+   reboot has no app running, so nothing connects until someone signs in.

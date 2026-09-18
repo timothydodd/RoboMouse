@@ -33,6 +33,7 @@ public sealed class RoboMouseService : IDisposable
     private readonly KeyboardHook _keyboardHook;
     private readonly RawMouseInput _rawMouse;
     private readonly IInputInjector _injector;
+    private readonly DesktopServiceInjector? _serviceInjector;
     private readonly ClipboardManager _clipboardManager;
     private readonly PeerDiscovery _discovery;
     private readonly ConnectionListener _listener;
@@ -183,7 +184,8 @@ public sealed class RoboMouseService : IDisposable
     public RoboMouseService(AppSettings settings, IInputInjector? injector = null)
     {
         _settings = settings;
-        _injector = injector ?? new InProcessInjector();
+        // Inert (plain in-process injection) until the desktop-service setting turns it on.
+        _injector = injector ?? (_serviceInjector = new DesktopServiceInjector());
         _screenInfo = new ScreenInfo();
         _cursorManager = new CursorManager(_screenInfo);
 
@@ -231,6 +233,7 @@ public sealed class RoboMouseService : IDisposable
     /// <summary>Starts the service.</summary>
     public void Start()
     {
+        ApplyDesktopServiceSetting();
         _listener.Start();
         _discovery.Start();
 
@@ -872,6 +875,16 @@ public sealed class RoboMouseService : IDisposable
     private Hotkey? _hotkey;
 
     /// <summary>Re-reads the toggle hotkey from settings.</summary>
+    /// <summary>How remote input is being applied: in-process, or through the desktop service.</summary>
+    public DesktopServiceState DesktopServiceState => _serviceInjector?.State ?? DesktopServiceState.Off;
+
+    /// <summary>Connects to or lets go of the desktop service to match the current setting.</summary>
+    public void ApplyDesktopServiceSetting()
+    {
+        if (_serviceInjector != null)
+            _serviceInjector.Enabled = _settings.UseDesktopService;
+    }
+
     public void ApplyHotkeySetting()
     {
         _hotkey = Hotkey.Parse(_settings.ToggleHotkey);
@@ -1289,7 +1302,9 @@ public sealed class RoboMouseService : IDisposable
         InputBlockReason reason;
         try
         {
-            reason = InputSimulator.IsSecureDesktopActive() ? InputBlockReason.SecureDesktop
+            // Through the desktop service input lands on the secure desktop and elevated windows too.
+            reason = _injector.ReachesSecureDesktop ? InputBlockReason.None
+                : InputSimulator.IsSecureDesktopActive() ? InputBlockReason.SecureDesktop
                 : _injectionBlocked ? InputBlockReason.ElevatedWindow
                 : InputBlockReason.None;
         }
@@ -1657,6 +1672,7 @@ public sealed class RoboMouseService : IDisposable
         }
 
         _desktopPollTimer?.Dispose();
+        _serviceInjector?.Dispose();
         _rawMouse.Dispose();
         _mouseHook.Dispose();
         _keyboardHook.Dispose();
