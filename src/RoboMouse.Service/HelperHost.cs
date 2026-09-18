@@ -141,7 +141,7 @@ internal sealed class HelperHost : IDisposable
         return NamedPipeServerStreamAcl.Create(
             name, PipeDirection.InOut, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous,
-            inBufferSize: 0, outBufferSize: 0, security);
+            inBufferSize: PipeNames.BufferSize, outBufferSize: PipeNames.BufferSize, security);
     }
 
     public void Dispose()

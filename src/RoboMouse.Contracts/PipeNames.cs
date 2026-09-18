@@ -12,6 +12,12 @@ public static class PipeNames
     /// <summary>Prefix for the per-helper pipe the service hands each helper it spawns (name + a GUID).</summary>
     public const string HelperPrefix = "RoboMouse.Helper.";
 
+    /// <summary>
+    /// Buffer size for every pipe server. It must not be zero: an unbuffered pipe completes a write only
+    /// when the other end reads it, and both ends open by sending Hello, so each would wait on the other.
+    /// </summary>
+    public const int BufferSize = 64 * 1024;
+
     /// <summary>Bumped when the pipe message set changes incompatibly; checked in the Hello exchange.</summary>
     public const int ProtocolVersion = 2;
 }
