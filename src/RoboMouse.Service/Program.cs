@@ -27,6 +27,10 @@ internal static unsafe class Program
     /// </summary>
     public static int Main(string[] args)
     {
+        // The log must say why the process ended: without this a crash leaves it simply stopping short.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Write($"Unhandled exception, service is going down: {e.ExceptionObject}");
+        TaskScheduler.UnobservedTaskException += (_, e) => Log.Write($"Unobserved task exception: {e.Exception}");
+
         s_appPath = GetArg(args, "--app-path");
         s_packageFamily = GetArg(args, "--package-family");
 
@@ -96,6 +100,7 @@ internal static unsafe class Program
         s_stop.Wait();
 
         s_worker?.Dispose();
+        Log.Write("Service stopped");
         Report(ServiceNative.SERVICE_STOPPED, 0);
     }
 
@@ -106,6 +111,7 @@ internal static unsafe class Program
         {
             case ServiceNative.SERVICE_CONTROL_STOP:
             case ServiceNative.SERVICE_CONTROL_SHUTDOWN:
+                Log.Write(control == ServiceNative.SERVICE_CONTROL_SHUTDOWN ? "Windows is shutting down; stopping" : "Stop requested; stopping");
                 Report(ServiceNative.SERVICE_STOP_PENDING, 0);
                 s_stop.Set();
                 break;

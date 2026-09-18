@@ -62,6 +62,9 @@ $binary = '"{0}" --app-path "{1}"' -f (Join-Path $installDir 'RoboMouse.Service.
 New-Service -Name $serviceName -BinaryPathName $binary -DisplayName 'RoboMouse Desktop Service' `
     -Description 'Lets RoboMouse control UAC prompts, the lock screen and elevated windows.' `
     -StartupType Manual | Out-Null
+# Restart after a crash, as the installer sets it up.
+sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/5000/restart/60000 | Out-Null
+sc.exe failureflag $serviceName 1 | Out-Null
 
 Write-Host ''
 Write-Host "Installed to $installDir"

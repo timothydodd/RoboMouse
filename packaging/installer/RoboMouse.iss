@@ -127,6 +127,9 @@ begin
     leaving the start type the user chose through the app. }
   Sc('create {#ServiceName} binPath= "' + BinPath + '" start= demand obj= LocalSystem DisplayName= "RoboMouse Desktop Service"');
   Sc('config {#ServiceName} binPath= "' + BinPath + '"');
+  { Restart after a crash (5 s, 5 s, then every minute); the count resets after a day without one. }
+  Sc('failure {#ServiceName} reset= 86400 actions= restart/5000/restart/5000/restart/60000');
+  Sc('failureflag {#ServiceName} 1');
   Sc('description {#ServiceName} "Lets RoboMouse control UAC prompts, the lock screen and windows running as administrator."');
 
   if ServiceWasRunning then
