@@ -183,9 +183,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
-          Get-ChildItem artifacts -Filter "RoboMouse-*Setup-*.exe" | ForEach-Object {
+          $lines = Get-ChildItem artifacts -Filter "RoboMouse-*Setup-*.exe" | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
-          } | Tee-Object -FilePath artifacts/SHA256SUMS.txt
+          }
+          $lines
+          # LF endings, or "sha256sum -c" on Linux/macOS reads the file names with a trailing CR.
+          [System.IO.File]::WriteAllText("$PWD/artifacts/SHA256SUMS.txt", (($lines -join "`n") + "`n"))
 
       - name: Upload installers
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
