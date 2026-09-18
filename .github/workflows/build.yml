@@ -24,6 +24,9 @@ jobs:
     runs-on: windows-latest
     # A hung test must not hold a runner for hours (the default limit is six).
     timeout-minutes: 45
+    # Azure only trusts this repo's jobs that run in the 'release' environment (that is the subject of
+    # the federated credential), so release builds use it and ordinary pushes/PRs use none.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'release' || '' }}
 
     # Code signing (Azure Trusted Signing) switches itself on once these exist; until then every
     # signing step is skipped and the outputs are unsigned.
@@ -31,9 +34,9 @@ jobs:
     #              federated credential for this repo and the "Trusted Signing Certificate Profile
     #              Signer" role on the certificate profile)
     #   variables: SIGNING_ENDPOINT (e.g. https://eus.codesigning.azure.net/), SIGNING_ACCOUNT,
-    #              SIGNING_PROFILE
+    #              SIGNING_PROFILE (the certificate profile; set last, it is what turns signing on)
     env:
-      SIGN: ${{ secrets.AZURE_CLIENT_ID != '' && vars.SIGNING_ACCOUNT != '' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
+      SIGN: ${{ secrets.AZURE_CLIENT_ID != '' && vars.SIGNING_ACCOUNT != '' && vars.SIGNING_PROFILE != '' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
     steps:
       - uses: actions/checkout@v4
