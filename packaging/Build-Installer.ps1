@@ -11,6 +11,12 @@
   derived here from the same Partner Center identity Build-Msix.ps1 uses. Without it the
   service-only installer would install a service nothing can talk to, so it is skipped.
 
+.PARAMETER Stage
+  Publish  only publish the binaries into artifacts\installer-stage
+  Compile  only compile the installers from an existing stage folder
+  All      both (default)
+  CI runs the two halves separately so the binaries can be code-signed in between; the installers
+  themselves are signed after Compile.
 .PARAMETER Version
   Three-part version, the same one the app is built with.
 .PARAMETER PackageName
@@ -23,6 +29,8 @@
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet("All", "Publish", "Compile")]
+    [string]$Stage = "All",
     [string]$Version = "1.0.0",
     [string]$PackageName = $env:STORE_PACKAGE_NAME,
     [string]$Publisher = $env:STORE_PUBLISHER,
@@ -46,6 +54,26 @@ function Get-PackageFamilyName([string]$Name, [string]$PublisherName) {
 $check = Get-PackageFamilyName "x" "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
 if ($check -ne "x_8wekyb3d8bbwe") { throw "Package family name derivation is wrong (got $check)." }
 
+$stageDir = Join-Path $root "artifacts\installer-stage"
+$outDir = Join-Path $root $Output
+New-Item $outDir -ItemType Directory -Force | Out-Null
+
+if ($Stage -ne "Compile") {
+    if (Test-Path $stageDir) { Remove-Item $stageDir -Recurse -Force }
+    $targets = @{ 'RoboMouse.App' = 'app'; 'RoboMouse.Service' = 'service'; 'RoboMouse.Helper' = 'service' }
+    foreach ($project in $targets.Keys) {
+        $dest = Join-Path $stageDir $targets[$project]
+        Write-Host "Publishing $project (Native AOT win-x64)..."
+        dotnet publish (Join-Path $root "src\$project") -c Release -r win-x64 -o $dest -p:Version=$Version
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish $project failed" }
+    }
+    Get-ChildItem $stageDir -Recurse -Filter *.pdb | Remove-Item
+    if ($Stage -eq "Publish") { return }
+}
+if (-not (Test-Path (Join-Path $stageDir "service\RoboMouse.Service.exe"))) {
+    throw "Nothing staged at $stageDir. Run with -Stage Publish (or All) first."
+}
+
 $iscc = @(
     (Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
     (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
@@ -53,22 +81,8 @@ $iscc = @(
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $iscc) { throw "Inno Setup 6 not found. Install it from https://jrsoftware.org/isdl.php or 'choco install innosetup'." }
 
-$stage = Join-Path $root "artifacts\installer-stage"
-if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-$outDir = Join-Path $root $Output
-New-Item $outDir -ItemType Directory -Force | Out-Null
-
-$targets = @{ 'RoboMouse.App' = 'app'; 'RoboMouse.Service' = 'service'; 'RoboMouse.Helper' = 'service' }
-foreach ($project in $targets.Keys) {
-    $dest = Join-Path $stage $targets[$project]
-    Write-Host "Publishing $project (Native AOT win-x64)..."
-    dotnet publish (Join-Path $root "src\$project") -c Release -r win-x64 -o $dest -p:Version=$Version
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish $project failed" }
-}
-Get-ChildItem $stage -Recurse -Filter *.pdb | Remove-Item
-
 $family = if ($PackageName -and $Publisher) { Get-PackageFamilyName $PackageName $Publisher } else { $null }
-$common = @("/Qp", "/DAppVersion=$Version", "/DStageDir=$stage", "/DOutputDir=$outDir")
+$common = @("/Qp", "/DAppVersion=$Version", "/DStageDir=$stageDir", "/DOutputDir=$outDir")
 $script = Join-Path $PSScriptRoot "installer\RoboMouse.iss"
 
 Write-Host "Compiling RoboMouse-Setup-$Version.exe..."
