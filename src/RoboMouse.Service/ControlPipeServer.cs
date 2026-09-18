@@ -115,6 +115,7 @@ internal sealed partial class ControlPipeServer : IDisposable
                 return false;
             if (string.Equals(path, _expectedAppPath, StringComparison.OrdinalIgnoreCase))
                 return true;
+            Log.Write($"Pipe client is '{path}', expected '{_expectedAppPath}'");
 
             return _expectedPackageFamily != null
                 && string.Equals(Path.GetFileName(path), "RoboMouse.App.exe", StringComparison.OrdinalIgnoreCase)

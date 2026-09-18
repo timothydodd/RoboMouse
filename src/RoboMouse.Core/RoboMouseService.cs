@@ -881,8 +881,11 @@ public sealed class RoboMouseService : IDisposable
     /// <summary>Connects to or lets go of the desktop service to match the current setting.</summary>
     public void ApplyDesktopServiceSetting()
     {
-        if (_serviceInjector != null)
-            _serviceInjector.Enabled = _settings.UseDesktopService;
+        if (_serviceInjector == null)
+            return;
+        SimpleLogger.Log("Service", $"Desktop service: setting {(_settings.UseDesktopService ? "on" : "off")}, " +
+            $"installed {DesktopServiceControl.IsInstalled}, running {DesktopServiceControl.IsRunning}");
+        _serviceInjector.Enabled = _settings.UseDesktopService;
     }
 
     public void ApplyHotkeySetting()

@@ -41,6 +41,7 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
     private volatile bool _active;
     private (int X, int Y) _cursor;
     private DesktopServiceState _state = DesktopServiceState.Off;
+    private string? _lastProblem;
 
     public DesktopServiceInjector() : this(PipeNames.Control) { }
 
@@ -91,10 +92,15 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
                 await RunConnectionAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { }
-            catch (TimeoutException) { }
             catch (Exception ex)
             {
-                SimpleLogger.Log("Service", $"Desktop service connection: {ex.Message}");
+                // Retried every few seconds, so only say it when the reason changes.
+                var problem = ex is TimeoutException
+                    ? "Desktop service is not answering on its pipe (not running, or busy with another client)"
+                    : $"Desktop service connection failed: {ex.GetType().Name}: {ex.Message}";
+                if (problem != _lastProblem)
+                    SimpleLogger.Log("Service", problem);
+                _lastProblem = problem;
             }
 
             _active = false;
@@ -117,6 +123,8 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
         await client.ConnectAsync(1000, ct).ConfigureAwait(false);
         using var pipe = new PipeConnection(client);
         await pipe.SendAsync(PipeMessage.Hello(), ct).ConfigureAwait(false);
+        SimpleLogger.Log("Service", "Connected to the desktop service; waiting for its helper");
+        _lastProblem = null;
 
         // Injection calls arrive on network threads and must not block on the pipe, so they queue here
         // and one writer drains them in order.
@@ -139,7 +147,12 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
             {
                 var received = await pipe.ReceiveAsync(ct).ConfigureAwait(false);
                 if (received is null)
+                {
+                    SimpleLogger.Log("Service", _active
+                        ? "Desktop service closed the connection"
+                        : "Desktop service dropped the connection before its helper was ready; it rejects any exe other than the one it was installed for (see service.log)");
                     break;
+                }
                 var message = received.Value;
 
                 switch (message.Opcode)
