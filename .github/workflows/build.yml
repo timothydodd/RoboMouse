@@ -20,6 +20,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    # A hung test must not hold a runner for hours (the default limit is six).
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
