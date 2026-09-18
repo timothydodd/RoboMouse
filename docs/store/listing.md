@@ -7,6 +7,7 @@ file in sync with what is entered in Partner Center so a resubmission does not s
 
 - **Name:** RoboMouse (reserved in Partner Center; identity values live in the repository secrets
   `STORE_PACKAGE_NAME`, `STORE_PUBLISHER`, `STORE_PUBLISHER_DISPLAY`)
+- **Store page:** https://apps.microsoft.com/detail/9N4HSV1HP9B0
 - **Category:** Utilities & tools
 - **Pricing:** Free
 - **Privacy policy URL:** https://raw.githubusercontent.com/timothydodd/RoboMouse/main/docs/privacy.md
