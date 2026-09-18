@@ -127,7 +127,8 @@ The service and helper run as SYSTEM and inject input, so the trust rules are ex
    wired but not yet driving input. Not referenced by the app's runtime path.
 2. **Injection seam** in Core (done): `IInputInjector` + `InProcessInjector`, `RoboMouseService`
    injects only through it. No behaviour change.
-3. **Helper relay** (done; admin windows verified on Windows 2026-09-18): pipe protocol 2 (`InjectMotion/Button/Key`,
+3. **Helper relay** (done; elevated windows, UAC prompts and the lock screen verified on two real
+   machines 2026-09-18): pipe protocol 2 (`InjectMotion/Button/Key`,
    `MoveTo`, `QueryCursor`/`CursorPosition`, `HelperReady`/`HelperLost`), `HelperHost`/`HelperLauncher`
    in the service, the inject loop + `InputDesktop` in the helper.
 4. **App integration** (done, verified with it): `DesktopServiceInjector` (falls back to
@@ -136,7 +137,8 @@ The service and helper run as SYSTEM and inject input, so the trust rules are ex
    page card shown only when the service is installed, `InputStatus` reports no block while routed.
    The service accepts `--app-path` and `--package-family` (Store app) on its registered command
    line. `packaging/Install-DevService.ps1` registers it for testing until the installer exists.
-5. **Installers + release workflow** (written; first compile happens in CI): one Inno Setup script,
+5. **Installers + release workflow** (done; CI builds both installers and signs them and the binaries
+   inside with Azure Artifact Signing, verified with signtool; running the installers is untested): one Inno Setup script,
    `packaging/installer/RoboMouse.iss`, built twice by `packaging/Build-Installer.ps1` (full, and
    `/DServiceOnly`). The service-only installer registers the service with `--package-family`, derived
    from the `STORE_PACKAGE_NAME`/`STORE_PUBLISHER` secrets, and is skipped when they are absent. It
