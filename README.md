@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/icon-banner.png" alt="RoboMouse" width="420">
+  <img src="docs/icon.png" alt="RoboMouse">
 </p>
 
 # RoboMouse
