@@ -883,9 +883,12 @@ public sealed class RoboMouseService : IDisposable
     {
         if (_serviceInjector == null)
             return;
+        var installed = DesktopServiceControl.IsInstalled;
         SimpleLogger.Log("Service", $"Desktop service: setting {(_settings.UseDesktopService ? "on" : "off")}, " +
-            $"installed {DesktopServiceControl.IsInstalled}, running {DesktopServiceControl.IsRunning}");
-        _serviceInjector.Enabled = _settings.UseDesktopService;
+            $"installed {installed}, running {DesktopServiceControl.IsRunning}");
+        // The setting can outlive the service (it was uninstalled, or the settings file came from another
+        // machine); without the service there is nothing to connect to and no card to turn it off with.
+        _serviceInjector.Enabled = _settings.UseDesktopService && installed;
     }
 
     public void ApplyHotkeySetting()
