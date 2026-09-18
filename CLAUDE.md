@@ -55,7 +55,7 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 
 ### Control Flow
 
-1. Mouse reaches screen edge → `ScreenInfo.GetEdgeAt()` detects it (from the hook)
+1. Mouse reaches an outer edge of the desktop → `ScreenInfo.GetEdgeAt()` detects it (from the hook). `MonitorLayout` (`Screen/`) holds the per-monitor geometry: an outer edge is a monitor edge with no other monitor beyond it, so unequal or staggered monitors work. `ScreenInfo` re-reads the arrangement when its copy is over a second old (message-only windows never get `WM_DISPLAYCHANGE`), so plugging in a monitor or changing the main display is picked up while running
 2. `RoboMouseService` finds the peer configured at that edge, hides the local cursor, starts `RawMouseInput`, sends `CursorEnterMessage`
 3. While controlling: the hook swallows all local mouse/keyboard events; raw motion deltas and button/wheel/key events are posted to the peer
 4. Controlled peer places its cursor on the entry edge and injects each delta relatively; it tracks whether its cursor is pinned on the entry edge while the controller keeps pushing into it

@@ -1194,28 +1194,28 @@ public sealed class RoboMouseService : IDisposable
     private void CheckForReturnEdge(int dx, int dy)
     {
         var (x, y) = _injector.GetCursorPosition();
-        var bounds = _screenInfo.VirtualBounds;
+        var layout = _screenInfo.Layout;
 
         // Which edge the cursor is pinned against while being pushed further into it. Normally only the
         // entry edge hands control back; with wrap-around any edge does.
-        static (bool pinned, int push) Probe(ScreenPosition edge, int x, int y, int dx, int dy, System.Drawing.Rectangle bounds) => edge switch
+        static (bool pinned, int push) Probe(ScreenPosition edge, int x, int y, int dx, int dy, MonitorLayout layout) => edge switch
         {
-            ScreenPosition.Left => (x <= bounds.Left, -dx),
-            ScreenPosition.Right => (x >= bounds.Right - 1, dx),
-            ScreenPosition.Top => (y <= bounds.Top, -dy),
-            ScreenPosition.Bottom => (y >= bounds.Bottom - 1, dy),
+            ScreenPosition.Left => (layout.IsAtOuterEdge(edge, x, y), -dx),
+            ScreenPosition.Right => (layout.IsAtOuterEdge(edge, x, y), dx),
+            ScreenPosition.Top => (layout.IsAtOuterEdge(edge, x, y), -dy),
+            ScreenPosition.Bottom => (layout.IsAtOuterEdge(edge, x, y), dy),
             _ => (false, 0)
         };
 
         var exitEdge = _entryEdge;
-        var (pinned, push) = Probe(_entryEdge, x, y, dx, dy, bounds);
+        var (pinned, push) = Probe(_entryEdge, x, y, dx, dy, layout);
         if (_controllerWrapsAround && (!pinned || push <= 0))
         {
             foreach (var edge in new[] { ScreenPosition.Left, ScreenPosition.Right, ScreenPosition.Top, ScreenPosition.Bottom })
             {
                 if (edge == _entryEdge)
                     continue;
-                var probe = Probe(edge, x, y, dx, dy, bounds);
+                var probe = Probe(edge, x, y, dx, dy, layout);
                 if (probe.pinned && probe.push > 0)
                 {
                     (exitEdge, pinned, push) = (edge, true, probe.push);

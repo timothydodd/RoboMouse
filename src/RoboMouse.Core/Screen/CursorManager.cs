@@ -19,32 +19,14 @@ public class CursorManager
     /// Computes the pixel position on the given edge of the virtual screen for a normalized
     /// (0..1) position along that edge.
     /// </summary>
-    public (int X, int Y) GetEdgePoint(ScreenPosition edge, float normalizedPosition)
-    {
-        var bounds = _screenInfo.VirtualBounds;
-        normalizedPosition = Math.Clamp(normalizedPosition, 0f, 1f);
-
-        return edge switch
-        {
-            ScreenPosition.Left => (bounds.Left, bounds.Top + (int)(normalizedPosition * (bounds.Height - 1))),
-            ScreenPosition.Right => (bounds.Right - 1, bounds.Top + (int)(normalizedPosition * (bounds.Height - 1))),
-            ScreenPosition.Top => (bounds.Left + (int)(normalizedPosition * (bounds.Width - 1)), bounds.Top),
-            ScreenPosition.Bottom => (bounds.Left + (int)(normalizedPosition * (bounds.Width - 1)), bounds.Bottom - 1),
-            _ => (bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2)
-        };
-    }
+    public (int X, int Y) GetEdgePoint(ScreenPosition edge, float normalizedPosition) =>
+        _screenInfo.Layout.GetEdgePoint(edge, normalizedPosition);
 
     /// <summary>
     /// Returns the normalized (0..1) position of a point along the given edge of the virtual screen.
     /// </summary>
-    public float GetNormalizedPositionOnEdge(ScreenPosition edge, int x, int y)
-    {
-        var bounds = _screenInfo.VirtualBounds;
-        var value = edge is ScreenPosition.Left or ScreenPosition.Right
-            ? (y - bounds.Top) / (float)Math.Max(1, bounds.Height - 1)
-            : (x - bounds.Left) / (float)Math.Max(1, bounds.Width - 1);
-        return Math.Clamp(value, 0f, 1f);
-    }
+    public float GetNormalizedPositionOnEdge(ScreenPosition edge, int x, int y) =>
+        _screenInfo.Layout.GetNormalizedPositionOnEdge(edge, x, y);
 
     /// <summary>
     /// Gets the opposite edge (for return transitions).

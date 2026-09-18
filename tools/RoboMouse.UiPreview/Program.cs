@@ -1,3 +1,4 @@
+using RoboMouse.Core.Screen;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
@@ -69,6 +70,16 @@ internal static class Program
                 window.ViewModel.SelectedPage = page;
                 Capture(window, Path.Combine(outDir, $"settings-{page.Title.ToLowerInvariant()}{suffix}.png"));
             }
+            // The layout page again with a second, smaller monitor that has been made the main display.
+            ScreenLayoutControl.LayoutSource = () => new MonitorLayout(new[]
+            {
+                Monitor(0, 0, 1920, 1080, primary: true),
+                Monitor(-2560, -200, 2560, 1440, primary: false)
+            });
+            window.ViewModel.SelectedPage = window.ViewModel.Pages.First(p => p.Title == "Layout");
+            window.ViewModel.Layout.Reload();
+            Capture(window, Path.Combine(outDir, $"settings-layout-multimonitor{suffix}.png"));
+            ScreenLayoutControl.LayoutSource = null;
             window.Close();
 
             var setup = new PeerSetupWindow(new PeerSetupViewModel(settings.Peers[0], settings, backend, new WindowDialogService(null, backend)));
@@ -93,6 +104,12 @@ internal static class Program
 
         Console.WriteLine($"Screenshots written to {Path.GetFullPath(outDir)}");
         return 0;
+    }
+
+    private static MonitorRect Monitor(int x, int y, int w, int h, bool primary)
+    {
+        var r = new System.Drawing.Rectangle(x, y, w, h);
+        return new MonitorRect(r, r, primary);
     }
 
     private static void Capture(Window window, string path)

@@ -27,6 +27,7 @@ public sealed class ScreenLayoutControl : Control
     private AppSettings _settings = new();
     private readonly List<ScreenRect> _screens = new();
     private ScreenRect? _localScreen;
+    private MonitorLayout? _localLayout;
     private ScreenRect? _selectedScreen;
     private ScreenRect? _draggingScreen;
     private Point _dragOffset;
@@ -65,17 +66,30 @@ public sealed class ScreenLayoutControl : Control
         InvalidateVisual();
     }
 
-    /// <summary>The virtual screen, or a stand-in where the monitor API is unavailable (headless previews).</summary>
-    private static System.Drawing.Rectangle GetLocalBounds()
+    /// <summary>The monitor arrangement, or a stand-in where the monitor API is unavailable (headless previews).</summary>
+    private static MonitorLayout GetLocalLayout()
     {
         try
         {
-            return ScreenInfo.GetVirtualScreen();
+            return ScreenInfo.ReadLayout();
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or PlatformNotSupportedException)
         {
-            return new System.Drawing.Rectangle(0, 0, 2560, 1440);
+            var main = new System.Drawing.Rectangle(0, 0, 2560, 1440);
+            return new MonitorLayout(new[] { new MonitorRect(main, main, true) });
         }
+    }
+
+    /// <summary>Test/preview hook: supplies the monitor arrangement instead of reading it from Windows.</summary>
+    public static Func<MonitorLayout>? LayoutSource { get; set; }
+
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        // Monitors may have changed since the control was built. Keep any unsaved drags.
+        SaveLayout();
+        InitializeScreens();
+        InvalidateVisual();
     }
 
     private double CanvasWidth => Bounds.Width > 0 ? Bounds.Width : 600;
@@ -86,7 +100,8 @@ public sealed class ScreenLayoutControl : Control
         _screens.Clear();
 
         // The whole desktop (all monitors), since edges are detected on the virtual screen.
-        var localBounds = GetLocalBounds();
+        _localLayout = LayoutSource?.Invoke() ?? GetLocalLayout();
+        var localBounds = _localLayout.VirtualBounds;
         _scaleFactor = FitScale(localBounds);
 
         _localScreen = new ScreenRect
@@ -220,6 +235,12 @@ public sealed class ScreenLayoutControl : Control
             edge = selected ? Colors.White : Color.FromRgb(120, 140, 175);
         }
 
+        if (screen.IsLocal && _localLayout is { Monitors.Count: > 1 } layout)
+        {
+            DrawLocalMonitors(context, rect, layout, fill, edge);
+            return;
+        }
+
         context.DrawRectangle(new SolidColorBrush(fill), new Pen(new SolidColorBrush(edge), selected ? 2 : 1), rect, 8, 8);
 
         // Bezel line to hint "screen"
@@ -239,6 +260,48 @@ public sealed class ScreenLayoutControl : Control
         var subText = new FormattedText(sub, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, SubTypeface, 11.5,
             new SolidColorBrush(Color.FromArgb(200, textColor.R, textColor.G, textColor.B)));
         context.DrawText(subText, new Point(rect.X + (rect.Width - subText.Width) / 2, textY + title.Height + 2));
+    }
+
+    /// <summary>
+    /// This PC with several monitors: each one drawn where Windows has it inside the desktop's
+    /// bounding box (dashed), the main display labelled.
+    /// </summary>
+    private void DrawLocalMonitors(DrawingContext context, Rect rect, MonitorLayout layout, Color fill, Color edge)
+    {
+        var outline = new Pen(new SolidColorBrush(Color.FromArgb(110, edge.R, edge.G, edge.B)), 1, new DashStyle(new double[] { 4, 4 }, 0));
+        context.DrawRectangle(null, outline, rect, 8, 8);
+
+        var origin = layout.VirtualBounds.Location;
+        var number = 0;
+        foreach (var monitor in layout.Monitors)
+        {
+            number++;
+            var b = monitor.Bounds;
+            var m = new Rect(
+                rect.X + (double)(b.Left - origin.X) / _scaleFactor,
+                rect.Y + (double)(b.Top - origin.Y) / _scaleFactor,
+                (double)b.Width / _scaleFactor,
+                (double)b.Height / _scaleFactor).Deflate(1);
+
+            var monitorFill = monitor.Primary ? fill : Color.FromArgb(170, fill.R, fill.G, fill.B);
+            context.DrawRectangle(new SolidColorBrush(monitorFill), new Pen(new SolidColorBrush(edge), 1), m, 6, 6);
+
+            var name = monitor.Primary ? $"This PC · {number} (main)" : $"This PC · {number}";
+            var title = new FormattedText(name, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, TitleTypeface, 12.5, Brushes.White)
+            {
+                MaxTextWidth = Math.Max(20, m.Width - 8),
+                TextAlignment = TextAlignment.Center,
+                MaxLineCount = 2,
+                Trimming = TextTrimming.CharacterEllipsis
+            };
+            var size = new FormattedText($"{b.Width} × {b.Height}", CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, SubTypeface, 11,
+                new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)));
+
+            var top = m.Y + (m.Height - title.Height - size.Height - 2) / 2;
+            context.DrawText(title, new Point(m.X + 4, top));
+            if (size.Width < m.Width - 8)
+                context.DrawText(size, new Point(m.X + (m.Width - size.Width) / 2, top + title.Height + 2));
+        }
     }
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)
