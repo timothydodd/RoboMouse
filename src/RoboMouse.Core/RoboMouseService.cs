@@ -32,6 +32,7 @@ public sealed class RoboMouseService : IDisposable
     private readonly MouseHook _mouseHook;
     private readonly KeyboardHook _keyboardHook;
     private readonly RawMouseInput _rawMouse;
+    private readonly IInputInjector _injector;
     private readonly ClipboardManager _clipboardManager;
     private readonly PeerDiscovery _discovery;
     private readonly ConnectionListener _listener;
@@ -179,9 +180,10 @@ public sealed class RoboMouseService : IDisposable
     /// <summary>Raised for each forwarded motion sample while controlling (for the debug panel).</summary>
     public event EventHandler<MouseDebugEventArgs>? MouseDebugUpdate;
 
-    public RoboMouseService(AppSettings settings)
+    public RoboMouseService(AppSettings settings, IInputInjector? injector = null)
     {
         _settings = settings;
+        _injector = injector ?? new InProcessInjector();
         _screenInfo = new ScreenInfo();
         _cursorManager = new CursorManager(_screenInfo);
 
@@ -1087,7 +1089,8 @@ public sealed class RoboMouseService : IDisposable
         _desktopPollTimer = new System.Threading.Timer(_ => ReportInputStatus(), null, 250, 250);
 
         var normalized = msg.EntryEdge is ScreenPosition.Left or ScreenPosition.Right ? msg.EntryY : msg.EntryX;
-        _cursorManager.PlaceAtEdge(msg.EntryEdge, normalized);
+        var (entryX, entryY) = _cursorManager.GetEdgePoint(msg.EntryEdge, normalized);
+        _injector.MoveTo(entryX, entryY);
 
         ControlStateChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -1127,7 +1130,7 @@ public sealed class RoboMouseService : IDisposable
                 break;
         }
 
-        InputSimulator.SimulateMouseEvent(msg.EventType, wheelDelta: msg.WheelDelta);
+        _injector.SimulateMouseEvent(msg.EventType, msg.WheelDelta);
     }
 
     private bool _injectionBlocked;
@@ -1143,7 +1146,7 @@ public sealed class RoboMouseService : IDisposable
     {
         // SendInput reports a UIPI block as a failed call. It is asynchronous, so the cursor position
         // right after it is not evidence of anything and must not be used to second-guess it.
-        if (InputSimulator.MoveRelative(dx, dy))
+        if (_injector.MoveRelative(dx, dy))
         {
             if (_injectionBlocked)
             {
@@ -1161,8 +1164,8 @@ public sealed class RoboMouseService : IDisposable
             ReportInputStatus();
         }
 
-        var (x, y) = InputSimulator.GetCursorPosition();
-        InputSimulator.MoveTo(x + dx, y + dy);
+        var (x, y) = _injector.GetCursorPosition();
+        _injector.MoveTo(x + dx, y + dy);
     }
 
     /// <summary>
@@ -1171,7 +1174,7 @@ public sealed class RoboMouseService : IDisposable
     /// </summary>
     private void CheckForReturnEdge(int dx, int dy)
     {
-        var (x, y) = InputSimulator.GetCursorPosition();
+        var (x, y) = _injector.GetCursorPosition();
         var bounds = _screenInfo.VirtualBounds;
 
         // Which edge the cursor is pinned against while being pushed further into it. Normally only the
@@ -1239,7 +1242,7 @@ public sealed class RoboMouseService : IDisposable
             _heldKeys.Remove(msg.KeyCode);
         }
 
-        InputSimulator.SimulateKeyboardEvent(msg.KeyCode, msg.ScanCode, msg.EventType, msg.IsExtendedKey);
+        _injector.SimulateKeyboardEvent(msg.KeyCode, msg.ScanCode, msg.EventType, msg.IsExtendedKey);
     }
 
     /// <summary>
@@ -1307,7 +1310,7 @@ public sealed class RoboMouseService : IDisposable
     {
         foreach (var (key, (scan, extended)) in _heldKeys)
         {
-            InputSimulator.SimulateKeyboardEvent(key, scan, KeyboardEventType.KeyUp, extended);
+            _injector.SimulateKeyboardEvent(key, scan, KeyboardEventType.KeyUp, extended);
         }
         _heldKeys.Clear();
 
@@ -1323,7 +1326,7 @@ public sealed class RoboMouseService : IDisposable
                 _ => (MouseEventType?)null
             };
             if (up != null)
-                InputSimulator.SimulateMouseEvent(up.Value);
+                _injector.SimulateMouseEvent(up.Value);
         }
         _heldButtons.Clear();
     }

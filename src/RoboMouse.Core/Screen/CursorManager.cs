@@ -35,15 +35,6 @@ public class CursorManager
     }
 
     /// <summary>
-    /// Moves the cursor to the given edge at a normalized position along it.
-    /// </summary>
-    public void PlaceAtEdge(ScreenPosition edge, float normalizedPosition)
-    {
-        var (x, y) = GetEdgePoint(edge, normalizedPosition);
-        InputSimulator.MoveTo(x, y);
-    }
-
-    /// <summary>
     /// Returns the normalized (0..1) position of a point along the given edge of the virtual screen.
     /// </summary>
     public float GetNormalizedPositionOnEdge(ScreenPosition edge, int x, int y)
