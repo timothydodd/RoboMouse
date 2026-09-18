@@ -71,7 +71,8 @@ Never do per-event file logging on the input path: the hook callback has a syste
 ### Distribution
 
 - `packaging/` holds the MSIX manifest (`runFullTrust`, startup task), Store assets, and `Build-Msix.ps1`. `StartupRegistration` picks the startup task when packaged and the Run key otherwise.
-- `.github/workflows/build.yml` builds/tests on every push, publishes a Native AOT zip and (with Store secrets set) the MSIX on `v*` tags. The version comes from the tag (`v1.2.3` → assembly 1.2.3, package 1.2.3.0) and is passed as `-p:Version`; the `<Version>` in the csproj files is only the fallback for local builds, so bump it when tagging.
+- `packaging/Build-Installer.ps1` + `packaging/installer/RoboMouse.iss` (Inno Setup 6) build the direct-download installers: `RoboMouse-Setup` (app + desktop service) and `RoboMouse-Service-Setup` (service only, for Store users; needs the Store identity secrets to derive the package family name the service trusts). The Store package never contains the service. `Install-DevService.ps1` is the dev stand-in.
+- `.github/workflows/build.yml` builds/tests on every push, publishes a Native AOT zip, the installers and (with Store secrets set) the MSIX on `v*` tags. The version comes from the tag (`v1.2.3` → assembly 1.2.3, package 1.2.3.0) and is passed as `-p:Version`; the `<Version>` in the csproj files is only the fallback for local builds, so bump it when tagging.
 
 ### UI (`src/RoboMouse.App/`)
 
@@ -103,9 +104,9 @@ for the design and security boundary. New projects:
   `InProcessInjector` otherwise; `DesktopServiceControl` detects/starts the service. Setting:
   `UseDesktopService`; the General page card only shows when the service is installed.
 
-Phases 1-4 are written; the SYSTEM parts have never run on real Windows (CI and WSL only prove they
-compile; the app side of the pipe has loopback tests). `packaging/Install-DevService.ps1` registers
-the service for testing. The installers (Phase 5) are not started.
+Phases 1-5 are written and the input path is verified on real Windows. Pipe servers must keep a
+non-zero buffer (`PipeNames.BufferSize`): unbuffered, both ends block sending `Hello`, and Linux
+pipes hide that. Not covered yet: sign-in after a reboot (no app is running to connect).
 
 ### Native AOT
 

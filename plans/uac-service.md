@@ -127,17 +127,22 @@ The service and helper run as SYSTEM and inject input, so the trust rules are ex
    wired but not yet driving input. Not referenced by the app's runtime path.
 2. **Injection seam** in Core (done): `IInputInjector` + `InProcessInjector`, `RoboMouseService`
    injects only through it. No behaviour change.
-3. **Helper relay** (written, untested on Windows): pipe protocol 2 (`InjectMotion/Button/Key`,
+3. **Helper relay** (done; admin windows verified on Windows 2026-09-18): pipe protocol 2 (`InjectMotion/Button/Key`,
    `MoveTo`, `QueryCursor`/`CursorPosition`, `HelperReady`/`HelperLost`), `HelperHost`/`HelperLauncher`
    in the service, the inject loop + `InputDesktop` in the helper.
-4. **App integration** (written, untested on Windows): `DesktopServiceInjector` (falls back to
+4. **App integration** (done, verified with it): `DesktopServiceInjector` (falls back to
    in-process whenever the service is not ready; loopback-tested), `DesktopServiceControl`
    (SCM query + one elevated `sc config`/`sc start`), the `UseDesktopService` setting and the General
    page card shown only when the service is installed, `InputStatus` reports no block while routed.
    The service accepts `--app-path` and `--package-family` (Store app) on its registered command
    line. `packaging/Install-DevService.ps1` registers it for testing until the installer exists.
-5. **Installers + release workflow**: the two Inno Setup scripts under `packaging/installer/`, built
-   and attached by `build.yml` on `v*` tags.
+5. **Installers + release workflow** (written; first compile happens in CI): one Inno Setup script,
+   `packaging/installer/RoboMouse.iss`, built twice by `packaging/Build-Installer.ps1` (full, and
+   `/DServiceOnly`). The service-only installer registers the service with `--package-family`, derived
+   from the `STORE_PACKAGE_NAME`/`STORE_PUBLISHER` secrets, and is skipped when they are absent. It
+   refuses to install beside the full installer (one service name). Upgrades stop the service, keep
+   the start type the user chose, and restart it if it was running. `build.yml` builds both on `v*`
+   tags and manual runs and attaches them plus `SHA256SUMS.txt` to the release.
 6. (optional) Store packaging of the service.
 
 ## Testing reality

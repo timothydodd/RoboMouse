@@ -93,6 +93,28 @@ jobs:
             artifacts/*.msix
             artifacts/*.cer
 
+      # Direct-download installers: the app with the desktop service (UAC / lock screen), and the
+      # service alone for Store users. Same version as everything else so the pipe protocol matches.
+      # The service-only one needs the Store identity to know which app to trust; it is skipped without it.
+      - name: Build installers (Inno Setup)
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          STORE_PACKAGE_NAME: ${{ secrets.STORE_PACKAGE_NAME }}
+          STORE_PUBLISHER: ${{ secrets.STORE_PUBLISHER }}
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          ./packaging/Build-Installer.ps1 -Version "${{ env.APP_VERSION }}" -Output artifacts
+
+      - name: Upload installers
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoboMouse-installers
+          path: |
+            artifacts/RoboMouse-*Setup-*.exe
+            artifacts/SHA256SUMS.txt
+
       - name: Package release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -102,5 +124,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: RoboMouse-${{ github.ref_name }}-win-x64.zip
+          files: |
+            RoboMouse-${{ github.ref_name }}-win-x64.zip
+            artifacts/RoboMouse-*Setup-*.exe
+            artifacts/SHA256SUMS.txt
           generate_release_notes: true

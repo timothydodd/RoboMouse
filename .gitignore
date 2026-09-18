@@ -52,3 +52,6 @@ Desktop.ini
 
 # Local Claude Code settings
 .claude/
+
+# Packaging output
+artifacts/
