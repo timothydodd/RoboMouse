@@ -165,6 +165,16 @@ public sealed class TrayController : IDisposable
                 OnUi(UpdateStatus);
             };
             items.Add(item);
+
+            if (peer.Enabled && connection == null && RoboMouseService.CanWake(peer))
+            {
+                var wake = new NativeMenuItem($"Wake {peer.Name}")
+                {
+                    ToolTip = "Send a Wake-on-LAN packet; it reconnects by itself once it is up"
+                };
+                wake.Click += (s, e) => Task.Run(() => _service.WakePeer(captured));
+                items.Add(wake);
+            }
         }
 
         var configuredIds = _settings.Peers.Select(p => p.Id).ToHashSet();

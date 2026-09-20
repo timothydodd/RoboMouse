@@ -58,6 +58,12 @@ public class PeerConfig
     public bool Enabled { get; set; } = true;
 
     /// <summary>
+    /// The peer's MAC address (12 hex digits), learned when it connects and kept so it can be woken
+    /// with Wake-on-LAN while it sleeps. Empty until the peer has connected once.
+    /// </summary>
+    public string MacAddress { get; set; } = string.Empty;
+
+    /// <summary>
     /// Unique identifier for this peer (generated or received).
     /// </summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");

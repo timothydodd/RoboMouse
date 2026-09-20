@@ -61,6 +61,12 @@ public sealed class PeerConnection : IDisposable
     /// <summary>The port the peer listens on for new connections.</summary>
     public int PeerListenPort { get; private set; }
 
+    /// <summary>The peer's MAC address (12 hex digits) for Wake-on-LAN, or empty if it did not send one.</summary>
+    public string PeerMacAddress { get; private set; } = string.Empty;
+
+    /// <summary>MAC address of the local adapter this connection runs over.</summary>
+    private string LocalMacAddress => WakeOnLan.GetMacAddressFor((_client.Client.LocalEndPoint as IPEndPoint)?.Address);
+
     /// <summary>True when this machine initiated the connection.</summary>
     public bool IsOutbound { get; private set; }
 
@@ -142,7 +148,8 @@ public sealed class PeerConnection : IDisposable
             ScreenHeight = localScreenHeight,
             SupportsClipboard = true,
             Kind = kind,
-            ListenPort = localListenPort
+            ListenPort = localListenPort,
+            MacAddress = connection.LocalMacAddress
         };
         connection.Kind = kind;
         connection.IsOutbound = true;
@@ -170,6 +177,7 @@ public sealed class PeerConnection : IDisposable
         connection.PeerScreenWidth = ack.ScreenWidth;
         connection.PeerScreenHeight = ack.ScreenHeight;
         connection.PeerListenPort = ack.ListenPort;
+        connection.PeerMacAddress = WakeOnLan.Normalize(ack.MacAddress);
 
         SimpleLogger.Log("Connect", $"Connected to {ack.MachineName} ({ack.ScreenWidth}x{ack.ScreenHeight})");
         return connection;
@@ -215,6 +223,7 @@ public sealed class PeerConnection : IDisposable
         connection.PeerScreenHeight = handshake.ScreenHeight;
         connection.Kind = handshake.Kind;
         connection.PeerListenPort = handshake.ListenPort;
+        connection.PeerMacAddress = WakeOnLan.Normalize(handshake.MacAddress);
 
         var ack = new HandshakeAckMessage
         {
@@ -223,7 +232,8 @@ public sealed class PeerConnection : IDisposable
             MachineName = localMachineName,
             ScreenWidth = localScreenWidth,
             ScreenHeight = localScreenHeight,
-            ListenPort = localListenPort
+            ListenPort = localListenPort,
+            MacAddress = connection.LocalMacAddress
         };
 
         await connection.WriteDirectAsync(ack, ct);

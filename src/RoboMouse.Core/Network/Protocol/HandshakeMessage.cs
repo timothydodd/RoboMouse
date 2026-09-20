@@ -55,6 +55,12 @@ public class HandshakeMessage : Message
     /// <summary>The port the sender listens on, so the receiver can open further connections back to it.</summary>
     public int ListenPort { get; set; }
 
+    /// <summary>
+    /// MAC address (12 hex digits) of the adapter this connection uses, so the receiver can wake the
+    /// sender later. Trails the payload and may be absent: older builds neither send nor read it.
+    /// </summary>
+    public string MacAddress { get; set; } = string.Empty;
+
     protected override byte[] SerializePayload()
     {
         var buffer = new List<byte>();
@@ -75,6 +81,8 @@ public class HandshakeMessage : Message
         BinaryPrimitives.WriteInt32LittleEndian(intBuffer, ListenPort);
         buffer.AddRange(intBuffer);
 
+        MessageHelpers.WriteString(buffer, MacAddress);
+
         return buffer.ToArray();
     }
 
@@ -93,6 +101,9 @@ public class HandshakeMessage : Message
         message.SupportsClipboard = payload[offset++] == 1;
         message.Kind = (ConnectionKind)payload[offset++];
         message.ListenPort = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset));
+        offset += 4;
+        if (offset < payload.Length)
+            message.MacAddress = MessageHelpers.ReadString(payload, ref offset);
 
         return message;
     }
@@ -138,6 +149,9 @@ public class HandshakeAckMessage : Message
     /// <summary>The port the acknowledging machine listens on.</summary>
     public int ListenPort { get; set; }
 
+    /// <summary>MAC address of the acknowledging machine's adapter; optional, as in the handshake.</summary>
+    public string MacAddress { get; set; } = string.Empty;
+
     protected override byte[] SerializePayload()
     {
         var buffer = new List<byte>();
@@ -157,6 +171,8 @@ public class HandshakeAckMessage : Message
 
         BinaryPrimitives.WriteInt32LittleEndian(intBuffer, ListenPort);
         buffer.AddRange(intBuffer);
+
+        MessageHelpers.WriteString(buffer, MacAddress);
 
         return buffer.ToArray();
     }
@@ -180,6 +196,9 @@ public class HandshakeAckMessage : Message
         if (string.IsNullOrEmpty(message.RejectReason))
             message.RejectReason = null;
         message.ListenPort = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset));
+        offset += 4;
+        if (offset < payload.Length)
+            message.MacAddress = MessageHelpers.ReadString(payload, ref offset);
 
         return message;
     }

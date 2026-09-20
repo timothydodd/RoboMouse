@@ -491,6 +491,8 @@ public sealed class RoboMouseService : IDisposable
             replaced.Dispose();
         }
 
+        RememberMacAddress(connection);
+
         connection.MessageReceived += OnMessageReceived;
         connection.Disconnected += (s, e) => RemoveConnection(connection);
         connection.Start();
@@ -740,6 +742,81 @@ public sealed class RoboMouseService : IDisposable
     {
     }
 
+    #region Wake-on-LAN
+
+    // Edge hits (one per mouse move while leaning on the edge) needed before a sleeping peer is woken,
+    // so brushing the edge does not wake it, and the pause before another packet is sent.
+    private const int WakeEdgeHits = 25;
+    private const int WakeEdgeHitGapMs = 400;
+    private const int WakeRepeatMs = 10000;
+
+    private int _wakeEdgeHits;
+    private long _lastWakeEdgeHit;
+    private long _nextWakeAllowed;
+
+    /// <summary>Raised (on a background thread) after a wake packet was sent to a peer.</summary>
+    public event EventHandler<PeerConfig>? PeerWakeSent;
+
+    /// <summary>Keeps the MAC address a peer reported so it can be woken after it goes to sleep.</summary>
+    private void RememberMacAddress(PeerConnection connection)
+    {
+        if (connection.PeerMacAddress.Length == 0)
+            return;
+        var peer = _settings.Peers.FirstOrDefault(p => p.Id == connection.PeerId);
+        if (peer == null || peer.MacAddress == connection.PeerMacAddress)
+            return;
+
+        peer.MacAddress = connection.PeerMacAddress;
+        SimpleLogger.Log("Wake", $"{peer.Name} can be woken at {WakeOnLan.Format(peer.MacAddress)}");
+        try { _settings.Save(); }
+        catch (Exception ex) { SimpleLogger.Log("Wake", $"Could not save the MAC address: {ex.Message}"); }
+    }
+
+    /// <summary>True when the peer's MAC address is known, so a wake packet can be sent.</summary>
+    public static bool CanWake(PeerConfig peer) => WakeOnLan.Normalize(peer.MacAddress).Length != 0;
+
+    /// <summary>
+    /// Sends a Wake-on-LAN packet to the peer. The background reconnect picks it up once it is awake.
+    /// Returns false when its MAC address is not known yet or nothing could be sent.
+    /// </summary>
+    public bool WakePeer(PeerConfig peer)
+    {
+        if (!CanWake(peer))
+            return false;
+        SimpleLogger.Log("Wake", $"Waking {peer.Name}");
+        var sent = WakeOnLan.Send(peer.MacAddress) > 0;
+        if (sent)
+            PeerWakeSent?.Invoke(this, peer);
+        return sent;
+    }
+
+    /// <summary>
+    /// Called from the mouse hook while the cursor leans on an edge whose peer is not connected. Never
+    /// does I/O here: the packet is sent from the thread pool.
+    /// </summary>
+    private void ConsiderWakingPeerAt(ScreenPosition edge)
+    {
+        if (!_settings.WakeOnEdge)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now - _lastWakeEdgeHit > WakeEdgeHitGapMs)
+            _wakeEdgeHits = 0;
+        _lastWakeEdgeHit = now;
+        if (++_wakeEdgeHits < WakeEdgeHits || now < _nextWakeAllowed)
+            return;
+
+        var peer = _settings.Peers.FirstOrDefault(p => p.Position == edge && p.Enabled);
+        if (peer == null || !CanWake(peer))
+            return;
+
+        _wakeEdgeHits = 0;
+        _nextWakeAllowed = now + WakeRepeatMs;
+        _ = Task.Run(() => WakePeer(peer));
+    }
+
+    #endregion
+
     private PeerConfig? GetPeerAtEdge(ScreenPosition edge)
     {
         var peer = _settings.Peers.FirstOrDefault(p => p.Position == edge && p.Enabled);
@@ -837,7 +914,10 @@ public sealed class RoboMouseService : IDisposable
             targetPeer = GetPeerAtEdge(CursorManager.GetOppositeEdge(edge.Edge));
         }
         if (targetPeer == null)
+        {
+            ConsiderWakingPeerAt(edge.Edge);
             return;
+        }
 
         StartRemoteControl(targetPeer, edge);
         e.Handled = true;

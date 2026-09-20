@@ -76,6 +76,11 @@ public class AppSettings
     public bool WrapAround { get; set; } = false;
 
     /// <summary>
+    /// Pushing the mouse against the edge of a peer that is not connected sends it a Wake-on-LAN packet.
+    /// </summary>
+    public bool WakeOnEdge { get; set; } = true;
+
+    /// <summary>
     /// Number of pixels from screen edge to trigger transition.
     /// </summary>
     public int EdgeThreshold { get; set; } = 0;
