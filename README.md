@@ -19,7 +19,7 @@ machines find each other on your network and connect directly, encrypted.
 
 ## Install
 
-Windows 10/11. No .NET runtime needed. Current version: **1.1.2**, from the
+Windows 10/11. No .NET runtime needed. Current version: **1.1.3**, from the
 [latest release](https://github.com/timothydodd/RoboMouse/releases/latest).
 
 | Download | What it is |
