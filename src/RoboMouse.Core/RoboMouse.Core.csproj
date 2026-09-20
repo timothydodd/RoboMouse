@@ -8,7 +8,7 @@
     <RootNamespace>RoboMouse.Core</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsAotCompatible>true</IsAotCompatible>
-    <Version>1.1.1</Version>
+    <Version>1.1.2</Version>
     <Authors>Tim Dodd</Authors>
     <Product>RoboMouse</Product>
   </PropertyGroup>
