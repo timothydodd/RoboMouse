@@ -38,7 +38,7 @@ public sealed class TrayController : IDisposable
     private readonly DebugPanelViewModel _debugViewModel = new();
     private bool _debugPanelShown;
 #endif
-    private EdgeHighlightWindow? _highlight;
+    private EdgeHighlight? _highlight;
     private bool _wasControllingRemote;
     private ScreenPosition _lastControlledEdge = ScreenPosition.Right;
     private bool _disposed;
@@ -319,7 +319,7 @@ public sealed class TrayController : IDisposable
         var isLocalAgain = _wasControllingRemote && !_service.IsControllingRemote && !_service.IsControlledByRemote;
         if (_settings.EdgeHighlight != EdgeHighlightStyle.None && (_service.IsControlledByRemote || isLocalAgain))
         {
-            _highlight ??= new EdgeHighlightWindow();
+            _highlight ??= new EdgeHighlight();
             _highlight.Flash(_settings.EdgeHighlight, _service.IsControlledByRemote ? _service.EntryEdge : _lastControlledEdge);
         }
 
