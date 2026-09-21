@@ -125,6 +125,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _settings.EdgeHighlight = General.SelectedHighlight.Style;
         _settings.WrapAround = General.WrapAround;
         _settings.WakeOnEdge = General.WakeOnEdge;
+        _settings.FollowHostPower = General.FollowHostPower;
         _settings.DebugPanelEnabled = General.ShowDebugPanel;
         var desktopServiceChanged = _settings.UseDesktopService != General.UseDesktopService;
         _settings.UseDesktopService = General.UseDesktopService;
@@ -135,6 +136,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _settings.Save();
         _backend.ApplyClipboardSetting();
         _backend.ApplyHotkeySetting();
+        _backend.ApplyPowerSetting();
         if (desktopServiceChanged && !await _backend.ApplyDesktopServiceSettingAsync(_settings.UseDesktopService))
         {
             _settings.UseDesktopService = false;
@@ -176,6 +178,7 @@ public sealed partial class GeneralPageViewModel : PageViewModel
     [ObservableProperty] private HighlightChoice _selectedHighlight;
     [ObservableProperty] private bool _wrapAround;
     [ObservableProperty] private bool _wakeOnEdge;
+    [ObservableProperty] private bool _followHostPower;
     [ObservableProperty] private bool _showDebugPanel;
     [ObservableProperty] private bool _useDesktopService;
 
@@ -210,6 +213,7 @@ public sealed partial class GeneralPageViewModel : PageViewModel
         _selectedHighlight = HighlightChoices.FirstOrDefault(c => c.Style == settings.EdgeHighlight) ?? HighlightChoices[2];
         _wrapAround = settings.WrapAround;
         _wakeOnEdge = settings.WakeOnEdge;
+        _followHostPower = settings.FollowHostPower;
         _showDebugPanel = settings.DebugPanelEnabled;
     }
 }

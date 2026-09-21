@@ -35,6 +35,7 @@ public interface IAppBackend
 
     void ApplyClipboardSetting();
     void ApplyHotkeySetting();
+    void ApplyPowerSetting();
 
     /// <summary>True when the separately installed desktop service (UAC / lock screen) is on this machine.</summary>
     bool DesktopServiceInstalled { get; }
@@ -78,6 +79,7 @@ public sealed class ServiceBackend : IAppBackend
     public Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct) => _service.TestConnectionAsync(address, port, ct);
     public void ApplyClipboardSetting() => _service.ApplyClipboardSetting();
     public void ApplyHotkeySetting() => _service.ApplyHotkeySetting();
+    public void ApplyPowerSetting() => _service.UpdatePowerFollowing();
 
     public bool DesktopServiceInstalled => DesktopServiceControl.IsInstalled;
     public DesktopServiceState DesktopServiceState => _service.DesktopServiceState;

@@ -153,6 +153,18 @@ public class MessageSerializationTests
     }
 
     [Theory]
+    [InlineData(PeerPowerState.DisplayOff)]
+    [InlineData(PeerPowerState.DisplayOn)]
+    [InlineData(PeerPowerState.Suspending)]
+    public void PowerStateMessage_RoundTrip_PreservesState(PeerPowerState state)
+    {
+        var deserialized = ProtocolMessage.Deserialize(new PowerStateMessage { State = state }.Serialize()) as PowerStateMessage;
+
+        Assert.NotNull(deserialized);
+        Assert.Equal(state, deserialized.State);
+    }
+
+    [Theory]
     [InlineData(InputBlockReason.None)]
     [InlineData(InputBlockReason.SecureDesktop)]
     [InlineData(InputBlockReason.ElevatedWindow)]

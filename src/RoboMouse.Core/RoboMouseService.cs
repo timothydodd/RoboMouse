@@ -3,6 +3,7 @@ using RoboMouse.Core.Input;
 using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network;
 using RoboMouse.Core.Network.Protocol;
+using RoboMouse.Core.Power;
 using RoboMouse.Core.Screen;
 using InputMouseEventArgs = RoboMouse.Core.Input.MouseEventArgs;
 using ProtocolMessage = RoboMouse.Core.Network.Protocol.Message;
@@ -62,6 +63,15 @@ public sealed class RoboMouseService : IDisposable
     private volatile InputBlockReason _remoteBlockReason;
     private readonly HashSet<MouseEventType> _heldButtons = new();
     private readonly Dictionary<Keys, (uint ScanCode, bool Extended)> _heldKeys = new();
+
+    // Power. Every machine announces its display/sleep state; with FollowHostPower on, this one mirrors
+    // the peer that last controlled it. Controlling that peer back ends it, so two machines never hold
+    // each other awake.
+    private readonly PowerMonitor _powerMonitor;
+    private readonly PowerFollower _powerFollower;
+    private readonly object _powerLock = new();
+    private readonly Dictionary<string, PeerPowerState> _peerPowerStates = new();
+    private string? _powerHostId;
 
     private bool _enabled;
     private bool _disposed;
@@ -198,6 +208,10 @@ public sealed class RoboMouseService : IDisposable
         _rawMouse = new RawMouseInput();
         _rawMouse.Motion += OnRawMouseMotion;
 
+        _powerMonitor = new PowerMonitor();
+        _powerMonitor.Changed += OnLocalPowerStateChanged;
+        _powerFollower = new PowerFollower(_injector);
+
         _clipboardManager = new ClipboardManager(_settings.Clipboard.MaxSizeBytes)
         {
             ShareFiles = _settings.Clipboard.SyncFiles
@@ -277,6 +291,12 @@ public sealed class RoboMouseService : IDisposable
             }
             _connections.Clear();
         }
+
+        lock (_powerLock)
+        {
+            _peerPowerStates.Clear();
+        }
+        UpdatePowerFollowing();
     }
 
     #region Connection management
@@ -496,6 +516,7 @@ public sealed class RoboMouseService : IDisposable
         connection.MessageReceived += OnMessageReceived;
         connection.Disconnected += (s, e) => RemoveConnection(connection);
         connection.Start();
+        connection.Post(new PowerStateMessage { State = _powerMonitor.State });
 
         if (replaced == null)
             PeerConnected?.Invoke(this, connection);
@@ -524,6 +545,14 @@ public sealed class RoboMouseService : IDisposable
         }
 
         ForgetRemoteOffer(connection.PeerId);
+
+        // A host that vanished (it slept before it could say so, or the network dropped) is no reason to
+        // blank this display; just stop holding it on. The host is remembered for when it reconnects.
+        lock (_powerLock)
+        {
+            _peerPowerStates.Remove(connection.PeerId);
+        }
+        UpdatePowerFollowing();
 
         PeerDisconnected?.Invoke(this, connection.PeerId);
     }
@@ -928,7 +957,17 @@ public sealed class RoboMouseService : IDisposable
     private void OnKeyboardEvent(object? sender, KeyboardEventArgs e)
     {
         if (e.IsInjected)
+        {
+            // Volume knobs and media buttons are often turned into keystrokes by the vendor's software,
+            // so they arrive marked as injected. While controlling a remote they belong to it. Nothing
+            // of ours injects keys on this side while it is the controller.
+            if (_enabled && _isControllingRemote && IsMediaKey(e.KeyCode))
+            {
+                e.Handled = true;
+                _activeConnection?.Post(KeyboardMessage.FromEvent(e));
+            }
             return;
+        }
 
         var isDown = e.EventType is KeyboardEventType.KeyDown or KeyboardEventType.SysKeyDown;
         _modifiers.Update(e.KeyCode, isDown);
@@ -951,6 +990,9 @@ public sealed class RoboMouseService : IDisposable
             _activeConnection?.Post(KeyboardMessage.FromEvent(e));
         }
     }
+
+    private static bool IsMediaKey(Keys key) =>
+        key is >= Keys.VolumeMute and <= Keys.MediaPlayPause;
 
     private Hotkey? _hotkey;
 
@@ -975,6 +1017,48 @@ public sealed class RoboMouseService : IDisposable
     {
         _hotkey = Hotkey.Parse(_settings.ToggleHotkey);
     }
+
+    #region Power
+
+    private void OnLocalPowerStateChanged(PeerPowerState state)
+    {
+        List<PeerConnection> connections;
+        lock (_connectionLock)
+        {
+            connections = _connections.Values.ToList();
+        }
+        foreach (var connection in connections)
+            connection.Post(new PowerStateMessage { State = state });
+    }
+
+    /// <summary>The peer that controls this machine becomes its host; controlling a peer stops following it.</summary>
+    private void SetPowerHost(string peerId, bool isHost)
+    {
+        lock (_powerLock)
+        {
+            if (isHost)
+                _powerHostId = peerId;
+            else if (_powerHostId == peerId)
+                _powerHostId = null;
+            else
+                return;
+        }
+        UpdatePowerFollowing();
+    }
+
+    /// <summary>Re-evaluates what to mirror. Call after the setting, the host or a peer's state changes.</summary>
+    public void UpdatePowerFollowing()
+    {
+        PeerPowerState? host = null;
+        lock (_powerLock)
+        {
+            if (_settings.FollowHostPower && _powerHostId != null && _peerPowerStates.TryGetValue(_powerHostId, out var state))
+                host = state;
+        }
+        _powerFollower.Apply(host);
+    }
+
+    #endregion
 
     private void OnHotkeyPressed()
     {
@@ -1008,6 +1092,7 @@ public sealed class RoboMouseService : IDisposable
         _activePeer = peer;
         _activeConnection = connection;
         _isControllingRemote = true;
+        SetPowerHost(peer.Id, isHost: false);
 
         try
         {
@@ -1143,6 +1228,15 @@ public sealed class RoboMouseService : IDisposable
                     }
                     break;
 
+                case PowerStateMessage powerMsg:
+                    SimpleLogger.Log("Power", $"{connection.PeerName}: {powerMsg.State}");
+                    lock (_powerLock)
+                    {
+                        _peerPowerStates[connection.PeerId] = powerMsg.State;
+                    }
+                    UpdatePowerFollowing();
+                    break;
+
                 case CursorLeaveMessage leaveMsg:
                     if (_isControllingRemote && connection == _activeConnection)
                     {
@@ -1184,6 +1278,7 @@ public sealed class RoboMouseService : IDisposable
         _injectionBlocked = false;
         _localBlockReason = InputBlockReason.None;
         _isControlledByRemote = true;
+        SetPowerHost(connection.PeerId, isHost: true);
         _desktopPollTimer?.Dispose();
         _desktopPollTimer = new System.Threading.Timer(_ => ReportInputStatus(), null, 250, 250);
 
@@ -1758,6 +1853,8 @@ public sealed class RoboMouseService : IDisposable
         }
 
         _desktopPollTimer?.Dispose();
+        _powerMonitor.Dispose();
+        _powerFollower.Dispose();
         _serviceInjector?.Dispose();
         _rawMouse.Dispose();
         _mouseHook.Dispose();

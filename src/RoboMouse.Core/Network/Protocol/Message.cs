@@ -108,6 +108,7 @@ public abstract class Message
             MessageType.CursorEnter => CursorEnterMessage.DeserializePayload(payload),
             MessageType.CursorLeave => CursorLeaveMessage.DeserializePayload(payload),
             MessageType.InputStatus => InputStatusMessage.DeserializePayload(payload),
+            MessageType.PowerState => PowerStateMessage.DeserializePayload(payload),
             MessageType.Clipboard => ClipboardMessage.DeserializePayload(payload),
             MessageType.FileOffer => FileOfferMessage.DeserializePayload(payload),
             MessageType.FileOfferRevoked => FileOfferRevokedMessage.DeserializePayload(payload),

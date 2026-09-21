@@ -81,6 +81,12 @@ public class AppSettings
     public bool WakeOnEdge { get; set; } = true;
 
     /// <summary>
+    /// Mirror the power state of the machine that last controlled this one: stay awake with the display
+    /// on while its display is on, and turn this display off when its display turns off or it sleeps.
+    /// </summary>
+    public bool FollowHostPower { get; set; } = false;
+
+    /// <summary>
     /// Number of pixels from screen edge to trigger transition.
     /// </summary>
     public int EdgeThreshold { get; set; } = 0;

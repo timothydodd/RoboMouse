@@ -49,9 +49,11 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 - `RoboMouseService` retries configured peers every 5 s in the background.
 - `WakeOnLan` - each side reports the MAC address of the adapter the connection uses in a trailing, optional handshake field (older builds ignore it, so no protocol bump); it is saved in `PeerConfig.MacAddress`. Leaning on the edge of a configured peer that is not connected (`WakeOnEdge` setting) or the tray's "Wake" item broadcasts the magic packet from the thread pool, never from the hook; the 5 s retry reconnects once the peer is up.
 
+**Power** (`src/RoboMouse.Core/Power/`): every machine announces its display/sleep state in `PowerStateMessage` (`PowerMonitor`: display-state and suspend notifications on a message-only window) on connect and on change; unknown message types are skipped by older builds, so no protocol bump. With `FollowHostPower` on, `PowerFollower` mirrors the peer that last controlled this machine (the host): a `PowerCreateRequest` hold for system + display while the host's display is on, system only while it is off, `SC_MONITORPOWER` off when the host's display turns off or it suspends (skipped if this machine saw input in the last minute). Controlling the host back stops following it, so two machines never hold each other awake. A host that just disconnects only releases the hold.
+
 **Protocol** (`src/RoboMouse.Core/Network/Protocol/`):
 - Binary message format with 2-byte magic, version, type, length prefix, and timestamp (16-byte header)
-- Message types: Handshake (carries `ConnectionKind` and listen port), Mouse (relative deltas), Keyboard, Clipboard, FileOffer/FileOfferRevoked/FileRequest/FileChunk, CursorEnter (carries the wrap-around flag)/Leave, InputStatus (controlled side reports a UAC prompt or elevated window), Ping/Pong
+- Message types: Handshake (carries `ConnectionKind` and listen port), Mouse (relative deltas), Keyboard, Clipboard, FileOffer/FileOfferRevoked/FileRequest/FileChunk, CursorEnter (carries the wrap-around flag)/Leave, InputStatus (controlled side reports a UAC prompt or elevated window), PowerState, Ping/Pong
 - Protocol version 4; both peers must run the same version
 
 ### Control Flow

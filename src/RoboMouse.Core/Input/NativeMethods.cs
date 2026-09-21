@@ -476,6 +476,91 @@ internal static unsafe partial class NativeMethods
 
     #endregion
 
+    #region Power
+
+    public const uint WM_POWERBROADCAST = 0x0218;
+    public const uint WM_SYSCOMMAND = 0x0112;
+    public const nint SC_MONITORPOWER = 0xF170;
+    public const nint MONITOR_OFF = 2;
+    public const nint HWND_BROADCAST = 0xFFFF;
+
+    public const int PBT_APMSUSPEND = 0x0004;
+    public const int PBT_APMRESUMESUSPEND = 0x0007;
+    public const int PBT_APMRESUMEAUTOMATIC = 0x0012;
+    public const int PBT_POWERSETTINGCHANGE = 0x8013;
+
+    public const uint DEVICE_NOTIFY_WINDOW_HANDLE = 0;
+
+    /// <summary>GUID_CONSOLE_DISPLAY_STATE: data is 0 (off), 1 (on) or 2 (dimmed).</summary>
+    public static readonly Guid GUID_CONSOLE_DISPLAY_STATE = new("6fe69556-704a-47a0-8f24-c28d936fda47");
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POWERBROADCAST_SETTING
+    {
+        public Guid PowerSetting;
+        public uint DataLength;
+        public byte Data;
+    }
+
+    public const uint POWER_REQUEST_CONTEXT_VERSION = 0;
+    public const uint POWER_REQUEST_CONTEXT_SIMPLE_STRING = 0x1;
+
+    public const int PowerRequestDisplayRequired = 0;
+    public const int PowerRequestSystemRequired = 1;
+
+    /// <summary>REASON_CONTEXT with the simple-string arm of its union; padded to the size of the detailed arm.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct REASON_CONTEXT
+    {
+        public uint Version;
+        public uint Flags;
+        public char* SimpleReasonString;
+        private nint _pad1;
+        private nint _pad2;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LASTINPUTINFO
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial nint RegisterPowerSettingNotification(nint hRecipient, Guid* powerSettingGuid, uint flags);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool UnregisterPowerSettingNotification(nint handle);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial nint RegisterSuspendResumeNotification(nint hRecipient, uint flags);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool UnregisterSuspendResumeNotification(nint handle);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetLastInputInfo(LASTINPUTINFO* plii);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint PowerCreateRequest(REASON_CONTEXT* context);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool PowerSetRequest(nint powerRequest, int requestType);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool PowerClearRequest(nint powerRequest, int requestType);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseHandle(nint handle);
+
+    #endregion
+
     #region OLE
 
     [LibraryImport("ole32.dll")]

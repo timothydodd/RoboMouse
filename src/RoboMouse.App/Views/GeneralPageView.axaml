@@ -47,6 +47,12 @@
         <ToggleSwitch IsChecked="{Binding WakeOnEdge}" />
       </views:SettingCard>
 
+      <TextBlock Classes="section" Text="Power" />
+      <views:SettingCard Header="Stay awake with the controlling PC"
+                         Description="Turn this on at the PC being controlled. While the PC that last controlled this one has its display on, this PC and its display stay on too; when that PC's display turns off or it goes to sleep, this display turns off and the usual sleep timers apply again.">
+        <ToggleSwitch IsChecked="{Binding FollowHostPower}" />
+      </views:SettingCard>
+
       <TextBlock Classes="section" Text="Secure desktop" IsVisible="{Binding DesktopServiceInstalled}" />
       <views:SettingCard Header="Control UAC prompts and the lock screen"
                          Description="{Binding DesktopServiceDescription}"

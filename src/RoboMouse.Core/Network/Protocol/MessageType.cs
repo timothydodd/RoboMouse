@@ -26,6 +26,9 @@ public enum MessageType : byte
     /// <summary>The controlled peer reports whether it can currently apply input (UAC prompt, elevated window).</summary>
     InputStatus = 0x22,
 
+    /// <summary>The sender's display turned on or off, or it is about to sleep.</summary>
+    PowerState = 0x23,
+
     /// <summary>Clipboard data.</summary>
     Clipboard = 0x30,
 
