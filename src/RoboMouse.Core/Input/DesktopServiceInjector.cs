@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Security.Principal;
 using System.Threading.Channels;
 using RoboMouse.Contracts;
 using RoboMouse.Core.Logging;
@@ -27,25 +28,49 @@ public enum DesktopServiceState
 public sealed class DesktopServiceInjector : IInputInjector, IDisposable
 {
     private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Commands waiting for the pipe. Past <see cref="MotionDropDepth"/> relative motion is dropped (the
+    /// next move carries the cursor on anyway); a full queue sends everything else in-process. Either
+    /// only happens when the service stops reading, and keeps memory bounded if it does.
+    /// </summary>
+    private const int QueueCapacity = 1024;
+    private const int MotionDropDepth = 256;
+
     /// <summary>A lost reply must not stall the network thread; past this the local position is used.</summary>
     internal int CursorQueryTimeoutMs { get; set; } = 50;
 
-    private readonly InProcessInjector _local = new();
+    private readonly IInputInjector _local;
     private readonly string _pipeName;
+    private readonly Func<NamedPipeClientStream, string?>? _verifyServer;
     private readonly object _gate = new();
     private readonly object _queryLock = new();
     private readonly ManualResetEventSlim _cursorReply = new(false);
 
     private CancellationTokenSource? _cts;
-    private volatile ChannelWriter<PipeMessage>? _outbound;
+    private volatile Channel<PipeMessage>? _outbound;
     private volatile bool _active;
     private (int X, int Y) _cursor;
+    private uint _querySequence;
+    private volatile uint _awaitedSequence;
     private DesktopServiceState _state = DesktopServiceState.Off;
     private string? _lastProblem;
 
-    public DesktopServiceInjector() : this(PipeNames.Control) { }
+    public DesktopServiceInjector()
+        : this(PipeNames.Control, new InProcessInjector(), DesktopServiceControl.VerifyPipeServer) { }
 
-    internal DesktopServiceInjector(string pipeName) => _pipeName = pipeName;
+    /// <param name="pipeName">Control pipe to connect to.</param>
+    /// <param name="local">Where input goes while the service is not ready.</param>
+    /// <param name="verifyServer">
+    /// Returns null when the connected pipe's server is the real service, else why not. Only tests pass
+    /// null (no check): their stand-in server is not a Windows service.
+    /// </param>
+    internal DesktopServiceInjector(string pipeName, IInputInjector local, Func<NamedPipeClientStream, string?>? verifyServer)
+    {
+        _pipeName = pipeName;
+        _local = local;
+        _verifyServer = verifyServer;
+    }
 
     public DesktopServiceState State => _state;
 
@@ -94,13 +119,9 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                // Retried every few seconds, so only say it when the reason changes.
-                var problem = ex is TimeoutException
+                Report(ex is TimeoutException
                     ? "Desktop service is not answering on its pipe (not running, or busy with another client)"
-                    : $"Desktop service connection failed: {ex.GetType().Name}: {ex.Message}";
-                if (problem != _lastProblem)
-                    SimpleLogger.Log("Service", problem);
-                _lastProblem = problem;
+                    : $"Desktop service connection failed: {ex.GetType().Name}: {ex.Message}");
             }
 
             _active = false;
@@ -117,10 +138,28 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
         }
     }
 
+    // Retried every few seconds, so only say it when the reason changes.
+    private void Report(string problem)
+    {
+        if (problem != _lastProblem)
+            SimpleLogger.Log("Service", problem);
+        _lastProblem = problem;
+    }
+
     private async Task RunConnectionAsync(CancellationToken ct)
     {
-        using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        // Identification: the service may learn who we are, but can never act as us.
+        using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous,
+            TokenImpersonationLevel.Identification);
         await client.ConnectAsync(1000, ct).ConfigureAwait(false);
+
+        // Nothing is sent, not even Hello, until the other end is known to be the service.
+        if (_verifyServer?.Invoke(client) is { } untrusted)
+        {
+            Report($"Not using the desktop service pipe: {untrusted}");
+            return;
+        }
+
         using var pipe = new PipeConnection(client);
         await pipe.SendAsync(PipeMessage.Hello(), ct).ConfigureAwait(false);
         SimpleLogger.Log("Service", "Connected to the desktop service; waiting for its helper");
@@ -128,7 +167,11 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
 
         // Injection calls arrive on network threads and must not block on the pipe, so they queue here
         // and one writer drains them in order.
-        var channel = Channel.CreateUnbounded<PipeMessage>(new UnboundedChannelOptions { SingleReader = true });
+        var channel = Channel.CreateBounded<PipeMessage>(new BoundedChannelOptions(QueueCapacity)
+        {
+            SingleReader = true,
+            FullMode = BoundedChannelFullMode.Wait
+        });
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var writer = Task.Run(async () =>
         {
@@ -166,7 +209,7 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
                         }
                         break;
                     case PipeOpcode.HelperReady:
-                        _outbound = channel.Writer;
+                        _outbound = channel;
                         _active = true;
                         SimpleLogger.Log("Service", "Desktop service ready; remote input goes through it");
                         SetState(DesktopServiceState.Active);
@@ -176,9 +219,14 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
                         SimpleLogger.Log("Service", "Desktop service lost its helper; injecting in-process");
                         SetState(DesktopServiceState.Connecting);
                         break;
-                    case PipeOpcode.CursorPosition:
-                        _cursor = message.ReadMotion();
-                        _cursorReply.Set();
+                    case PipeOpcode.CursorPosition when message.IsWellFormed:
+                        var (x, y, sequence) = message.ReadCursorPosition();
+                        // A reply to a query that already timed out must not answer the next one.
+                        if (sequence == _awaitedSequence)
+                        {
+                            _cursor = (x, y);
+                            _cursorReply.Set();
+                        }
                         break;
                 }
             }
@@ -196,7 +244,12 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
     private bool TrySend(PipeMessage message)
     {
         var outbound = _outbound;
-        return _active && outbound != null && outbound.TryWrite(message);
+        if (!_active || outbound == null)
+            return false;
+        // Drop surplus motion first: a key or click must never be the thing that gets lost.
+        if (message.Opcode == PipeOpcode.InjectMotion && outbound.Reader.Count >= MotionDropDepth)
+            return true;
+        return outbound.Writer.TryWrite(message);
     }
 
     // UIPI does not apply to the SYSTEM helper, so a routed move never reports "blocked".
@@ -217,7 +270,8 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
 
     /// <summary>
     /// GetCursorPos fails from this process while the secure desktop is up, so the helper answers. The
-    /// query travels the same ordered path as the moves before it.
+    /// query travels the same ordered path as the moves before it, and carries a sequence id so a reply
+    /// that arrives after its query gave up is ignored rather than taken as the answer to the next.
     /// </summary>
     public (int X, int Y) GetCursorPosition()
     {
@@ -226,8 +280,10 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
 
         lock (_queryLock)
         {
+            var sequence = ++_querySequence;
+            _awaitedSequence = sequence;
             _cursorReply.Reset();
-            if (TrySend(new PipeMessage(PipeOpcode.QueryCursor)) && _cursorReply.Wait(CursorQueryTimeoutMs))
+            if (TrySend(PipeMessage.QueryCursor(sequence)) && _cursorReply.Wait(CursorQueryTimeoutMs))
                 return _cursor;
         }
         return _local.GetCursorPosition();
