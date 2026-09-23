@@ -55,16 +55,13 @@ internal sealed class ServiceWorker : IDisposable
         Log.Write($"Accepting the app at '{appPath}'" + (packageFamily != null ? $" or package family '{packageFamily}'" : ""));
 
         var signatures = new AuthenticodeReader();
-        var serviceSigner = new Lazy<string?>(() =>
-        {
-            var signer = Environment.ProcessPath is { } self ? signatures.GetTrustedSigner(self) : null;
-            Log.Write(signer != null
-                ? $"Service is signed by '{signer}'; the app must be signed by the same publisher"
-                : "Service exe is not signed (a dev build); the app is checked by path only");
-            return signer;
-        });
+        // Checked on the first connection and kept only once definite: a check that fails for another
+        // reason than "no signature" refuses that connection instead of passing for a dev build.
+        var serviceSignature = new ServiceSignature(() => Environment.ProcessPath is { } self
+            ? signatures.Check(self)
+            : SignatureCheck.Failed("the service's own path is unknown"));
 
-        _pipe = new ControlPipeServer(new CallerPolicy(appPath, packageFamily, serviceSigner, new Win32ProcessInspector(), signatures));
+        _pipe = new ControlPipeServer(new CallerPolicy(appPath, packageFamily, serviceSignature, new Win32ProcessInspector(), signatures));
         _pipe.ClientConnected += HandleAppAsync;
         _sessions = new SessionMonitor(_consoleSession);
         _sessions.Changed += OnConsoleSessionChanged;

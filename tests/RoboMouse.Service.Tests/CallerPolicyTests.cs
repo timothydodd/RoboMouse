@@ -8,7 +8,9 @@ public class CallerPolicyTests
     private const string AppPath = @"C:\Program Files\RoboMouse\RoboMouse.App.exe";
     private const string Family = "12345TimDodd.RoboMouse_abcdefghjkmnp";
     private const string PackageDir = @"C:\Program Files\WindowsApps\12345TimDodd.RoboMouse_1.1.5.0_x64__abcdefghjkmnp";
-    private const string Publisher = "CN=Tim Dodd, O=Tim Dodd, C=US";
+    private const string Issuer = "CN=Microsoft ID Verified CS EOC CA 01, O=Microsoft Corporation, C=US";
+    private const string ValidationOid = "1.3.6.1.4.1.311.97.123456789.1";
+    private static readonly SignerIdentity Publisher = new("CN=Tim Dodd, O=Tim Dodd, C=US", Issuer, [ValidationOid]);
     private const uint Console = 2;
     private const long ConnectedAt = 1_000_000;
 
@@ -43,16 +45,20 @@ public class CallerPolicyTests
         }
     }
 
-    private sealed class FakeSignatures(Dictionary<string, string> signers) : ISignatureReader
+    private sealed class FakeSignatures(Dictionary<string, SignerIdentity> signers) : ISignatureReader
     {
-        public string? GetTrustedSigner(string path) => signers.TryGetValue(path, out var s) ? s : null;
+        public Dictionary<string, SignatureCheck> Results { get; } = new();
+
+        public SignatureCheck Check(string path) =>
+            Results.TryGetValue(path, out var result) ? result
+            : signers.TryGetValue(path, out var s) ? SignatureCheck.SignedBy(s) : SignatureCheck.Unsigned;
     }
 
     private static readonly PipeCaller Caller = new(ProcessId: 4242, PipeSessionId: Console, ConsoleSessionId: Console, ConnectedAt: ConnectedAt);
 
-    private static CallerPolicy Policy(FakeProcess? process, string? serviceSigner = Publisher, string? family = Family,
-        Dictionary<string, string>? signers = null) =>
-        new(AppPath, family, serviceSigner, new FakeInspector(process),
+    private static CallerPolicy Policy(FakeProcess? process, SignerIdentity? serviceSigner = null, string? family = Family,
+        Dictionary<string, SignerIdentity>? signers = null, bool unsignedService = false) =>
+        new(AppPath, family, unsignedService ? null : serviceSigner ?? Publisher, new FakeInspector(process),
             new FakeSignatures(signers ?? new() { [AppPath] = Publisher }));
 
     private static FakeProcess StoreProcess() => new()
@@ -138,14 +144,75 @@ public class CallerPolicyTests
 
     [Fact]
     public void AppSignedBySomeoneElse_IsRejected() =>
-        AssertRejected(Policy(new FakeProcess(), signers: new() { [AppPath] = "CN=Mallory" }), Caller, "signed by 'CN=Mallory'");
+        AssertRejected(Policy(new FakeProcess(), signers: new() { [AppPath] = Publisher with { Subject = "CN=Mallory" } }), Caller, "signed by 'CN=Mallory'");
 
     [Fact]
     public void UnsignedService_ChecksThePathOnly()
     {
         // Install-DevService.ps1 builds are unsigned; the path is still enforced.
-        Assert.True(Policy(new FakeProcess(), serviceSigner: null, signers: new()).IsAllowed(Caller, out var reason), reason);
-        AssertRejected(Policy(new FakeProcess { ImagePath = @"C:\Temp\RoboMouse.App.exe" }, serviceSigner: null), Caller, "expected");
+        Assert.True(Policy(new FakeProcess(), unsignedService: true, signers: new()).IsAllowed(Caller, out var reason), reason);
+        AssertRejected(Policy(new FakeProcess { ImagePath = @"C:\Temp\RoboMouse.App.exe" }, unsignedService: true), Caller, "expected");
+    }
+
+    [Fact]
+    public void AppWithTheSameSubject_FromAnotherCA_IsRejected() =>
+        AssertRejected(Policy(new FakeProcess(), signers: new() { [AppPath] = Publisher with { Issuer = "CN=Some Other CA" } }),
+            Caller, "signed through 'CN=Some Other CA'");
+
+    [Fact]
+    public void AppWithoutTheServicesValidatedIdentity_IsRejected()
+    {
+        // Same subject and CA, but another Artifact Signing account (its own validation EKU, or none).
+        AssertRejected(Policy(new FakeProcess(), signers: new() { [AppPath] = Publisher with { ValidationOids = [] } }),
+            Caller, "validated identity");
+        AssertRejected(Policy(new FakeProcess(), signers: new() { [AppPath] = Publisher with { ValidationOids = ["1.3.6.1.4.1.311.97.999.1"] } }),
+            Caller, "validated identity");
+    }
+
+    [Fact]
+    public void ServiceWithoutAValidationEku_ComparesSubjectAndIssuer()
+    {
+        var plain = new SignerIdentity(Publisher.Subject, Issuer);
+        Assert.True(Policy(new FakeProcess(), serviceSigner: plain, signers: new() { [AppPath] = Publisher }).IsAllowed(Caller, out var reason), reason);
+    }
+
+    [Fact]
+    public void AppWithAnInvalidSignature_IsRejected()
+    {
+        var signatures = new FakeSignatures(new());
+        signatures.Results[AppPath] = SignatureCheck.Failed("WinVerifyTrust returned 0x800B0109");
+        var policy = new CallerPolicy(AppPath, Family, Publisher, new FakeInspector(new FakeProcess()), signatures);
+
+        AssertRejected(policy, Caller, "0x800B0109");
+    }
+
+    [Fact]
+    public void ServiceSignatureThatCannotBeChecked_FailsClosed_AndIsCheckedAgain()
+    {
+        var calls = 0;
+        var service = new ServiceSignature(() => ++calls == 1
+            ? SignatureCheck.Failed("chain could not be built")
+            : SignatureCheck.SignedBy(Publisher));
+        var policy = new CallerPolicy(AppPath, Family, service, new FakeInspector(new FakeProcess()),
+            new FakeSignatures(new() { [AppPath] = Publisher }));
+
+        // Not treated as an unsigned dev build (which would check the path only).
+        AssertRejected(policy, Caller, "could not be checked");
+        Assert.True(policy.IsAllowed(Caller, out var reason), reason);
+        Assert.True(policy.IsAllowed(Caller, out reason), reason);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public void UnsignedService_IsRememberedAfterOneCheck()
+    {
+        var calls = 0;
+        var service = new ServiceSignature(() => { calls++; return SignatureCheck.Unsigned; });
+        var policy = new CallerPolicy(AppPath, Family, service, new FakeInspector(new FakeProcess()), new FakeSignatures(new()));
+
+        Assert.True(policy.IsAllowed(Caller, out var reason), reason);
+        Assert.True(policy.IsAllowed(Caller, out reason), reason);
+        Assert.Equal(1, calls);
     }
 
     [Fact]

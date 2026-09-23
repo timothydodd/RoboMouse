@@ -81,15 +81,20 @@ internal sealed unsafe class Win32ClientProcess : IClientProcess
 
 /// <summary>
 /// Authenticode through WinVerifyTrust: the signature must verify and chain to a trusted root. The
-/// signer is compared by certificate subject, not thumbprint, because Azure Artifact Signing issues a
-/// new short-lived leaf certificate every few days for the same verified identity. Revocation is not
-/// checked (no CRL/OCSP round trips); the chain may still fetch a missing root through Windows' root
-/// update, which is why the service's own signer is only worked out on the first connection.
+/// signer is described by subject, issuing CA and identity-validation EKUs rather than thumbprint,
+/// because Azure Artifact Signing issues a new short-lived leaf certificate every few days for the same
+/// verified identity. Only <c>TRUST_E_NOSIGNATURE</c> counts as unsigned; every other failure is
+/// <see cref="SignatureStatus.Invalid"/>. Revocation is not checked (no CRL/OCSP round trips); the chain
+/// may still fetch a missing root through Windows' root update, which is why the service's own signer
+/// is only worked out on the first connection.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed unsafe class AuthenticodeReader : ISignatureReader
 {
-    public string? GetTrustedSigner(string path)
+    private const int TRUST_E_NOSIGNATURE = unchecked((int)0x800B0100);
+    private const string EnhancedKeyUsageOid = "2.5.29.37";
+
+    public SignatureCheck Check(string path)
     {
         var action = WintrustActionGenericVerifyV2;
         fixed (char* file = path)
@@ -108,27 +113,30 @@ internal sealed unsafe class AuthenticodeReader : ISignatureReader
 
             try
             {
-                if (WinVerifyTrust(-1, &action, &data) != 0)
-                    return null;
+                var result = WinVerifyTrust(-1, &action, &data);
+                if (result == TRUST_E_NOSIGNATURE)
+                    return SignatureCheck.Unsigned;
+                if (result != 0)
+                    return SignatureCheck.Failed($"WinVerifyTrust returned 0x{result:X8}");
 
                 var provider = WTHelperProvDataFromStateData(data.hWVTStateData);
                 if (provider == 0)
-                    return null;
+                    return SignatureCheck.Failed("no provider data");
                 var signer = WTHelperGetProvSignerFromChain(provider, 0, 0, 0);
                 if (signer == null || signer->csCertChain == 0 || signer->pasCertChain == null)
-                    return null;
+                    return SignatureCheck.Failed("no signer certificate chain");
                 var cert = signer->pasCertChain[0].pCert;
                 if (cert == null || cert->pbCertEncoded == null)
-                    return null;
+                    return SignatureCheck.Failed("no signer certificate");
 
                 using var certificate = X509CertificateLoader.LoadCertificate(
                     new ReadOnlySpan<byte>(cert->pbCertEncoded, (int)cert->cbCertEncoded));
-                return certificate.Subject;
+                return SignatureCheck.SignedBy(new SignerIdentity(certificate.Subject, certificate.Issuer, ValidationOids(certificate)));
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 Log.Write($"Signature check of '{path}' failed: {ex.Message}");
-                return null;
+                return SignatureCheck.Failed(ex.Message);
             }
             finally
             {
@@ -136,5 +144,23 @@ internal sealed unsafe class AuthenticodeReader : ISignatureReader
                 WinVerifyTrust(-1, &action, &data);
             }
         }
+    }
+
+    /// <summary>The certificate's enhanced key usages under the identity-validation arc.</summary>
+    private static List<string> ValidationOids(X509Certificate2 certificate)
+    {
+        var oids = new List<string>();
+        foreach (var extension in certificate.Extensions)
+        {
+            if (extension.Oid?.Value != EnhancedKeyUsageOid)
+                continue;
+            var usages = extension as X509EnhancedKeyUsageExtension ?? new X509EnhancedKeyUsageExtension(extension, extension.Critical);
+            foreach (var usage in usages.EnhancedKeyUsages)
+            {
+                if (usage.Value is { } value && value.StartsWith(SignerIdentity.IdentityValidationOidPrefix, StringComparison.Ordinal))
+                    oids.Add(value);
+            }
+        }
+        return oids;
     }
 }

@@ -31,14 +31,103 @@ internal interface IProcessInspector
     IClientProcess? Open(uint pid);
 }
 
+/// <summary>How a file's Authenticode signature checked out.</summary>
+internal enum SignatureStatus
+{
+    /// <summary>The signature verifies and chains to a trusted root; <see cref="SignatureCheck.Signer"/> says who signed.</summary>
+    Signed,
+
+    /// <summary>The file carries no signature at all (<c>TRUST_E_NOSIGNATURE</c>).</summary>
+    Unsigned,
+
+    /// <summary>
+    /// Anything else: a bad or untrusted signature, or the check itself failed (a chain that could not
+    /// be built yet, say). Never taken to mean "unsigned".
+    /// </summary>
+    Invalid
+}
+
+/// <summary>
+/// The parts of a signer certificate the policy compares. Azure Artifact (Trusted) Signing issues a new
+/// short-lived leaf every few days for the same verified identity, so the thumbprint changes; the
+/// subject, the issuing CA and the identity-validation EKU do not.
+/// </summary>
+/// <param name="Subject">Subject of the leaf certificate.</param>
+/// <param name="Issuer">Subject of the CA that issued it (the leaf's issuer name).</param>
+/// <param name="ValidationOids">
+/// The leaf's enhanced key usages under <see cref="IdentityValidationOidPrefix"/>: Artifact Signing puts
+/// the id of the validated identity there, unique to the signing account.
+/// </param>
+internal sealed record SignerIdentity(string Subject, string Issuer, IReadOnlyList<string> ValidationOids)
+{
+    /// <summary>Microsoft's arc for Artifact/Trusted Signing identity-validation EKUs.</summary>
+    public const string IdentityValidationOidPrefix = "1.3.6.1.4.1.311.97.";
+
+    public SignerIdentity(string subject, string issuer) : this(subject, issuer, []) { }
+}
+
+/// <summary>The result of checking a file's signature.</summary>
+internal readonly record struct SignatureCheck(SignatureStatus Status, SignerIdentity? Signer = null, string? Error = null)
+{
+    public static SignatureCheck Unsigned => new(SignatureStatus.Unsigned);
+
+    public static SignatureCheck SignedBy(SignerIdentity signer) => new(SignatureStatus.Signed, signer);
+
+    public static SignatureCheck Failed(string error) => new(SignatureStatus.Invalid, Error: error);
+}
+
 /// <summary>Reads who signed an executable.</summary>
 internal interface ISignatureReader
 {
     /// <summary>
-    /// Subject of the Authenticode signer when the file's signature verifies and chains to a trusted
-    /// root, otherwise null (unsigned, tampered, or untrusted).
+    /// Checks the Authenticode signature of <paramref name="path"/>: signed (verifies and chains to a
+    /// trusted root) with the signer's details, unsigned, or invalid. Never throws.
     /// </summary>
-    string? GetTrustedSigner(string path);
+    SignatureCheck Check(string path);
+}
+
+/// <summary>
+/// The service exe's own signature, checked on first use and kept once the answer is definite (signed
+/// or unsigned). A failed check is not kept: the next connection tries again, and until then callers
+/// are refused rather than waved through as if the service were an unsigned dev build.
+/// </summary>
+internal sealed class ServiceSignature
+{
+    private readonly Func<SignatureCheck> _check;
+    private readonly Lock _lock = new();
+    private SignatureCheck? _known;
+
+    public ServiceSignature(Func<SignatureCheck> check) => _check = check;
+
+    /// <summary>A signature that is already known (for tests and fixed setups).</summary>
+    public static ServiceSignature Known(SignerIdentity? signer) =>
+        new(() => signer != null ? SignatureCheck.SignedBy(signer) : SignatureCheck.Unsigned);
+
+    public SignatureCheck Get()
+    {
+        lock (_lock)
+        {
+            if (_known is { } known)
+                return known;
+
+            var result = _check();
+            switch (result.Status)
+            {
+                case SignatureStatus.Signed:
+                    Log.Write($"Service is signed by '{result.Signer!.Subject}' (issued by '{result.Signer.Issuer}'); the app must be signed the same way");
+                    _known = result;
+                    break;
+                case SignatureStatus.Unsigned:
+                    Log.Write("Service exe is not signed (a dev build); the app is checked by path only");
+                    _known = result;
+                    break;
+                default:
+                    Log.WriteLimited("service-signature", $"The service's own signature could not be checked ({result.Error}); refusing the app until it can");
+                    break;
+            }
+            return result;
+        }
+    }
 }
 
 /// <summary>What the pipe knows about a connected client.</summary>
@@ -53,7 +142,8 @@ internal readonly record struct PipeCaller(uint ProcessId, uint PipeSessionId, u
 /// in the console session (see the security boundary in plans/uac-service.md):
 /// <list type="bullet">
 /// <item>the directly installed app: the exe at the configured path, and, when the service exe itself
-/// is Authenticode-signed, signed by the same publisher;</item>
+/// is Authenticode-signed, signed by the same publisher (same subject, same issuing CA, and the same
+/// Artifact Signing identity-validation EKU when the service's certificate has one);</item>
 /// <item>the Store app: <c>RoboMouse.App.exe</c> with our package family, inside that package's install
 /// folder (WindowsApps; Windows itself checks the package signature, and the files inside it are not
 /// signed individually).</item>
@@ -67,7 +157,7 @@ internal sealed class CallerPolicy
 
     private readonly string _expectedAppPath;
     private readonly string? _expectedPackageFamily;
-    private readonly Lazy<string?> _serviceSigner;
+    private readonly ServiceSignature _serviceSignature;
     private readonly IProcessInspector _processes;
     private readonly ISignatureReader _signatures;
 
@@ -77,20 +167,20 @@ internal sealed class CallerPolicy
     /// Signer of the service's own exe, or null when it is unsigned (a dev build from
     /// Install-DevService.ps1); then the installed app is checked by path only.
     /// </param>
-    public CallerPolicy(string expectedAppPath, string? expectedPackageFamily, string? serviceSigner,
+    public CallerPolicy(string expectedAppPath, string? expectedPackageFamily, SignerIdentity? serviceSigner,
         IProcessInspector processes, ISignatureReader signatures)
-        : this(expectedAppPath, expectedPackageFamily, new Lazy<string?>(serviceSigner), processes, signatures) { }
+        : this(expectedAppPath, expectedPackageFamily, ServiceSignature.Known(serviceSigner), processes, signatures) { }
 
     /// <summary>
-    /// With the service's own signer worked out on first use: verifying a signature can build a
+    /// With the service's own signature worked out on first use: verifying a signature can build a
     /// certificate chain, which must not hold up the service's start.
     /// </summary>
-    public CallerPolicy(string expectedAppPath, string? expectedPackageFamily, Lazy<string?> serviceSigner,
+    public CallerPolicy(string expectedAppPath, string? expectedPackageFamily, ServiceSignature serviceSignature,
         IProcessInspector processes, ISignatureReader signatures)
     {
         _expectedAppPath = expectedAppPath;
         _expectedPackageFamily = expectedPackageFamily;
-        _serviceSigner = serviceSigner;
+        _serviceSignature = serviceSignature;
         _processes = processes;
         _signatures = signatures;
     }
@@ -133,17 +223,16 @@ internal sealed class CallerPolicy
 
         if (PathEquals(path, _expectedAppPath))
         {
-            var serviceSigner = _serviceSigner.Value;
-            if (serviceSigner != null)
+            var service = _serviceSignature.Get();
+            if (service.Status == SignatureStatus.Invalid)
             {
-                var signer = _signatures.GetTrustedSigner(path);
-                if (!string.Equals(signer, serviceSigner, StringComparison.Ordinal))
-                {
-                    reason = signer == null
-                        ? $"'{path}' has no valid signature"
-                        : $"'{path}' is signed by '{signer}', not '{serviceSigner}'";
-                    return false;
-                }
+                reason = $"the service's own signature could not be checked ({service.Error})";
+                return false;
+            }
+            if (service.Status == SignatureStatus.Signed && !IsSignedLike(path, service.Signer!, out var signerProblem))
+            {
+                reason = signerProblem;
+                return false;
             }
         }
         else if (!IsStoreApp(process, path, out var storeProblem))
@@ -160,6 +249,37 @@ internal sealed class CallerPolicy
         }
 
         reason = string.Empty;
+        return true;
+    }
+
+    /// <summary>Whether <paramref name="path"/> is validly signed by the same publisher, through the same CA, as the service.</summary>
+    private bool IsSignedLike(string path, SignerIdentity expected, out string problem)
+    {
+        var check = _signatures.Check(path);
+        problem = string.Empty;
+        if (check.Status != SignatureStatus.Signed || check.Signer is not { } signer)
+        {
+            problem = check.Status == SignatureStatus.Invalid && check.Error != null
+                ? $"'{path}' has no valid signature ({check.Error})"
+                : $"'{path}' has no valid signature";
+            return false;
+        }
+        if (!string.Equals(signer.Subject, expected.Subject, StringComparison.Ordinal))
+        {
+            problem = $"'{path}' is signed by '{signer.Subject}', not '{expected.Subject}'";
+            return false;
+        }
+        if (!string.Equals(signer.Issuer, expected.Issuer, StringComparison.Ordinal))
+        {
+            problem = $"'{path}' is signed through '{signer.Issuer}', not '{expected.Issuer}'";
+            return false;
+        }
+        var missing = expected.ValidationOids.FirstOrDefault(oid => !signer.ValidationOids.Contains(oid, StringComparer.Ordinal));
+        if (missing != null)
+        {
+            problem = $"'{path}' is signed by '{signer.Subject}' but without the service's validated identity {missing}";
+            return false;
+        }
         return true;
     }
 
