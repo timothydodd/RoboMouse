@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RoboMouse.Helper", "src\Rob
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RoboMouse.App.Tests", "tests\RoboMouse.App.Tests\RoboMouse.App.Tests.csproj", "{C6947199-B7B1-4DC9-BACB-592E0E0B0CDE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RoboMouse.Service.Tests", "tests\RoboMouse.Service.Tests\RoboMouse.Service.Tests.csproj", "{0D140C51-14D8-4683-A39C-A1C349A263A6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -129,6 +131,18 @@ Global
 		{C6947199-B7B1-4DC9-BACB-592E0E0B0CDE}.Release|x64.Build.0 = Release|Any CPU
 		{C6947199-B7B1-4DC9-BACB-592E0E0B0CDE}.Release|x86.ActiveCfg = Release|Any CPU
 		{C6947199-B7B1-4DC9-BACB-592E0E0B0CDE}.Release|x86.Build.0 = Release|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Debug|x64.Build.0 = Debug|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Debug|x86.Build.0 = Debug|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Release|x64.ActiveCfg = Release|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Release|x64.Build.0 = Release|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Release|x86.ActiveCfg = Release|Any CPU
+		{0D140C51-14D8-4683-A39C-A1C349A263A6}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -1,5 +1,4 @@
 using System.IO.Pipes;
-using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -9,16 +8,15 @@ namespace RoboMouse.Service;
 
 /// <summary>
 /// Hosts the control pipe the normal-user app connects to. The pipe is ACL'd to the interactive user
-/// and SYSTEM; each accepted connection is additionally checked to be the installed RoboMouse.App
-/// running in the active console session before any message is honoured (see the security boundary in
-/// plans/uac-service.md). One app connection at a time.
+/// and SYSTEM; each accepted connection is additionally checked by <see cref="CallerPolicy"/> to be the
+/// installed RoboMouse.App running in the active console session before any message is honoured (see
+/// the security boundary in plans/uac-service.md). One app connection at a time.
 /// </summary>
 [SupportedOSPlatform("windows")]
-internal sealed partial class ControlPipeServer : IDisposable
+internal sealed class ControlPipeServer : IDisposable
 {
     private readonly CancellationTokenSource _cts = new();
-    private readonly string _expectedAppPath;
-    private readonly string? _expectedPackageFamily;
+    private readonly CallerPolicy _policy;
     private Task? _loop;
 
     /// <summary>
@@ -27,13 +25,7 @@ internal sealed partial class ControlPipeServer : IDisposable
     /// </summary>
     public event Func<PipeConnection, uint, CancellationToken, Task>? ClientConnected;
 
-    /// <param name="expectedAppPath">Full path of the directly installed RoboMouse.App.exe.</param>
-    /// <param name="expectedPackageFamily">Package family name of the Store app, when that is allowed too.</param>
-    public ControlPipeServer(string expectedAppPath, string? expectedPackageFamily)
-    {
-        _expectedAppPath = expectedAppPath;
-        _expectedPackageFamily = expectedPackageFamily;
-    }
+    public ControlPipeServer(CallerPolicy policy) => _policy = policy;
 
     public void Start()
     {
@@ -50,10 +42,12 @@ internal sealed partial class ControlPipeServer : IDisposable
             {
                 using var server = CreateServer();
                 await server.WaitForConnectionAsync(ct).ConfigureAwait(false);
+                var connectedAt = DateTime.UtcNow.ToFileTimeUtc();
 
-                if (!IsCallerAllowed(server, out var appSession))
+                var reason = "could not identify it";
+                if (!TryIdentifyCaller(server, connectedAt, out var caller) || !_policy.IsAllowed(caller, out reason))
                 {
-                    Log.Write("Rejected a pipe client that is not the app in the console session");
+                    Log.WriteLimited("rejected-client", $"Rejected a control pipe client: {reason}");
                     server.Disconnect();
                     continue;
                 }
@@ -61,7 +55,7 @@ internal sealed partial class ControlPipeServer : IDisposable
                 using var connection = new PipeConnection(server);
                 var handler = ClientConnected;
                 if (handler != null)
-                    await handler(connection, appSession, ct).ConfigureAwait(false);
+                    await handler(connection, caller.PipeSessionId, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -69,10 +63,22 @@ internal sealed partial class ControlPipeServer : IDisposable
             }
             catch (Exception ex)
             {
-                Log.Write($"Control pipe error: {ex.Message}");
+                // Includes another process already owning the pipe name (FirstPipeInstance refuses it).
+                Log.WriteLimited("pipe-error", $"Control pipe error: {ex.Message}");
                 try { await Task.Delay(500, ct).ConfigureAwait(false); } catch { return; }
             }
         }
+    }
+
+    private static bool TryIdentifyCaller(NamedPipeServerStream server, long connectedAt, out PipeCaller caller)
+    {
+        caller = default;
+        var handle = server.SafePipeHandle.DangerousGetHandle();
+        if (!ServiceNative.GetNamedPipeClientProcessId(handle, out var pid) || pid == 0
+            || !ServiceNative.GetNamedPipeClientSessionId(handle, out var session))
+            return false;
+        caller = new PipeCaller(pid, session, ServiceNative.WTSGetActiveConsoleSessionId(), connectedAt);
+        return true;
     }
 
     private static NamedPipeServerStream CreateServer()
@@ -86,82 +92,13 @@ internal sealed partial class ControlPipeServer : IDisposable
             new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
             PipeAccessRights.FullControl, AccessControlType.Allow));
 
+        // FirstPipeInstance: if some other process created the name first, fail instead of joining
+        // its instances (the app would otherwise talk to whoever created it; it also checks the owner).
         return NamedPipeServerStreamAcl.Create(
             PipeNames.Control, PipeDirection.InOut, 1,
-            PipeTransmissionMode.Byte, PipeOptions.Asynchronous,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance,
             inBufferSize: PipeNames.BufferSize, outBufferSize: PipeNames.BufferSize, security);
     }
-
-    /// <summary>
-    /// The connecting process must be RoboMouse.App in the active console session: either the exe at the
-    /// installed path, or (for the Store app, which lives under WindowsApps) RoboMouse.App.exe running
-    /// with our package identity. Neither location is writable by a normal user.
-    /// </summary>
-    private bool IsCallerAllowed(NamedPipeServerStream server, out uint appSession)
-    {
-        appSession = 0;
-        try
-        {
-            if (!TryGetClientProcessId(server, out var pid))
-                return false;
-
-            using var process = System.Diagnostics.Process.GetProcessById((int)pid);
-            appSession = (uint)process.SessionId;
-            if (appSession != ServiceNative.WTSGetActiveConsoleSessionId())
-                return false;
-
-            var path = process.MainModule?.FileName;
-            if (path == null)
-                return false;
-            if (string.Equals(path, _expectedAppPath, StringComparison.OrdinalIgnoreCase))
-                return true;
-            Log.Write($"Pipe client is '{path}', expected '{_expectedAppPath}'");
-
-            return _expectedPackageFamily != null
-                && string.Equals(Path.GetFileName(path), "RoboMouse.App.exe", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(GetPackageFamily(pid), _expectedPackageFamily, StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception ex)
-        {
-            Log.Write($"Caller check failed: {ex.Message}");
-            return false;
-        }
-    }
-
-    public static bool TryGetClientProcessId(NamedPipeServerStream server, out uint pid) =>
-        GetNamedPipeClientProcessId(server.SafePipeHandle.DangerousGetHandle(), out pid) && pid != 0;
-
-    private static unsafe string? GetPackageFamily(uint pid)
-    {
-        const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
-        var handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-        if (handle == 0)
-            return null;
-        try
-        {
-            var buffer = stackalloc char[256];
-            uint length = 256;
-            return GetPackageFamilyName(handle, &length, buffer) == 0 ? new string(buffer) : null;
-        }
-        finally
-        {
-            CloseHandle(handle);
-        }
-    }
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial nint OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
-
-    [LibraryImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool CloseHandle(nint handle);
-
-    [LibraryImport("kernel32.dll")]
-    private static unsafe partial int GetPackageFamilyName(nint process, uint* packageFamilyNameLength, char* packageFamilyName);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetNamedPipeClientProcessId(nint pipe, out uint clientProcessId);
 
     public void Dispose()
     {

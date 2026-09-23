@@ -41,8 +41,7 @@ internal static class Program
     private static void Run(PipeConnection pipe)
     {
         using var desktop = new InputDesktop();
-        var heldKeys = new Dictionary<int, (uint Scan, bool Extended)>();
-        var heldButtons = new HashSet<MouseEventType>();
+        var held = new HeldInput();
         long lastCheck = 0;
 
         try
@@ -58,6 +57,11 @@ internal static class Program
                     break;
                 var message = received.Value;
 
+                // The service validates too; a bad command is skipped, never allowed to end the loop
+                // (that would skip releasing held input) or reach SendInput with a garbage value.
+                if (!message.IsWellFormed)
+                    continue;
+
                 var now = Environment.TickCount64;
                 if (now - lastCheck >= DesktopCheckMs)
                 {
@@ -65,50 +69,15 @@ internal static class Program
                     desktop.Follow();
                 }
 
-                switch (message.Opcode)
+                if (message.Opcode == PipeOpcode.QueryCursor)
                 {
-                    case PipeOpcode.InjectMotion:
-                    {
-                        var (dx, dy) = message.ReadMotion();
-                        // A failed call right after a desktop switch means we are still on the old one.
-                        if (!InputSimulator.MoveRelative(dx, dy) && desktop.Follow())
-                            InputSimulator.MoveRelative(dx, dy);
-                        break;
-                    }
-                    case PipeOpcode.MoveTo:
-                    {
-                        var (x, y) = message.ReadMotion();
-                        InputSimulator.MoveTo(x, y);
-                        break;
-                    }
-                    case PipeOpcode.InjectButton:
-                    {
-                        var (eventType, wheelDelta) = message.ReadButton();
-                        var type = (MouseEventType)eventType;
-                        TrackButton(heldButtons, type);
-                        if (!InputSimulator.SimulateMouseEvent(type, wheelDelta: wheelDelta) && desktop.Follow())
-                            InputSimulator.SimulateMouseEvent(type, wheelDelta: wheelDelta);
-                        break;
-                    }
-                    case PipeOpcode.InjectKey:
-                    {
-                        var (vk, scan, eventType, extended) = message.ReadKey();
-                        var type = (KeyboardEventType)eventType;
-                        if (type is KeyboardEventType.KeyUp or KeyboardEventType.SysKeyUp)
-                            heldKeys.Remove(vk);
-                        else
-                            heldKeys[vk] = (scan, extended);
-                        if (!InputSimulator.SimulateKeyboardEvent((Keys)vk, scan, type, extended) && desktop.Follow())
-                            InputSimulator.SimulateKeyboardEvent((Keys)vk, scan, type, extended);
-                        break;
-                    }
-                    case PipeOpcode.QueryCursor:
-                    {
-                        var (x, y) = InputSimulator.GetCursorPosition();
-                        Send(pipe, PipeMessage.Motion(PipeOpcode.CursorPosition, x, y));
-                        break;
-                    }
+                    var (x, y) = InputSimulator.GetCursorPosition();
+                    Send(pipe, PipeMessage.CursorPosition(x, y, message.ReadQueryCursor()));
+                    continue;
                 }
+
+                held.Track(message);
+                Apply(message, desktop);
             }
         }
         catch (Exception)
@@ -119,40 +88,48 @@ internal static class Program
         {
             // Never leave a key or button stuck down on a desktop nobody else can reach.
             desktop.Follow();
-            foreach (var (vk, (scan, extended)) in heldKeys)
-                InputSimulator.SimulateKeyboardEvent((Keys)vk, scan, KeyboardEventType.KeyUp, extended);
-            foreach (var button in heldButtons)
-                InputSimulator.SimulateMouseEvent(ReleaseOf(button));
+            foreach (var release in held.TakeReleases())
+                Apply(release, desktop);
         }
     }
 
-    private static void TrackButton(HashSet<MouseEventType> held, MouseEventType type)
+    /// <summary>Applies one well-formed injection command, retrying once on the new desktop if it just switched.</summary>
+    private static void Apply(PipeMessage message, InputDesktop desktop)
     {
-        switch (type)
+        switch (message.Opcode)
         {
-            case MouseEventType.LeftDown:
-            case MouseEventType.RightDown:
-            case MouseEventType.MiddleDown:
-            case MouseEventType.XButton1Down:
-            case MouseEventType.XButton2Down:
-                held.Add(type);
+            case PipeOpcode.InjectMotion:
+            {
+                var (dx, dy) = message.ReadMotion();
+                // A failed call right after a desktop switch means we are still on the old one.
+                if (!InputSimulator.MoveRelative(dx, dy) && desktop.Follow())
+                    InputSimulator.MoveRelative(dx, dy);
                 break;
-            case MouseEventType.LeftUp: held.Remove(MouseEventType.LeftDown); break;
-            case MouseEventType.RightUp: held.Remove(MouseEventType.RightDown); break;
-            case MouseEventType.MiddleUp: held.Remove(MouseEventType.MiddleDown); break;
-            case MouseEventType.XButton1Up: held.Remove(MouseEventType.XButton1Down); break;
-            case MouseEventType.XButton2Up: held.Remove(MouseEventType.XButton2Down); break;
+            }
+            case PipeOpcode.MoveTo:
+            {
+                var (x, y) = message.ReadMotion();
+                InputSimulator.MoveTo(x, y);
+                break;
+            }
+            case PipeOpcode.InjectButton:
+            {
+                var (eventType, wheelDelta) = message.ReadButton();
+                var type = (MouseEventType)eventType;
+                if (!InputSimulator.SimulateMouseEvent(type, wheelDelta: wheelDelta) && desktop.Follow())
+                    InputSimulator.SimulateMouseEvent(type, wheelDelta: wheelDelta);
+                break;
+            }
+            case PipeOpcode.InjectKey:
+            {
+                var (vk, scan, eventType, extended) = message.ReadKey();
+                var type = (KeyboardEventType)eventType;
+                if (!InputSimulator.SimulateKeyboardEvent((Keys)vk, scan, type, extended) && desktop.Follow())
+                    InputSimulator.SimulateKeyboardEvent((Keys)vk, scan, type, extended);
+                break;
+            }
         }
     }
-
-    private static MouseEventType ReleaseOf(MouseEventType down) => down switch
-    {
-        MouseEventType.LeftDown => MouseEventType.LeftUp,
-        MouseEventType.RightDown => MouseEventType.RightUp,
-        MouseEventType.MiddleDown => MouseEventType.MiddleUp,
-        MouseEventType.XButton1Down => MouseEventType.XButton1Up,
-        _ => MouseEventType.XButton2Up
-    };
 
     private static void Send(PipeConnection pipe, PipeMessage message) =>
         pipe.SendAsync(message).GetAwaiter().GetResult();

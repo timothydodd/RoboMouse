@@ -18,6 +18,12 @@ public static class PipeNames
     /// </summary>
     public const int BufferSize = 64 * 1024;
 
+    /// <summary>
+    /// Largest frame (opcode + payload) either end accepts. Real messages are a few bytes; the cap keeps
+    /// a misbehaving peer from making the service allocate.
+    /// </summary>
+    public const int MaxFrameLength = 64 * 1024;
+
     /// <summary>Bumped when the pipe message set changes incompatibly; checked in the Hello exchange.</summary>
-    public const int ProtocolVersion = 2;
+    public const int ProtocolVersion = 3;
 }

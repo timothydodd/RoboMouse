@@ -5,6 +5,7 @@ using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using RoboMouse.Contracts;
+using static RoboMouse.Service.ServiceNative;
 
 namespace RoboMouse.Service;
 
@@ -19,7 +20,7 @@ namespace RoboMouse.Service;
 /// process's identity; the connecting process must also be the one that was just started.
 /// </summary>
 [SupportedOSPlatform("windows")]
-internal sealed class HelperHost : IDisposable
+internal sealed class HelperHost : IInjectionHelper
 {
     private readonly CancellationTokenSource _cts = new();
     private Process? _process;
@@ -39,7 +40,10 @@ internal sealed class HelperHost : IDisposable
 
     public HelperHost(uint sessionId) => SessionId = sessionId;
 
-    /// <summary>Starts the helper and relays its messages until it exits or <see cref="Stop"/> is called.</summary>
+    /// <summary>
+    /// Starts the helper and relays its messages until it exits or <see cref="Stop"/> is called.
+    /// Throws <see cref="FileNotFoundException"/> when the helper exe is missing.
+    /// </summary>
     public async Task RunAsync(CancellationToken ct)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
@@ -60,7 +64,8 @@ internal sealed class HelperHost : IDisposable
                 await server.WaitForConnectionAsync(connectTimeout.Token).ConfigureAwait(false);
             }
 
-            if (!ControlPipeServer.TryGetClientProcessId(server, out var clientPid) || clientPid != (uint)_process.Id)
+            if (!GetNamedPipeClientProcessId(server.SafePipeHandle.DangerousGetHandle(), out var clientPid)
+                || clientPid != (uint)_process.Id)
             {
                 Log.Write($"Helper pipe was connected by pid {clientPid}, not the helper; dropping it");
                 return;
@@ -88,7 +93,7 @@ internal sealed class HelperHost : IDisposable
                         _ready = true;
                         Ready?.Invoke();
                         break;
-                    case PipeOpcode.CursorPosition:
+                    case PipeOpcode.CursorPosition when message.Value.IsWellFormed:
                         MessageReceived?.Invoke(message.Value);
                         break;
                 }
@@ -140,7 +145,7 @@ internal sealed class HelperHost : IDisposable
 
         return NamedPipeServerStreamAcl.Create(
             name, PipeDirection.InOut, 1,
-            PipeTransmissionMode.Byte, PipeOptions.Asynchronous,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance,
             inBufferSize: PipeNames.BufferSize, outBufferSize: PipeNames.BufferSize, security);
     }
 
@@ -152,15 +157,25 @@ internal sealed class HelperHost : IDisposable
     }
 }
 
-/// <summary>Starts a process in another session under this process's identity.</summary>
+/// <summary>
+/// Starts a process in another session under this process's identity, minus the privileges an
+/// injection helper never needs.
+/// </summary>
 [SupportedOSPlatform("windows")]
-internal static unsafe partial class HelperLauncher
+internal static unsafe class HelperLauncher
 {
-    private const uint TOKEN_ALL_ACCESS = 0xF01FF;
-    private const int SecurityImpersonation = 2;
-    private const int TokenPrimary = 1;
-    private const int TokenSessionId = 12;
-    private const uint CREATE_NO_WINDOW = 0x08000000;
+    /// <summary>
+    /// Removed from the helper's token. SYSTEM identity alone is what lets it open the Winlogon desktop
+    /// and inject there; none of these are used for that, and each would make a compromised helper a
+    /// far bigger problem.
+    /// </summary>
+    private static readonly string[] DroppedPrivileges =
+    {
+        "SeDebugPrivilege", "SeTcbPrivilege", "SeImpersonatePrivilege", "SeLoadDriverPrivilege",
+        "SeBackupPrivilege", "SeRestorePrivilege", "SeTakeOwnershipPrivilege",
+        "SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege", "SeCreateTokenPrivilege",
+        "SeSecurityPrivilege", "SeRelabelPrivilege", "SeManageVolumePrivilege", "SeSystemEnvironmentPrivilege"
+    };
 
     public static Process Start(string exePath, string arguments, uint sessionId)
     {
@@ -188,6 +203,7 @@ internal static unsafe partial class HelperLauncher
             // Needs SeTcbPrivilege, which LocalSystem has. This is the step that fails when not run as SYSTEM.
             if (!SetTokenInformation(primary, TokenSessionId, &sessionId, sizeof(uint)))
                 throw new InvalidOperationException($"SetTokenInformation(TokenSessionId) failed ({Marshal.GetLastPInvokeError()}); the service must run as LocalSystem");
+            DropPrivileges(primary);
 
             var commandLine = $"\"{exePath}\" {arguments}\0".ToCharArray();
             var desktop = "winsta0\\default\0".ToCharArray();
@@ -218,51 +234,20 @@ internal static unsafe partial class HelperLauncher
         }
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct STARTUPINFOW
+    /// <summary>
+    /// Removes each privilege outright (not just disables it, which the process could undo). One call
+    /// per privilege: the service may hold only some of them (<c>sc privs</c>), and a missing one must
+    /// not stop the rest from being removed.
+    /// </summary>
+    private static void DropPrivileges(nint token)
     {
-        public int cb;
-        public char* lpReserved;
-        public char* lpDesktop;
-        public char* lpTitle;
-        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
-        public short wShowWindow, cbReserved2;
-        public byte* lpReserved2;
-        public nint hStdInput, hStdOutput, hStdError;
+        foreach (var name in DroppedPrivileges)
+        {
+            if (!LookupPrivilegeValueW(null, name, out var luid))
+                continue;
+            var privileges = new TOKEN_PRIVILEGES { PrivilegeCount = 1, Luid = luid, Attributes = SE_PRIVILEGE_REMOVED };
+            if (!AdjustTokenPrivileges(token, false, &privileges, (uint)sizeof(TOKEN_PRIVILEGES), 0, 0))
+                Log.Write($"Could not remove {name} from the helper token ({Marshal.GetLastPInvokeError()})");
+        }
     }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PROCESS_INFORMATION
-    {
-        public nint hProcess;
-        public nint hThread;
-        public uint dwProcessId;
-        public uint dwThreadId;
-    }
-
-    [LibraryImport("kernel32.dll")]
-    private static partial nint GetCurrentProcess();
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool CloseHandle(nint handle);
-
-    [LibraryImport("advapi32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool OpenProcessToken(nint process, uint desiredAccess, out nint token);
-
-    [LibraryImport("advapi32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DuplicateTokenEx(nint existingToken, uint desiredAccess, nint tokenAttributes, int impersonationLevel, int tokenType, out nint newToken);
-
-    [LibraryImport("advapi32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetTokenInformation(nint token, int tokenInformationClass, void* tokenInformation, int length);
-
-    [LibraryImport("advapi32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool CreateProcessAsUserW(
-        nint token, char* applicationName, char* commandLine, nint processAttributes, nint threadAttributes,
-        [MarshalAs(UnmanagedType.Bool)] bool inheritHandles, uint creationFlags, nint environment,
-        char* currentDirectory, STARTUPINFOW* startupInfo, PROCESS_INFORMATION* processInformation);
 }

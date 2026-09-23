@@ -27,6 +27,8 @@ internal static unsafe class Program
     /// </summary>
     public static int Main(string[] args)
     {
+        Log.Initialize();
+
         // The log must say why the process ended: without this a crash leaves it simply stopping short.
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Write($"Unhandled exception, service is going down: {e.ExceptionObject}");
         TaskScheduler.UnobservedTaskException += (_, e) => Log.Write($"Unobserved task exception: {e.Exception}");

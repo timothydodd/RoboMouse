@@ -21,4 +21,8 @@
     <ProjectReference Include="..\RoboMouse.Contracts\RoboMouse.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="RoboMouse.Service.Tests" />
+  </ItemGroup>
+
 </Project>

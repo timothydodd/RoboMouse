@@ -6,19 +6,27 @@ namespace RoboMouse.Contracts;
 /// <summary>
 /// Framed message transport over a connected pipe stream. Reads and writes the 4-byte length prefix
 /// defined by <see cref="PipeMessage"/>. One writer and one reader at a time; writes are serialized.
+/// Frames are capped at <see cref="PipeNames.MaxFrameLength"/> in both directions.
 /// </summary>
 public sealed class PipeConnection : IDisposable
 {
-    private readonly PipeStream _stream;
+    private readonly Stream _stream;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private volatile bool _closed;
     private bool _disposed;
 
-    public PipeConnection(PipeStream stream) => _stream = stream;
+    public PipeConnection(PipeStream stream) : this((Stream)stream) { }
 
-    public bool IsConnected => !_disposed && _stream.IsConnected;
+    /// <summary>Any duplex stream; used by tests to feed raw bytes.</summary>
+    public PipeConnection(Stream stream) => _stream = stream;
+
+    public bool IsConnected => !_disposed && !_closed && (_stream is not PipeStream pipe || pipe.IsConnected);
 
     public async Task SendAsync(PipeMessage message, CancellationToken ct = default)
     {
+        if (message.Payload.Length + 1 > PipeNames.MaxFrameLength)
+            throw new ArgumentException($"Pipe message of {message.Payload.Length} bytes is over the frame limit.", nameof(message));
+
         var frame = message.ToFrame();
         await _writeLock.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -32,7 +40,11 @@ public sealed class PipeConnection : IDisposable
         }
     }
 
-    /// <summary>Reads one message, or null when the pipe closes.</summary>
+    /// <summary>
+    /// Reads one message, or null when the pipe closes (including part-way through a frame). Throws
+    /// <see cref="InvalidDataException"/> for a length of zero, below zero or over the cap; the caller
+    /// then drops the connection, since the stream can no longer be framed.
+    /// </summary>
     public async Task<PipeMessage?> ReceiveAsync(CancellationToken ct = default)
     {
         var header = new byte[4];
@@ -40,7 +52,7 @@ public sealed class PipeConnection : IDisposable
             return null;
 
         var length = BinaryPrimitives.ReadInt32LittleEndian(header);
-        if (length < 1 || length > MaxFrameLength)
+        if (length < 1 || length > PipeNames.MaxFrameLength)
             throw new InvalidDataException($"Pipe frame length {length} is out of range.");
 
         var body = new byte[length];
@@ -57,13 +69,14 @@ public sealed class PipeConnection : IDisposable
         {
             var n = await _stream.ReadAsync(buffer.AsMemory(read), ct).ConfigureAwait(false);
             if (n == 0)
+            {
+                _closed = true;
                 return false;
+            }
             read += n;
         }
         return true;
     }
-
-    private const int MaxFrameLength = 64 * 1024;
 
     public void Dispose()
     {
