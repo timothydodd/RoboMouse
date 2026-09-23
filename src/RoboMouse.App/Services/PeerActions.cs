@@ -38,6 +38,7 @@ public static class PeerActions
             settings.Peers.Add(peer);
         backend.SaveSettings();
         backend.UnblockMachine(peer.Id);
+        backend.ApplyHotkeySetting(); // its jump hotkey
 
         if (!peer.Enabled)
             return null;

@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RoboMouse.App.Services;
 using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Input;
 
 namespace RoboMouse.App.ViewModels;
 
@@ -42,6 +43,16 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
     [ObservableProperty] private decimal? _offsetX = 0;
     [ObservableProperty] private decimal? _offsetY = 0;
     [ObservableProperty] private bool _isEnabled = true;
+    [ObservableProperty] private bool _shareClipboard = true;
+
+    /// <summary>The chord that jumps straight to this peer's screen; empty for none.</summary>
+    [ObservableProperty] private string _jumpHotkey = string.Empty;
+
+    // What the jump box started with; left unchanged, a peer on its default keeps following its place in the list.
+    private readonly string _initialJumpHotkey;
+
+    /// <summary>The peer's pinned identity fingerprint, or that it has not paired yet.</summary>
+    public string IdentityText { get; }
 
     // A cleared number box is flagged on the field rather than silently keeping the old number.
     partial void OnPortChanged(decimal? value) => RequireValue(value, nameof(Port), "Enter a port number.");
@@ -80,8 +91,14 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
             _offsetX = peer.OffsetX;
             _offsetY = peer.OffsetY;
             _isEnabled = peer.Enabled;
+            _shareClipboard = peer.ShareClipboard;
             _selectedPosition = Positions.FirstOrDefault(p => p.Position == peer.Position) ?? Positions[1];
         }
+
+        _jumpHotkey = _initialJumpHotkey = settings != null
+            ? HotkeySet.EffectiveJumpHotkey(settings, peer ?? new PeerConfig()) ?? string.Empty
+            : peer?.JumpHotkey ?? string.Empty;
+        IdentityText = peer == null ? "Not paired yet" : PeerItemViewModel.DescribeIdentity(peer);
     }
 
     [RelayCommand]
@@ -162,6 +179,13 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
             return;
         }
 
+        var jumpHotkey = JumpHotkey.Trim();
+        if (FindHotkeyConflict(jumpHotkey) is { } conflict)
+        {
+            await _dialogs.WarnAsync(conflict);
+            return;
+        }
+
         var position = SelectedPosition.Position;
 
         // Another configured peer on the same edge would never be reachable; offer a swap. A new
@@ -201,9 +225,34 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
         config.OffsetX = (int)offsetX;
         config.OffsetY = (int)offsetY;
         config.Enabled = IsEnabled;
+        config.ShareClipboard = ShareClipboard;
+        // Untouched, a peer on its default keeps following its place in the list.
+        if (!(config.JumpHotkey == null && jumpHotkey == _initialJumpHotkey))
+            config.JumpHotkey = jumpHotkey;
 
         Result = config;
         CloseRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Why the jump hotkey cannot be used (another hotkey already has that chord), or null.</summary>
+    private string? FindHotkeyConflict(string jumpHotkey)
+    {
+        if (_settings == null || Hotkey.Parse(jumpHotkey) == null)
+            return null;
+        var hotkeys = new List<(string, string?)>
+        {
+            ("The toggle hotkey", _settings.ToggleHotkey),
+            ("Lock the cursor", _settings.LockCursorHotkey),
+            ("Lock all PCs", _settings.LockAllHotkey)
+        };
+        var peers = _settings.Peers.ToList();
+        for (var i = 0; i < peers.Count; i++)
+        {
+            if (peers[i] != _existing)
+                hotkeys.Add(($"Jump to {peers[i].Name}", HotkeySet.EffectiveJumpHotkey(peers[i], i)));
+        }
+        hotkeys.Add(("this PC's jump hotkey", jumpHotkey));
+        return HotkeySet.FindConflict(hotkeys);
     }
 
     /// <summary>

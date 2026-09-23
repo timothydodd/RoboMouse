@@ -36,9 +36,24 @@ public interface IAppBackend
     /// <summary>Writes the settings file. View models save through here so tests never touch the real file.</summary>
     void SaveSettings();
 
-    void ApplyClipboardSetting();
+    /// <summary>Applies the clipboard switches, size limit and each peer's "share clipboard" live.</summary>
+    void ApplyClipboardSettings();
+
+    /// <summary>Re-reads every global hotkey (toggle, cursor lock, lock all, the peers' jump hotkeys).</summary>
     void ApplyHotkeySetting();
+
+    /// <summary>Applies the crossing guards (the full-screen check needs starting or stopping).</summary>
+    void ApplyCrossingSettings();
     void ApplyPowerSetting();
+
+    /// <summary>A short fingerprint of this PC's identity key, as paired peers show it.</summary>
+    string IdentityFingerprint { get; }
+
+    /// <summary>
+    /// Forgets the identity key pinned for a peer, so the next connection pairs with the pairing code
+    /// again. For a peer that was reinstalled. False when there is no such peer.
+    /// </summary>
+    Task<bool> ForgetPeerIdentityAsync(string peerId);
 
     /// <summary>Restarts the listener and discovery if the saved port numbers or machine name changed.</summary>
     void ApplyNetworkSettings();
@@ -123,8 +138,11 @@ public sealed class ServiceBackend : IAppBackend
     public Task ConnectToPeerAsync(PeerConfig peer, CancellationToken ct) => _service.ConnectToPeerAsync(peer, ct);
     public Task DisconnectFromPeerAsync(string peerId) => _service.DisconnectFromPeerAsync(peerId);
     public Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct) => _service.TestConnectionAsync(address, port, ct);
-    public void ApplyClipboardSetting() => _service.ApplyClipboardSetting();
+    public void ApplyClipboardSettings() => _service.ApplyClipboardSettings();
     public void ApplyHotkeySetting() => _service.ApplyHotkeySetting();
+    public void ApplyCrossingSettings() => _service.ApplyCrossingSettings();
+    public string IdentityFingerprint => _service.IdentityFingerprint;
+    public Task<bool> ForgetPeerIdentityAsync(string peerId) => _service.ForgetPeerIdentityAsync(peerId);
     public void ApplyPowerSetting() => _service.UpdatePowerFollowing();
     public void ApplyNetworkSettings() => _service.ApplyNetworkSettings();
     public bool ApplyPairingCode() => _service.ApplyPairingCode();

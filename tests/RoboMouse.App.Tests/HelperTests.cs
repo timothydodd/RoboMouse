@@ -14,6 +14,7 @@ public class HotkeyBoxTests
     [InlineData(Key.D3, KeyModifiers.Control | KeyModifiers.Meta, "Ctrl+Win+D3")]
     [InlineData(Key.OemPlus, KeyModifiers.Control, "Ctrl+Oemplus")]
     [InlineData(Key.PageDown, KeyModifiers.Alt, "Alt+PageDown")]
+    [InlineData(Key.Scroll, KeyModifiers.None, "Scroll")]         // keys that never type may stand alone
     public void Format_TakesModifierChords(Key key, KeyModifiers modifiers, string expected)
     {
         var text = HotkeyBox.Format(key, modifiers);

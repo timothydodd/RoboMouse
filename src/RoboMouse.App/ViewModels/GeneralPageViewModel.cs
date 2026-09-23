@@ -7,13 +7,31 @@ using RoboMouse.Core.Input;
 
 namespace RoboMouse.App.ViewModels;
 
-/// <summary>General page: identity, startup, hotkey, clipboard, display.</summary>
+/// <summary>General page: identity, startup, hotkeys, clipboard, switching screens, power, display.</summary>
 public sealed partial class GeneralPageViewModel : PageViewModel
 {
     public sealed record HighlightChoice(EdgeHighlightStyle Style, string Text)
     {
         public override string ToString() => Text;
     }
+
+    public sealed record ModifierChoice(CrossingModifier Modifier, string Text)
+    {
+        public override string ToString() => Text;
+    }
+
+    public IReadOnlyList<ModifierChoice> ModifierChoices { get; } = new[]
+    {
+        new ModifierChoice(CrossingModifier.None, "No key needed"),
+        new ModifierChoice(CrossingModifier.Ctrl, "Ctrl"),
+        new ModifierChoice(CrossingModifier.Alt, "Alt"),
+        new ModifierChoice(CrossingModifier.Shift, "Shift"),
+        new ModifierChoice(CrossingModifier.Win, "Windows key")
+    };
+
+    /// <summary>Upper bounds for the crossing number boxes.</summary>
+    public const int MaxCornerDeadZone = 500;
+    public const int MaxCrossingDelayMs = 2000;
 
     public IReadOnlyList<HighlightChoice> HighlightChoices { get; } = new[]
     {
@@ -26,6 +44,34 @@ public sealed partial class GeneralPageViewModel : PageViewModel
     [ObservableProperty] private bool _startWithWindows;
     [ObservableProperty] private bool _startMinimized;
     [ObservableProperty] private string _toggleHotkey;
+    [ObservableProperty] private string _lockCursorHotkey;
+    [ObservableProperty] private string _lockAllHotkey;
+
+    // Switching screens (crossing guards).
+    [ObservableProperty] private bool _blockWhileButtonHeld;
+    [ObservableProperty] private decimal? _cornerDeadZone;
+    [ObservableProperty] private bool _doubleTap;
+    [ObservableProperty] private decimal? _crossingDelayMs;
+    [ObservableProperty] private ModifierChoice _selectedCrossingModifier;
+    [ObservableProperty] private bool _blockWhileFullScreen;
+
+    partial void OnCornerDeadZoneChanged(decimal? value) =>
+        RequireValue(value, nameof(CornerDeadZone), "Enter a size in pixels (0 for none).");
+    partial void OnCrossingDelayMsChanged(decimal? value) =>
+        RequireValue(value, nameof(CrossingDelayMs), "Enter a delay in milliseconds (0 for none).");
+
+    /// <summary>Writes the switching-screens fields into the settings.</summary>
+    internal void SaveCrossing(CrossingSettings crossing)
+    {
+        crossing.BlockWhileButtonHeld = BlockWhileButtonHeld;
+        if (CornerDeadZone is { } zone)
+            crossing.CornerDeadZone = (int)Math.Clamp(zone, 0, MaxCornerDeadZone);
+        crossing.DoubleTap = DoubleTap;
+        if (CrossingDelayMs is { } delay)
+            crossing.DelayMs = (int)Math.Clamp(delay, 0, MaxCrossingDelayMs);
+        crossing.RequiredModifier = SelectedCrossingModifier.Modifier;
+        crossing.BlockWhileFullScreen = BlockWhileFullScreen;
+    }
     [ObservableProperty] private bool _shareClipboard;
     [ObservableProperty] private bool _syncText;
     [ObservableProperty] private bool _syncImages;
@@ -54,6 +100,8 @@ public sealed partial class GeneralPageViewModel : PageViewModel
     [ObservableProperty] private bool _wrapAround;
     [ObservableProperty] private bool _wakeOnEdge;
     [ObservableProperty] private bool _followHostPower;
+    [ObservableProperty] private bool _lockWithHost;
+    [ObservableProperty] private bool _screensaverWithHost;
     [ObservableProperty] private bool _showDebugPanel;
     [ObservableProperty] private bool _useDesktopService;
 
@@ -94,6 +142,15 @@ public sealed partial class GeneralPageViewModel : PageViewModel
         _startWithWindows = settings.StartWithWindows;
         _startMinimized = settings.StartMinimized;
         _toggleHotkey = settings.ToggleHotkey ?? string.Empty;
+        _lockCursorHotkey = settings.LockCursorHotkey ?? string.Empty;
+        _lockAllHotkey = settings.LockAllHotkey ?? string.Empty;
+        var crossing = settings.Crossing;
+        _blockWhileButtonHeld = crossing.BlockWhileButtonHeld;
+        _cornerDeadZone = crossing.CornerDeadZone;
+        _doubleTap = crossing.DoubleTap;
+        _crossingDelayMs = crossing.DelayMs;
+        _selectedCrossingModifier = ModifierChoices.FirstOrDefault(c => c.Modifier == crossing.RequiredModifier) ?? ModifierChoices[0];
+        _blockWhileFullScreen = crossing.BlockWhileFullScreen;
         _shareClipboard = settings.Clipboard.Enabled;
         _syncText = settings.Clipboard.SyncText;
         _syncImages = settings.Clipboard.SyncImages;
@@ -103,6 +160,8 @@ public sealed partial class GeneralPageViewModel : PageViewModel
         _wrapAround = settings.WrapAround;
         _wakeOnEdge = settings.WakeOnEdge;
         _followHostPower = settings.FollowHostPower;
+        _lockWithHost = settings.LockWithHost;
+        _screensaverWithHost = settings.ScreensaverWithHost;
         _showDebugPanel = settings.DebugPanelEnabled;
     }
 }

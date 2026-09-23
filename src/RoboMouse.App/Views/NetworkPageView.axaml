@@ -37,7 +37,7 @@
                     AutomationProperties.Name="Generate a new pairing code" />
           </Grid>
           <TextBlock Classes="caption"
-                     Text="Every machine uses the same code. It authenticates peers and encrypts all traffic; a machine with a different code cannot connect. To pair with another PC, either enter this code there, or enter its code here." />
+                     Text="Two PCs pair with the same code; a machine with a different code cannot pair. Once paired they recognise each other by their identity keys and no longer need it. To pair with another PC, either enter this code there, or enter its code here." />
 
           <!-- Taking the code another PC shows -->
           <Button Content="Enter the code from another PC…" Command="{Binding BeginEnterCodeCommand}"
@@ -69,7 +69,7 @@
         <Grid ColumnDefinitions="Auto,*">
           <ic:SymbolIcon Symbol="Info" FontSize="18" Margin="0,0,12,0" VerticalAlignment="Top" />
           <TextBlock Grid.Column="1" TextWrapping="Wrap"
-                     Text="Saving disconnects every peer. Each one reconnects as soon as it uses the new code too." />
+                     Text="Paired PCs keep working: they no longer need the code. Saving disconnects only machines that have not paired yet; they reconnect once they use the new code too." />
         </Grid>
       </Border>
 
@@ -86,6 +86,9 @@
             </ItemsControl.ItemTemplate>
           </ItemsControl>
           <TextBlock Classes="caption" Text="No network connection." IsVisible="{Binding !HasAddresses}" />
+          <TextBlock Text="Identity fingerprint" Margin="0,12,0,0" />
+          <TextBlock Classes="caption" Text="Paired PCs show the same fingerprint for this PC when you edit it there. If they differ, something else is answering for this PC." Margin="0,0,0,6" TextWrapping="Wrap" />
+          <SelectableTextBlock Classes="code" Text="{Binding IdentityFingerprint}" AutomationProperties.Name="Identity fingerprint" />
         </StackPanel>
       </Border>
 

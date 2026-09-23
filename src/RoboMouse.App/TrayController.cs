@@ -7,6 +7,7 @@ using RoboMouse.App.ViewModels;
 using RoboMouse.App.Views;
 using RoboMouse.Core;
 using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Input;
 using RoboMouse.Core.Logging;
 using RoboMouse.Core.Network;
 
@@ -39,6 +40,7 @@ public sealed class TrayController : IDisposable
     private readonly NativeMenuItem _statusItem;
     private readonly NativeMenuItem _enableItem;
     private readonly NativeMenuItem _peersItem;
+    private readonly NativeMenuItem _lockCursorItem;
 
     private SettingsWindow? _settingsWindow;
     private PairingWizardWindow? _wizard;
@@ -65,6 +67,8 @@ public sealed class TrayController : IDisposable
             ClipboardImageCodec = new AvaloniaImageCodec()
         };
         _backend = new ServiceBackend(_service, settings);
+        // A hotkey box recording a new chord gets the keys, even the current hotkeys'.
+        HotkeyBox.SuspendGlobalHotkeys = _service.SuspendHotkeys;
 
         foreach (var state in Enum.GetValues<TrayState>())
             _icons[state] = CreateIcon(state);
@@ -73,6 +77,10 @@ public sealed class TrayController : IDisposable
         _enableItem = new NativeMenuItem("Enabled") { ToggleType = MenuItemToggleType.CheckBox, IsChecked = _settings.Enabled };
         _enableItem.Click += OnEnableToggled;
         _peersItem = new NativeMenuItem("Peers") { Menu = new NativeMenu() };
+        _lockCursorItem = new NativeMenuItem("Lock cursor to its screen") { ToggleType = MenuItemToggleType.CheckBox };
+        _lockCursorItem.Click += (s, e) => _service.SetCursorLock(!_service.CursorLocked);
+        var lockAllItem = new NativeMenuItem("Lock all PCs");
+        lockAllItem.Click += (s, e) => Task.Run(_service.LockAllMachines);
         var pairItem = new NativeMenuItem("Pair with another PC...");
         pairItem.Click += (s, e) => ShowPairingWizard();
         var settingsItem = new NativeMenuItem("Settings...");
@@ -85,6 +93,8 @@ public sealed class TrayController : IDisposable
         _menu.Items.Add(new NativeMenuItemSeparator());
         _menu.Items.Add(_enableItem);
         _menu.Items.Add(_peersItem);
+        _menu.Items.Add(_lockCursorItem);
+        _menu.Items.Add(lockAllItem);
         _menu.Items.Add(pairItem);
         _menu.Items.Add(settingsItem);
         _menu.Items.Add(new NativeMenuItemSeparator());
@@ -120,6 +130,7 @@ public sealed class TrayController : IDisposable
         _service.PeerWakeSent += (s, e) => OnUi(() => _toasts.Show(Notifications.WakeSent(e)));
         _service.NetworkStatusChanged += (s, e) => OnUi(ShowNetworkErrors);
         _service.PeersChanged += (s, e) => OnUi(UpdateStatus);
+        _service.CursorLockChanged += (s, e) => OnUi(UpdateStatus);
 #if DEBUG
         _service.MouseDebugUpdate += OnMouseDebugUpdate;
 #endif
@@ -381,6 +392,14 @@ public sealed class TrayController : IDisposable
         else
             state = connectedPeers.Count > 0 ? TrayState.Connected : TrayState.Disconnected;
 
+        // The lock hotkey is easy to hit by accident (Scroll Lock); say why the cursor will not cross.
+        if (_service.CursorLocked)
+            status += " (cursor locked)";
+        _lockCursorItem.IsChecked = _service.CursorLocked;
+        _lockCursorItem.Header = Hotkey.Parse(_settings.LockCursorHotkey) is { } lockKey
+            ? $"Lock cursor to its screen ({lockKey})"
+            : "Lock cursor to its screen";
+
         _statusItem.Header = status;
         _trayIcon.Icon = _icons[state];
         var tip = $"RoboMouse - {status}";
@@ -507,6 +526,7 @@ public sealed class TrayController : IDisposable
         _updateTimer?.Stop();
         _toasts.CloseAll();
         _trayIcon.IsVisible = false;
+        HotkeyBox.SuspendGlobalHotkeys = null;
         _service.Dispose();
         _lifetime.Shutdown();
     }

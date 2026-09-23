@@ -22,11 +22,21 @@
         <ToggleSwitch IsChecked="{Binding StartMinimized}" />
       </views:SettingCard>
 
-      <TextBlock Classes="section" Text="Hotkey" />
+      <TextBlock Classes="section" Text="Hotkeys" />
       <views:SettingCard Header="Toggle hotkey"
                          Description="Releases control of another screen if you are stuck there; otherwise turns sharing on or off. Click the box and press the new combination.">
-        <views:HotkeyBox Hotkey="{Binding ToggleHotkey}" Width="220" />
+        <views:HotkeyBox Hotkey="{Binding ToggleHotkey}" Width="220" AutomationProperties.Name="Toggle hotkey" />
       </views:SettingCard>
+      <views:SettingCard Header="Lock the cursor to its screen"
+                         Description="Keeps the cursor on the screen it is on, this one or another PC's, until you press it again. The tray menu shows when it is locked. Backspace clears the box.">
+        <views:HotkeyBox Hotkey="{Binding LockCursorHotkey}" AllowClear="True" Width="220" AutomationProperties.Name="Lock the cursor hotkey" />
+      </views:SettingCard>
+      <views:SettingCard Header="Lock all PCs"
+                         Description="Locks this PC and asks every connected PC to lock too. Each PC only follows a PC it has paired with. Also in the tray menu.">
+        <views:HotkeyBox Hotkey="{Binding LockAllHotkey}" AllowClear="True" Width="220" AutomationProperties.Name="Lock all PCs hotkey" />
+      </views:SettingCard>
+      <TextBlock Classes="caption" Margin="4,8,0,0" TextWrapping="Wrap"
+                 Text="Each PC also has a hotkey that moves the cursor straight onto its screen: Ctrl+Alt+F1 to F4 for the first four peers. Change it by editing the peer on the Peers page." />
 
       <TextBlock Classes="section" Text="Clipboard" />
       <views:SettingCard Header="Share the clipboard" Description="What you copy on one machine can be pasted on the others. Choose what is shared below.">
@@ -63,10 +73,53 @@
         <ToggleSwitch IsChecked="{Binding WakeOnEdge}" />
       </views:SettingCard>
 
-      <TextBlock Classes="section" Text="Power" />
+      <TextBlock Classes="section" Text="Switching screens" />
+      <views:SettingCard Header="Not while a mouse button is held"
+                         Description="Dragging a window or selecting text against the edge stays on this screen.">
+        <ToggleSwitch IsChecked="{Binding BlockWhileButtonHeld}" AutomationProperties.Name="Do not switch while a mouse button is held" />
+      </views:SettingCard>
+      <views:SettingCard Header="Corner dead zone"
+                         Description="Pushing this close to a corner does not switch, so buttons in the corners (Close, Start) are easy to hit. 0 turns it off.">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <NumericUpDown Value="{Binding CornerDeadZone}" Minimum="0" Maximum="500" Increment="5" FormatString="0"
+                         ShowButtonSpinner="False" Width="100" AutomationProperties.Name="Corner dead zone in pixels" />
+          <TextBlock Text="px" VerticalAlignment="Center" Classes="muted" />
+        </StackPanel>
+      </views:SettingCard>
+      <views:SettingCard Header="Push twice to switch"
+                         Description="Switch only when the cursor hits the edge twice within half a second.">
+        <ToggleSwitch IsChecked="{Binding DoubleTap}" AutomationProperties.Name="Push twice to switch" />
+      </views:SettingCard>
+      <views:SettingCard Header="Wait before switching"
+                         Description="Keep pushing against the edge this long before the cursor moves over. 0 switches at once. With push twice also on, either one switches.">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <NumericUpDown Value="{Binding CrossingDelayMs}" Minimum="0" Maximum="2000" Increment="50" FormatString="0"
+                         ShowButtonSpinner="False" Width="100" AutomationProperties.Name="Delay before switching in milliseconds" />
+          <TextBlock Text="ms" VerticalAlignment="Center" Classes="muted" />
+        </StackPanel>
+      </views:SettingCard>
+      <views:SettingCard Header="Hold a key to switch"
+                         Description="Switch only while this key is held. The key is passed on to the other PC as held.">
+        <ComboBox ItemsSource="{Binding ModifierChoices}" SelectedItem="{Binding SelectedCrossingModifier}" Width="180"
+                  AutomationProperties.Name="Key to hold to switch" />
+      </views:SettingCard>
+      <views:SettingCard Header="Not while a full-screen app is in front"
+                         Description="Games, videos and presentations filling the screen keep the cursor.">
+        <ToggleSwitch IsChecked="{Binding BlockWhileFullScreen}" AutomationProperties.Name="Do not switch while a full-screen app is in front" />
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="Power and locking" />
       <views:SettingCard Header="Stay awake with the controlling PC"
                          Description="Turn this on at the PC being controlled. While the PC that last controlled this one has its display on, this PC and its display stay on too; when that PC's display turns off or it goes to sleep, this display turns off and the usual sleep timers apply again.">
         <ToggleSwitch IsChecked="{Binding FollowHostPower}" />
+      </views:SettingCard>
+      <views:SettingCard Header="Lock with the controlling PC"
+                         Description="When the PC that last controlled this one locks, this PC locks too. Only a paired PC is followed.">
+        <ToggleSwitch IsChecked="{Binding LockWithHost}" AutomationProperties.Name="Lock with the controlling PC" />
+      </views:SettingCard>
+      <views:SettingCard Header="Screen saver with the controlling PC"
+                         Description="When that PC's screen saver starts, start this one's too, unless this PC was used in the last minute.">
+        <ToggleSwitch IsChecked="{Binding ScreensaverWithHost}" AutomationProperties.Name="Start the screen saver with the controlling PC" />
       </views:SettingCard>
 
       <TextBlock Classes="section" Text="Secure desktop" IsVisible="{Binding DesktopServiceInstalled}" />

@@ -32,17 +32,23 @@ internal sealed class FakeBackend : IAppBackend
     public Task DisconnectFromPeerAsync(string peerId) => Task.CompletedTask;
     public Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct) =>
         Task.FromResult(new ConnectionTestResult { Success = true, PeerName = "Laptop", PeerScreenWidth = 2560, PeerScreenHeight = 1440, RoundTripMs = 2 });
-    public void ApplyClipboardSetting() { }
+    public void ApplyClipboardSettings() { }
     public void ApplyHotkeySetting() { }
+    public void ApplyCrossingSettings() { }
+    public string IdentityFingerprint => "1A2B-3C4D-5E6F-7A8B-9C0D";
+    public Task<bool> ForgetPeerIdentityAsync(string peerId) => Task.FromResult(true);
     public void ApplyPowerSetting() { }
     public void SaveSettings() { }
     public void ApplyNetworkSettings() { }
     public bool ApplyPairingCode() => false;
 
     /// <summary>Mac mini is switched on for the error-state previews; this is why it did not connect.</summary>
-    public PeerConnectFailure? GetLastConnectFailure(string peerId) => peerId == "mac"
-        ? new PeerConnectFailure(PeerFailureKind.PairingCodeMismatch, "The pairing code doesn't match. Enter the same code on both machines (Settings > Network).", DateTime.Now)
-        : null;
+    public PeerConnectFailure? GetLastConnectFailure(string peerId) => peerId switch
+    {
+        "mac" => new PeerConnectFailure(PeerFailureKind.PairingCodeMismatch, "The pairing code doesn't match. Enter the same code on both machines (Settings > Network).", DateTime.Now),
+        "nas" => new PeerConnectFailure(PeerFailureKind.IdentityMismatch, "The machine at 192.168.1.50 claims to be NAS-BOX but does not have its identity key.", DateTime.Now),
+        _ => null
+    };
     public NetworkStartError? ListenerError { get; set; }
     public NetworkStartError? DiscoveryError { get; set; }
     public List<PendingPeer> Pending { get; } = new();

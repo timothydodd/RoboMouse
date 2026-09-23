@@ -95,6 +95,13 @@ internal static class Program
                 .GetVisualDescendants().OfType<ScrollViewer>().First();
             generalScroll.Offset = new Vector(0, 330);
             Capture(window, Path.Combine(outDir, $"settings-general-clipboard{suffix}.png"));
+            // Further down: hotkeys, then switching screens, then power and locking.
+            generalScroll.Offset = new Vector(0, 240);
+            Capture(window, Path.Combine(outDir, $"settings-general-hotkeys{suffix}.png"));
+            generalScroll.Offset = new Vector(0, 1000);
+            Capture(window, Path.Combine(outDir, $"settings-general-switching{suffix}.png"));
+            generalScroll.Offset = new Vector(0, 1500);
+            Capture(window, Path.Combine(outDir, $"settings-general-power{suffix}.png"));
             generalScroll.Offset = default;
 
             window.ViewModel.General.ShowStartupState(RoboMouse.App.StartupState.DisabledByUser);
@@ -107,6 +114,7 @@ internal static class Program
             var troubled = FakeBackend.SampleSettings();
             troubled.PairingCode = "letmein";
             troubled.Peers[1].Enabled = true;
+            troubled.Peers.Add(new RoboMouse.Core.Configuration.PeerConfig { Id = "nas", Name = "NAS-BOX", Address = "192.168.1.50", Position = RoboMouse.Core.Configuration.ScreenPosition.Top, IdentityKey = "cGlubmVkLWtleQ==" });
             var troubledBackend = new FakeBackend
             {
                 ListenerError = new NetworkStartError(NetworkErrorKind.ListenPort, 24800, true, "Port 24800 is in use by another program. Change it in Settings > Network.")

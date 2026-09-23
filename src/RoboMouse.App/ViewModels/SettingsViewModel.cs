@@ -154,6 +154,17 @@ public sealed partial class SettingsViewModel : ObservableObject
             Layout.Reload();
     }
 
+    /// <summary>Every global hotkey as it would be saved, named for a conflict message.</summary>
+    private IEnumerable<(string Name, string? Hotkey)> HotkeysInUse(string toggleHotkey)
+    {
+        yield return ("The toggle hotkey", toggleHotkey);
+        yield return ("Lock the cursor", General.LockCursorHotkey);
+        yield return ("Lock all PCs", General.LockAllHotkey);
+        var peers = _settings.Peers.ToList();
+        for (var i = 0; i < peers.Count; i++)
+            yield return ($"Jump to {peers[i].Name}", HotkeySet.EffectiveJumpHotkey(peers[i], i));
+    }
+
     [RelayCommand]
     private async Task SaveAsync()
     {
@@ -164,7 +175,16 @@ public sealed partial class SettingsViewModel : ObservableObject
             ShowPage(SettingsPage.General);
             await _dialogs.WarnAsync(hotkey.Length == 0
                 ? "Choose a toggle hotkey. It is how you get the mouse back if another screen stops responding."
-                : "The hotkey must be a key with at least one modifier, for example Ctrl+Alt+M.");
+                : "The hotkey must be a key with at least one modifier, for example Ctrl+Alt+M. Only Scroll Lock, Pause and F13-F24 work alone.");
+            return;
+        }
+
+        // Two actions on one chord: only the first would ever run.
+        var conflict = HotkeySet.FindConflict(HotkeysInUse(hotkey));
+        if (conflict != null)
+        {
+            ShowPage(SettingsPage.General);
+            await _dialogs.WarnAsync(conflict);
             return;
         }
 
@@ -189,11 +209,16 @@ public sealed partial class SettingsViewModel : ObservableObject
         _settings.StartWithWindows = General.StartWithWindows;
         _settings.StartMinimized = General.StartMinimized;
         _settings.ToggleHotkey = hotkey;
+        _settings.LockCursorHotkey = General.LockCursorHotkey.Trim();
+        _settings.LockAllHotkey = General.LockAllHotkey.Trim();
+        General.SaveCrossing(_settings.Crossing);
         General.SaveClipboard(_settings.Clipboard);
         _settings.EdgeHighlight = General.SelectedHighlight.Style;
         _settings.WrapAround = General.WrapAround;
         _settings.WakeOnEdge = General.WakeOnEdge;
         _settings.FollowHostPower = General.FollowHostPower;
+        _settings.LockWithHost = General.LockWithHost;
+        _settings.ScreensaverWithHost = General.ScreensaverWithHost;
         _settings.DebugPanelEnabled = General.ShowDebugPanel;
         var desktopServiceChanged = _settings.UseDesktopService != General.UseDesktopService;
         _settings.UseDesktopService = General.UseDesktopService;
@@ -205,10 +230,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         About.Save();
         _appState.Save();
 
-        // Everything takes effect now. The clipboard call covers on/off and files; SyncText, SyncImages
-        // and MaxSizeBytes are read by the core's clipboard apply once it handles them.
-        _backend.ApplyClipboardSetting();
+        // Everything takes effect now.
+        _backend.ApplyClipboardSettings();
         _backend.ApplyHotkeySetting();
+        _backend.ApplyCrossingSettings();
         _backend.ApplyPowerSetting();
         _backend.ApplyNetworkSettings();
         if (pairingChanged)

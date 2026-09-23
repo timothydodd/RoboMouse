@@ -11,7 +11,7 @@ public class NetworkPageViewModelTests
     public void GeneratedCodes_AreStrong()
     {
         for (var i = 0; i < 50; i++)
-            Assert.True(PairingCodeFormat.IsStrong(SecureChannel.GeneratePairingCode()));
+            Assert.True(PairingCode.IsStrong(SecureChannel.GeneratePairingCode()));
     }
 
     [Theory]
@@ -20,7 +20,7 @@ public class NetworkPageViewModelTests
     [InlineData(" K7PQM2XW9DHR ", "K7PQ-M2XW-9DHR")]
     public void Normalize_AcceptsLooselyTypedCodes(string input, string expected)
     {
-        Assert.True(PairingCodeFormat.TryNormalize(input, out var code));
+        Assert.True(PairingCode.TryFormat(input, out var code));
         Assert.Equal(expected, code);
     }
 
@@ -33,8 +33,8 @@ public class NetworkPageViewModelTests
     [InlineData("OOOO-IIII-1111")]
     public void Normalize_RefusesAnythingElse(string input)
     {
-        Assert.False(PairingCodeFormat.TryNormalize(input, out _));
-        Assert.False(PairingCodeFormat.IsStrong(input));
+        Assert.False(PairingCode.TryFormat(input, out _));
+        Assert.False(PairingCode.IsStrong(input));
     }
 
     [Fact]

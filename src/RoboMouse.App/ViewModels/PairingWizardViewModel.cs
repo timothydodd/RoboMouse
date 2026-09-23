@@ -134,9 +134,9 @@ public sealed partial class PairingWizardViewModel : ObservableObject
     [RelayCommand]
     private void UseEnteredCode()
     {
-        if (!PairingCodeFormat.TryNormalize(EnteredCode, out var code))
+        if (!Core.Network.PairingCode.TryFormat(EnteredCode, out var code))
         {
-            EnteredCodeError = PairingCodeFormat.FormatHint;
+            EnteredCodeError = NetworkPageViewModel.CodeFormatHint;
             return;
         }
         EnteredCode = string.Empty;

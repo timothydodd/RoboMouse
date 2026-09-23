@@ -42,17 +42,25 @@
     <TextBlock Grid.Row="2" Classes="section first" Text="Configured peers" />
     <Border Grid.Row="3" Classes="card panel">
       <Panel>
-        <ListBox Classes="rows" ItemsSource="{Binding Peers}" SelectedItem="{Binding SelectedPeer}"
+        <ListBox Classes="rows" ItemsSource="{Binding Peers}" SelectedItem="{Binding SelectedPeer}" Grid.IsSharedSizeScope="True"
                  AutomationProperties.Name="Configured peers"
                  DoubleTapped="OnPeerDoubleTapped">
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="vm:PeerItemViewModel">
-              <Grid ColumnDefinitions="Auto,*,90,230">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto" />
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="90" />
+                  <ColumnDefinition Width="230" />
+                  <!-- Shared so a row with "Pair again" does not push its own columns out of line -->
+                  <ColumnDefinition Width="Auto" SharedSizeGroup="PeerAction" />
+                </Grid.ColumnDefinitions>
                 <ToggleSwitch IsChecked="{Binding IsEnabled}" OnContent="{x:Null}" OffContent="{x:Null}"
                               MinWidth="0" Margin="0,0,12,0" VerticalAlignment="Center"
                               AutomationProperties.Name="{Binding Name, StringFormat='{}{0} enabled'}"
                               ToolTip.Tip="Switch this peer off to keep its settings without connecting to it" />
-                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" ToolTip.Tip="{Binding IdentityText}">
                   <TextBlock Text="{Binding Name}" Classes="body-strong" />
                   <TextBlock Text="{Binding Address}" Classes="caption" />
                 </StackPanel>
@@ -63,6 +71,10 @@
                   <TextBlock Text="{Binding StatusText}" TextTrimming="CharacterEllipsis" MaxWidth="210"
                              AutomationProperties.HelpText="{Binding StatusDetail}" />
                 </StackPanel>
+                <Button Grid.Column="4" Content="Pair again…" Command="{Binding PairAgainCommand}"
+                        IsVisible="{Binding CanPairAgain}" VerticalAlignment="Center" Margin="8,0,0,0"
+                        AutomationProperties.Name="{Binding Name, StringFormat='Pair with {0} again'}"
+                        ToolTip.Tip="Forget the identity saved for this PC and pair again with the pairing code" />
               </Grid>
             </DataTemplate>
           </ListBox.ItemTemplate>

@@ -188,6 +188,9 @@ public sealed partial class PeersPageViewModel : PageViewModel
             return;
 
         _backend.SaveSettings();
+        // Its jump hotkey and clipboard sharing may have changed.
+        _backend.ApplyHotkeySetting();
+        _backend.ApplyClipboardSettings();
         if (wasEnabled != peer.Enabled)
         {
             // The dialog wrote the flag directly; put it back and go through the service so the
@@ -220,6 +223,37 @@ public sealed partial class PeersPageViewModel : PageViewModel
         }
         SelectedPeer = null;
         RebuildPeers();
+    }
+
+    /// <summary>
+    /// A peer proved a different identity key from the one pinned when the PCs paired: after the user
+    /// confirms it was reinstalled, forget the old key so it pairs again with the pairing code.
+    /// </summary>
+    internal async Task PairAgainAsync(PeerItemViewModel item)
+    {
+        var name = item.Peer.Name;
+        if (!await _dialogs.ConfirmAsync(
+                $"Pair with {name} again?\n\n{name} has a different identity from the one saved when the two PCs paired. " +
+                "That happens when RoboMouse is reinstalled there, or when another machine answers at its address.\n\n" +
+                $"Pair again only if you know {name} was reinstalled. It needs the same pairing code as this PC. " +
+                $"If it was this PC that was reinstalled, choose Pair again on {name} as well."))
+            return;
+
+        try
+        {
+            if (!await _backend.ForgetPeerIdentityAsync(item.Peer.Id))
+                return;
+        }
+        catch (Exception ex)
+        {
+            await _dialogs.ErrorAsync($"Could not reset the identity of {name}: {ex.Message}");
+            return;
+        }
+
+        var error = await PeerActions.ConnectNewPeerAsync(_backend, item.Peer);
+        Refresh();
+        if (error != null)
+            await _dialogs.WarnAsync($"{name} will pair again when it next connects: {error}\n\nRoboMouse keeps trying in the background.");
     }
 
     [RelayCommand(CanExecute = nameof(HasSelectedPeer))]
@@ -258,6 +292,12 @@ public sealed partial class PeerItemViewModel : ObservableObject
     [ObservableProperty] private string? _statusDetail;
     [ObservableProperty] private bool _isEnabled;
 
+    /// <summary>The peer proved a different identity from the pinned one: offer "Pair again".</summary>
+    [ObservableProperty] private bool _canPairAgain;
+
+    /// <summary>Its pinned identity fingerprint, for the tooltip on its name.</summary>
+    [ObservableProperty] private string _identityText = string.Empty;
+
     public PeerItemViewModel(PeerConfig peer, PeersPageViewModel owner)
     {
         Peer = peer;
@@ -270,11 +310,23 @@ public sealed partial class PeerItemViewModel : ObservableObject
     {
         (StatusText, StatusTone, StatusDetail) = Describe(Peer, connection, failure);
         PositionText = PeerPositions.Describe(Peer.Position);
+        CanPairAgain = Peer.Enabled && connection == null && failure?.Kind == PeerFailureKind.IdentityMismatch;
+        IdentityText = DescribeIdentity(Peer);
 
         _syncing = true;
         IsEnabled = Peer.Enabled;
         _syncing = false;
     }
+
+    /// <summary>The fingerprint of the peer's pinned identity key, or that it has not paired yet.</summary>
+    internal static string DescribeIdentity(PeerConfig peer)
+    {
+        var fingerprint = Core.Network.IdentityKey.FingerprintOf(peer.IdentityKey);
+        return fingerprint.Length == 0 ? "Not paired yet" : $"Identity {fingerprint}";
+    }
+
+    [RelayCommand]
+    private Task PairAgainAsync() => _owner.PairAgainAsync(this);
 
     /// <summary>A short status for the row, its colour, and the longer reason when the last connect failed.</summary>
     internal static (string Text, StatusTone Tone, string? Detail) Describe(PeerConfig peer, ConnectedPeerInfo? connection, PeerConnectFailure? failure)
@@ -294,6 +346,7 @@ public sealed partial class PeerItemViewModel : ObservableObject
             PeerFailureKind.Blocked => ($"Blocked on {peer.Name}", StatusTone.Error),
             PeerFailureKind.DisabledThere => ($"Switched off on {peer.Name}", StatusTone.Warning),
             PeerFailureKind.SameMachine => ("That address is this PC", StatusTone.Error),
+            PeerFailureKind.IdentityMismatch => ("Identity changed · pair again", StatusTone.Error),
             PeerFailureKind.Refused => ("RoboMouse not running there", StatusTone.Warning),
             PeerFailureKind.TimedOut => ("No answer", StatusTone.Warning),
             PeerFailureKind.Unreachable => ("Unreachable", StatusTone.Warning),

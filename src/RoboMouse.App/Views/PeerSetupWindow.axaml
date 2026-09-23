@@ -67,6 +67,24 @@
         <TextBlock Classes="caption" Text="Pixels to shift the other screen. Easier to set by dragging on the Layout page." />
       </StackPanel>
 
+      <StackPanel Spacing="6">
+        <TextBlock Text="Jump hotkey" />
+        <views:HotkeyBox Hotkey="{Binding JumpHotkey}" AllowClear="True" Width="220" HorizontalAlignment="Left"
+                         AutomationProperties.Name="Jump hotkey"
+                         AutomationProperties.HelpText="Moves the cursor straight onto this PC's screen" />
+        <TextBlock Classes="caption" Text="Moves the cursor straight onto this PC's screen. Backspace clears it." />
+      </StackPanel>
+
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel>
+          <TextBlock Text="Share the clipboard" />
+          <TextBlock Classes="caption" TextWrapping="Wrap"
+                     Text="Copied text, images and files go both ways with this PC. Off, it gets nothing copied here and nothing copied there reaches this PC." />
+        </StackPanel>
+        <ToggleSwitch Grid.Column="1" IsChecked="{Binding ShareClipboard}" VerticalAlignment="Center" Margin="16,0,0,0"
+                      AutomationProperties.Name="Share the clipboard with this PC" />
+      </Grid>
+
       <Grid ColumnDefinitions="*,Auto">
         <StackPanel>
           <TextBlock Text="Enabled" />
@@ -75,6 +93,13 @@
         <ToggleSwitch Grid.Column="1" IsChecked="{Binding IsEnabled}" VerticalAlignment="Center" Margin="16,0,0,0"
                       AutomationProperties.Name="Enabled" AutomationProperties.HelpText="A disabled peer keeps its settings but is never connected to" />
       </Grid>
+
+      <StackPanel Spacing="2">
+        <TextBlock Text="Identity" />
+        <SelectableTextBlock Classes="caption code" Text="{Binding IdentityText}" AutomationProperties.Name="Identity fingerprint" />
+        <TextBlock Classes="caption" TextWrapping="Wrap"
+                   Text="Matches the fingerprint in Settings, Network on that PC once the two have paired." />
+      </StackPanel>
     </StackPanel>
   </DockPanel>
 

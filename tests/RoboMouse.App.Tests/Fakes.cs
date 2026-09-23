@@ -51,8 +51,23 @@ internal sealed class FakeBackend : IAppBackend
     public Dictionary<string, PeerConnectFailure> Failures { get; } = new();
     public AppSettings? Settings { get; set; }
 
-    public void ApplyClipboardSetting() => ClipboardApplied++;
-    public void ApplyHotkeySetting() { }
+    public void ApplyClipboardSettings() => ClipboardApplied++;
+    public int HotkeysApplied { get; private set; }
+    public void ApplyHotkeySetting() => HotkeysApplied++;
+    public int CrossingApplied { get; private set; }
+    public void ApplyCrossingSettings() => CrossingApplied++;
+    public string IdentityFingerprint => "1A2B-3C4D-5E6F-7A8B-9C0D";
+    public List<string> Forgotten { get; } = new();
+
+    public Task<bool> ForgetPeerIdentityAsync(string peerId)
+    {
+        Forgotten.Add(peerId);
+        var peer = Settings?.Peers.FirstOrDefault(p => p.Id == peerId);
+        if (peer != null)
+            peer.IdentityKey = string.Empty;
+        Failures.Remove(peerId);
+        return Task.FromResult(peer != null || Settings == null);
+    }
     public void ApplyPowerSetting() { }
     public void ApplyNetworkSettings() => NetworkApplied++;
     public bool ApplyPairingCode() { PairingApplied++; return true; }

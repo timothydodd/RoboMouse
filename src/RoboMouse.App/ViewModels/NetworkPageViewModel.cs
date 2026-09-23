@@ -37,10 +37,19 @@ public sealed partial class NetworkPageViewModel : PageViewModel
 
     public string MachineId { get; }
 
-    /// <summary>A code typed by hand in an older version (not the generated format) is easy to guess.</summary>
-    public bool IsPairingCodeWeak => !PairingCodeFormat.IsStrong(PairingCode);
+    /// <summary>What a code from another PC must look like, shown when the one entered is not one.</summary>
+    public const string CodeFormatHint = "That is not a RoboMouse code. It has 12 letters and digits, like K7PQ-M2XW-9DHR (no 0, 1, I or O). Copy it from Settings > Network on the other PC.";
 
-    /// <summary>The code differs from the saved one: saving drops every connection made with the old code.</summary>
+    /// <summary>A short fingerprint of this PC's identity key; paired peers show the same one for it.</summary>
+    public string IdentityFingerprint { get; }
+
+    /// <summary>A code typed by hand in an older version (not the generated format) is easy to guess.</summary>
+    public bool IsPairingCodeWeak => !Core.Network.PairingCode.IsStrong(PairingCode);
+
+    /// <summary>
+    /// The code differs from the saved one. Saving drops only connections to peers that have not paired
+    /// yet (made with the old code); paired peers prove their identity keys instead and keep working.
+    /// </summary>
     public bool PairingCodeChanged => !string.Equals(PairingCode, _savedPairingCode, StringComparison.Ordinal);
 
     /// <summary>This computer's IPv4 addresses, one per connected adapter, for typing into another machine.</summary>
@@ -55,6 +64,7 @@ public sealed partial class NetworkPageViewModel : PageViewModel
         _localPort = settings.LocalPort;
         _discoveryPort = settings.DiscoveryPort;
         MachineId = settings.MachineId;
+        IdentityFingerprint = backend?.IdentityFingerprint ?? string.Empty;
         Refresh();
     }
 
@@ -72,7 +82,7 @@ public sealed partial class NetworkPageViewModel : PageViewModel
     [RelayCommand]
     private async Task GeneratePairingCodeAsync()
     {
-        if (await _dialogs.ConfirmAsync("Generate a new pairing code? When you save, every other machine is disconnected until it uses the new code too."))
+        if (await _dialogs.ConfirmAsync("Generate a new pairing code? PCs that are already paired keep working. Machines that have not paired yet need the new code, and any of them connected now are disconnected when you save."))
             PairingCode = Core.Network.SecureChannel.GeneratePairingCode();
     }
 
@@ -95,9 +105,9 @@ public sealed partial class NetworkPageViewModel : PageViewModel
     [RelayCommand]
     private void UseEnteredCode()
     {
-        if (!PairingCodeFormat.TryNormalize(EnteredCode, out var code))
+        if (!Core.Network.PairingCode.TryFormat(EnteredCode, out var code))
         {
-            EnteredCodeError = PairingCodeFormat.FormatHint;
+            EnteredCodeError = CodeFormatHint;
             return;
         }
         PairingCode = code;
@@ -163,38 +173,5 @@ public sealed partial class NetworkPageViewModel : PageViewModel
         {
             await _dialogs.ErrorAsync($"Could not update the firewall: {ex.Message}");
         }
-    }
-}
-
-/// <summary>
-/// The shape of a code from <see cref="Core.Network.SecureChannel.GeneratePairingCode"/>: 12 characters
-/// from a 32-letter alphabet (60 bits), shown as XXXX-XXXX-XXXX.
-/// </summary>
-/// <remarks>
-/// A local copy of the rule until the core exposes its own strength check (IsPairingCodeStrong);
-/// switch to that once it lands so the two cannot drift apart.
-/// </remarks>
-internal static class PairingCodeFormat
-{
-    private const string Alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    private const int Length = 12;
-
-    public const string FormatHint = "That is not a RoboMouse code. It has 12 letters and digits, like K7PQ-M2XW-9DHR (no 0, 1, I or O). Copy it from Settings > Network on the other PC.";
-
-    /// <summary>True for a code in the generated format (dashes, spaces and case ignored).</summary>
-    public static bool IsStrong(string? code) => TryNormalize(code, out _);
-
-    /// <summary>Accepts a generated code typed or pasted loosely and returns it as XXXX-XXXX-XXXX.</summary>
-    public static bool TryNormalize(string? input, out string code)
-    {
-        code = string.Empty;
-        if (input == null)
-            return false;
-        var chars = input.Where(c => c != '-' && !char.IsWhiteSpace(c)).Select(char.ToUpperInvariant).ToArray();
-        if (chars.Length != Length || chars.Any(c => !Alphabet.Contains(c)))
-            return false;
-        var raw = new string(chars);
-        code = $"{raw[..4]}-{raw[4..8]}-{raw[8..]}";
-        return true;
     }
 }
