@@ -1543,7 +1543,8 @@ public sealed class RoboMouseService : IDisposable
 
         // Escape hatch and on/off switch. Works whether or not sharing is enabled, and while controlling a
         // remote it takes priority over forwarding so a hung peer can never trap the keyboard.
-        if (isDown && _hotkey?.Key == e.KeyCode)
+        var hotkey = _hotkey;
+        if (isDown && hotkey != null && hotkey.Key == e.KeyCode)
         {
             // Modifier ups pressed on the secure desktop never reached the hook, so a stale "held" could
             // make the plain key fire the hotkey. While not controlling, Windows' own key state is the
@@ -1551,7 +1552,7 @@ public sealed class RoboMouseService : IDisposable
             if (!_isControllingRemote)
                 _modifiers.Confirm(key => (NativeMethods.GetAsyncKeyState((int)key) & 0x8000) != 0);
 
-            if (_hotkey.Matches(e.KeyCode, _modifiers))
+            if (hotkey.Matches(e.KeyCode, _modifiers))
             {
                 e.Handled = true;
                 OnHotkeyPressed();
