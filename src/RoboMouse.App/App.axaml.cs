@@ -26,8 +26,10 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            UnhandledErrors.Install();
 
             _settings = AppSettings.Load();
+            StartupRegistration.SyncOnLaunch(_settings.StartWithWindows);
             try
             {
                 _tray = new TrayController(_settings, desktop);
@@ -43,8 +45,20 @@ public partial class App : Application
                 _tray?.Dispose();
                 _settings?.Save();
             };
+
+            if (ShouldShowSettingsAtLaunch(_settings))
+                Avalonia.Threading.Dispatcher.UIThread.Post(() => _tray?.ShowSettings());
         }
 
         base.OnFrameworkInitializationCompleted();
     }
+
+    /// <summary>
+    /// Settings opens at launch when there is nothing to connect to yet (first run, or every peer
+    /// removed), since a tray icon alone gives no hint what to do next; otherwise only when the user
+    /// turned "Start minimized" off.
+    /// </summary>
+    internal static bool ShouldShowSettingsAtLaunch(AppSettings settings) =>
+        settings.Peers.Count == 0 || !settings.StartMinimized;
+
 }
