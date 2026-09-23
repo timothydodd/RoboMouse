@@ -6,7 +6,8 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
-  # Build the Store package on demand from any branch (Actions > Build > Run workflow).
+  # Test builds on demand from any branch (Actions > Build > Run workflow). They are never signed and
+  # are versioned 0.0.<run>, which the installer refuses to put over an installed release.
   workflow_dispatch:
     inputs:
       sign:
@@ -14,29 +15,16 @@ on:
         type: boolean
         default: true
 
+# Least privilege: jobs ask for more only where they need it (OIDC for signing, write to publish the
+# GitHub release).
 permissions:
-  contents: write
-  # Lets the job sign in to Azure without a stored secret (OIDC) for code signing.
-  id-token: write
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
     # A hung test must not hold a runner for hours (the default limit is six).
     timeout-minutes: 45
-    # Azure only trusts this repo's jobs that run in the 'release' environment (that is the subject of
-    # the federated credential), so release builds use it and ordinary pushes/PRs use none.
-    environment: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'release' || '' }}
-
-    # Code signing (Azure Trusted Signing) switches itself on once these exist; until then every
-    # signing step is skipped and the outputs are unsigned.
-    #   secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID  (app registration with a
-    #              federated credential for this repo and the "Trusted Signing Certificate Profile
-    #              Signer" role on the certificate profile)
-    #   variables: SIGNING_ENDPOINT (e.g. https://eus.codesigning.azure.net/), SIGNING_ACCOUNT,
-    #              SIGNING_PROFILE (the certificate profile; set last, it is what turns signing on)
-    env:
-      SIGN: ${{ secrets.AZURE_CLIENT_ID != '' && vars.SIGNING_ACCOUNT != '' && vars.SIGNING_PROFILE != '' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -45,8 +33,6 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      # One version for everything: the assembly (shown in the settings window), the release zip and
-      # the MSIX manifest. Tag builds use the tag; other builds get 0.0.<run> so they are recognisable.
       - name: Version
         shell: pwsh
         run: |
@@ -64,11 +50,79 @@ jobs:
       - name: Build
         run: dotnet build --configuration Release --no-restore -p:Version=${{ env.APP_VERSION }}
 
+      # Runs every test project in the solution (RoboMouse.Core.Tests, RoboMouse.Service.Tests).
       - name: Test
         run: dotnet test --configuration Release --no-build
 
       # Native AOT: one self-contained native executable, no .NET runtime needed on the target.
-      # Needs the C++ build tools that ship with Visual Studio on the hosted Windows image.
+      # Needs the C++ build tools that ship with Visual Studio on the hosted Windows image. Release and
+      # manual runs publish (and maybe sign) their own in the release job.
+      - name: Publish (Native AOT)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' }}
+        run: >
+          dotnet publish src/RoboMouse.App
+          --configuration Release
+          --runtime win-x64
+          --output publish
+          -p:Version=${{ env.APP_VERSION }}
+
+      - name: Drop debug symbols from the publish folder
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' }}
+        shell: pwsh
+        run: Get-ChildItem publish -Filter *.pdb | Remove-Item
+
+      - name: Upload build
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoboMouse-win-x64
+          path: publish/
+
+  # Tag builds and manual runs: installers, Store package and (tags only) code signing.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # Azure only trusts jobs running in the 'release' environment (the subject of the federated
+    # credential), and that environment only admits v* tags and needs a reviewer's approval, so
+    # nothing but a reviewed release tag can be signed. Manual runs use no environment: unsigned.
+    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || '' }}
+    permissions:
+      contents: read
+      # Signs in to Azure without a stored secret (OIDC) for code signing.
+      id-token: write
+
+    # Code signing (Azure Trusted Signing) switches itself on once these exist; until then every
+    # signing step is skipped and the outputs are unsigned.
+    #   secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID  (app registration with a
+    #              federated credential for this repo's 'release' environment and the "Trusted Signing
+    #              Certificate Profile Signer" role on the certificate profile)
+    #   variables: SIGNING_ENDPOINT (e.g. https://eus.codesigning.azure.net/), SIGNING_ACCOUNT,
+    #              SIGNING_PROFILE (the certificate profile; set last, it is what turns signing on)
+    env:
+      SIGN: ${{ secrets.AZURE_CLIENT_ID != '' && vars.SIGNING_ACCOUNT != '' && vars.SIGNING_PROFILE != '' && startsWith(github.ref, 'refs/tags/v') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # One version for everything: the assembly (shown in the settings window), the release zip, the
+      # installers and the MSIX manifest. Tags use the tag; manual runs get 0.0.<run>.
+      - name: Version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $version = "0.0.${{ github.run_number }}"
+          }
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "Version $version"
+
       - name: Publish (Native AOT)
         run: >
           dotnet publish src/RoboMouse.App
@@ -82,23 +136,25 @@ jobs:
         run: Get-ChildItem publish -Filter *.pdb | Remove-Item
 
       - name: Publish installer binaries
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: ./packaging/Build-Installer.ps1 -Stage Publish -Version "${{ env.APP_VERSION }}"
 
+      # Third-party actions are pinned to a commit (tag in the comment) so a moved tag cannot change
+      # what runs with the signing identity.
       - name: Azure login (code signing)
         if: env.SIGN == 'true'
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Sign what ends up on users' disks before it is zipped or packed into an installer. The MSIX is
-      # left alone: the Store signs it.
+      # left alone: the Store signs it. The desktop service only trusts an app signed by the same
+      # publisher as itself, so the app and the service must both be signed here.
       - name: Sign the release zip contents
         if: env.SIGN == 'true'
-        uses: azure/trusted-signing-action@v0
+        uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0.5.11
         with:
           endpoint: ${{ vars.SIGNING_ENDPOINT }}
           trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
@@ -111,7 +167,7 @@ jobs:
 
       - name: Sign the installer binaries
         if: env.SIGN == 'true'
-        uses: azure/trusted-signing-action@v0
+        uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0.5.11
         with:
           endpoint: ${{ vars.SIGNING_ENDPOINT }}
           trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
@@ -133,7 +189,6 @@ jobs:
       # Manual runs produce a test package: signed with a throwaway certificate when "sign" is set,
       # versioned 0.0.<run>.0 so it never collides with a Store submission.
       - name: Build Store package (MSIX)
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         env:
           STORE_PACKAGE_NAME: ${{ secrets.STORE_PACKAGE_NAME }}
@@ -144,7 +199,6 @@ jobs:
           ./packaging/Build-Msix.ps1 -Version "${{ env.APP_VERSION }}.0" -Output artifacts -Sign:$sign
 
       - name: Upload Store package
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: RoboMouse-msix
@@ -156,7 +210,6 @@ jobs:
       # service alone for Store users. Same version as everything else so the pipe protocol matches.
       # The service-only one needs the Store identity to know which app to trust; it is skipped without it.
       - name: Build installers (Inno Setup)
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         env:
           STORE_PACKAGE_NAME: ${{ secrets.STORE_PACKAGE_NAME }}
@@ -167,7 +220,7 @@ jobs:
 
       - name: Sign the installers
         if: env.SIGN == 'true'
-        uses: azure/trusted-signing-action@v0
+        uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0.5.11
         with:
           endpoint: ${{ vars.SIGNING_ENDPOINT }}
           trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
@@ -180,7 +233,6 @@ jobs:
 
       # After signing, so the published hashes match the files people download.
       - name: Hash the installers
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $lines = Get-ChildItem artifacts -Filter "RoboMouse-*Setup-*.exe" | ForEach-Object {
@@ -191,7 +243,6 @@ jobs:
           [System.IO.File]::WriteAllText("$PWD/artifacts/SHA256SUMS.txt", (($lines -join "`n") + "`n"))
 
       - name: Upload installers
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: RoboMouse-installers
@@ -199,14 +250,71 @@ jobs:
             artifacts/RoboMouse-*Setup-*.exe
             artifacts/SHA256SUMS.txt
 
-      - name: Package release
+      - name: Package release zip
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: Compress-Archive -Path publish/* -DestinationPath "RoboMouse-${{ github.ref_name }}-win-x64.zip"
 
-      - name: Create GitHub release
+      - name: Upload release zip
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoboMouse-release-zip
+          path: RoboMouse-${{ github.ref_name }}-win-x64.zip
+
+  # Installs, upgrades and uninstalls the installers just built on a clean runner.
+  installer-smoke:
+    needs: release
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: RoboMouse-installers
+          path: installers
+
+      - name: Install, check, upgrade, uninstall
+        shell: pwsh
+        run: |
+          $full = Get-ChildItem installers -Filter "RoboMouse-Setup-*.exe" | Select-Object -First 1
+          $service = Get-ChildItem installers -Filter "RoboMouse-Service-Setup-*.exe" | Select-Object -First 1
+          if (-not $full) { throw "No full installer was built." }
+          $params = @{ Installer = $full.FullName }
+          if ($service) { $params.ServiceInstaller = $service.FullName }
+          ./packaging/Test-Installer.ps1 @params -LogDir "$env:RUNNER_TEMP/robomouse-installer-logs"
+
+      - name: Upload setup logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-smoke-logs
+          path: ${{ runner.temp }}/robomouse-installer-logs/
+
+  # Only this job can write to the repository, and only for a tag whose installers passed the smoke test.
+  github-release:
+    needs: [release, installer-smoke]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: RoboMouse-installers
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: RoboMouse-release-zip
+          path: .
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             RoboMouse-${{ github.ref_name }}-win-x64.zip
