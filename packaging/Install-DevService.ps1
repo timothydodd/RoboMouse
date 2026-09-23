@@ -8,7 +8,8 @@
   "%ProgramFiles%\RoboMouse\Service" and registers RoboMouseService as LocalSystem, manual start.
   The service only accepts pipe connections from the exe given by -AppPath, so point it at the
   RoboMouse.App.exe you actually run. A dev build output is user-writable, which the real installer
-  never allows; use this on your own machines only.
+  never allows, and a dev service is unsigned, so it checks the app by path only (no signer check);
+  use this on your own machines only.
 
   Turn it on from RoboMouse Settings > General > "Control UAC prompts and the lock screen", or:
       sc start RoboMouseService
@@ -62,9 +63,17 @@ $binary = '"{0}" --app-path "{1}"' -f (Join-Path $installDir 'RoboMouse.Service.
 New-Service -Name $serviceName -BinaryPathName $binary -DisplayName 'RoboMouse Desktop Service' `
     -Description 'Lets RoboMouse control UAC prompts, the lock screen and elevated windows.' `
     -StartupType Manual | Out-Null
-# Restart after a crash, as the installer sets it up.
+# Restart after a crash, and the same privileges and SID type, as the installer sets them up.
 sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/5000/restart/60000 | Out-Null
 sc.exe failureflag $serviceName 1 | Out-Null
+sc.exe sidtype $serviceName unrestricted | Out-Null
+sc.exe privs $serviceName SeTcbPrivilege/SeAssignPrimaryTokenPrivilege/SeIncreaseQuotaPrivilege/SeChangeNotifyPrivilege | Out-Null
+
+# The log folder gets the installer's ACL too: SYSTEM and Administrators full, Users read.
+$dataDir = Join-Path $env:ProgramData 'RoboMouse'
+New-Item $dataDir -ItemType Directory -Force | Out-Null
+icacls.exe $dataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /Q | Out-Null
+icacls.exe $dataDir /setowner '*S-1-5-32-544' /Q | Out-Null
 
 Write-Host ''
 Write-Host "Installed to $installDir"

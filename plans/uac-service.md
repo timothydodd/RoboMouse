@@ -177,10 +177,16 @@ toggle; it is off by default and installs stopped.
    inside with Azure Artifact Signing, verified with signtool; running the installers is untested): one Inno Setup script,
    `packaging/installer/RoboMouse.iss`, built twice by `packaging/Build-Installer.ps1` (full, and
    `/DServiceOnly`). The service-only installer registers the service with `--package-family`, derived
-   from the `STORE_PACKAGE_NAME`/`STORE_PUBLISHER` secrets, and is skipped when they are absent. It
-   refuses to install beside the full installer (one service name). Upgrades stop the service, keep
-   the start type the user chose, and restart it if it was running. `build.yml` builds both on `v*`
-   tags and manual runs and attaches them plus `SHA256SUMS.txt` to the release.
+   from the `STORE_PACKAGE_NAME`/`STORE_PUBLISHER` secrets, and is skipped when they are absent.
+   The two can be installed side by side and share the one registration: each records its folder
+   under `HKLM\SOFTWARE\RoboMouse\DesktopService`, the service runs from the full install's copy when
+   there is one, and it (with `%ProgramData%\RoboMouse`) is deleted only with the last of the two.
+   Upgrades stop the service and wait for STOPPED, keep the start type the user chose, and restart it
+   if it was running; an older version or a `/DIR=` outside Program Files is refused. The installer
+   also sets the ProgramData ACL, `sc privs`/`sidtype`, the event-log source and program-scoped
+   firewall rules (Private + Domain), and the uninstaller removes the HKCU Run value.
+   `build.yml` builds both on `v*` tags and manual runs, smoke-tests them on a clean runner
+   (`packaging/Test-Installer.ps1`), and only then attaches them plus `SHA256SUMS.txt` to the release.
 6. (optional) Store packaging of the service.
 
 ## Testing reality
@@ -189,6 +195,10 @@ Everything below the pipe (SYSTEM token, `CreateProcessAsUser` onto `winsta0\Win
 injection) can only be verified on real Windows, ideally two machines. CI confirms it compiles and
 the contract round-trips; correctness needs manual runs. Treat each phase as "builds + unit tests
 pass" until validated on Windows.
+
+`RoboMouse.Service --console` still runs the worker for debugging, but the app refuses it: the app
+only talks to the pipe server the SCM started for `RoboMouseService` in session 0. Use
+`Install-DevService.ps1` to test with the app.
 
 ### First Windows test checklist
 
