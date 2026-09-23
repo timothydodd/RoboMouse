@@ -68,7 +68,7 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 5. When pushed through the entry edge, the controlled peer sends `CursorLeaveMessage` with the normalized edge position and releases any held keys/buttons
 6. Controller restores its cursor one pixel inside the local edge opposite the one the cursor left through and resumes local control (short cooldown prevents immediate re-entry)
 
-With `WrapAround` on, an edge with no peer routes to the peer on the opposite edge (entering from its far side) and the controlled peer hands back from any edge, so two screens form a ring. The app runs as a normal user (no UAC prompt at launch); when the controlled machine cannot apply input (secure desktop or an elevated window in front) it sends `InputStatus` and the controller shows why. Driving the secure desktop needs a service, planned later.
+With `WrapAround` on, an edge with no peer routes to the peer on the opposite edge (entering from its far side) and the controlled peer hands back from any edge, so two screens form a ring. The app runs as a normal user (no UAC prompt at launch); when the controlled machine cannot apply input (secure desktop or an elevated window in front) it sends `InputStatus` and the controller shows why. The optional desktop service (below) drives the secure desktop.
 
 The keyboard hook checks the global hotkeys (`HotkeySet`, rebuilt by `ApplyHotkeySetting()` whenever they or the peer list change) before anything else. The toggle hotkey comes first and wins any clash: while controlling it releases control; otherwise it toggles `Enabled`. `LockCursorHotkey` (default Scroll Lock; Scroll Lock, Pause and F13-F24 may be hotkeys without a modifier) locks the cursor to its screen: no crossing from here, and while controlling, the peer gets `CursorLockMessage` and stops handing the cursor back. Each peer's jump hotkey (`PeerConfig.JumpHotkey`; null means Ctrl+Alt+F1-F4 by list position, empty means none) enters that peer at the middle of its edge, from here or from another peer. `LockAllHotkey` runs "Lock all PCs" off the hook. `SuspendHotkeys()` (used by `HotkeyBox` while it has focus) stops them acting so a chord can be recorded. Hooks stay installed while the service runs so this works when disabled.
 
@@ -77,8 +77,8 @@ Never do per-event file logging on the input path: the hook callback has a syste
 ### Distribution
 
 - `packaging/` holds the MSIX manifest (`runFullTrust`, startup task), Store assets, and `Build-Msix.ps1`. `StartupRegistration` picks the startup task when packaged and the Run key otherwise.
-- `packaging/Build-Installer.ps1` + `packaging/installer/RoboMouse.iss` (Inno Setup 6) build the direct-download installers: `RoboMouse-Setup` (app + desktop service) and `RoboMouse-Service-Setup` (service only, for Store users; needs the Store identity secrets to derive the package family name the service trusts). The Store package never contains the service. `Install-DevService.ps1` is the dev stand-in.
-- `.github/workflows/build.yml` builds/tests on every push, publishes a Native AOT zip, the installers and (with Store secrets set) the MSIX on `v*` tags. The version comes from the tag (`v1.2.3` → assembly 1.2.3, package 1.2.3.0) and is passed as `-p:Version`; the `<Version>` in the csproj files is only the fallback for local builds, so bump it when tagging.
+- `packaging/Build-Installer.ps1` + `packaging/installer/RoboMouse.iss` (Inno Setup 6) build the direct-download installers: `RoboMouse-Setup` (app + desktop service) and `RoboMouse-Service-Setup` (service only, for Store users; needs the Store identity secrets to derive the package family name the service trusts). The Store package never contains the service. `Install-DevService.ps1` is the dev stand-in. `Test-Installer.ps1` is the installer smoke test (CI job `installer-smoke`, gates the GitHub release).
+- `.github/workflows/build.yml` builds/tests on every push; on `v*` tags it builds the Native AOT zip and installers (signed only on tags, in the `release` environment) and the MSIX (workflow artifact only), and publishes the GitHub release once `installer-smoke` passes. The version comes from the tag (`v1.2.3` → assembly 1.2.3, package 1.2.3.0) and is passed as `-p:Version`; the `<Version>` in the csproj files is only the fallback for local builds, so bump it when tagging.
 
 ### UI (`src/RoboMouse.App/`)
 
@@ -86,23 +86,29 @@ Avalonia 12 with the Fluent theme, MVVM via CommunityToolkit.Mvvm, XAML views wi
 
 - `ViewModels/`: `SettingsViewModel` (status + navigation, Save applies everything live) with one `PageViewModel` per page (General, Network, Peers, Layout, About), `PeerSetupViewModel`, `PairingWizardViewModel` (first run / no peers), `ToastViewModel`, `DebugPanelViewModel`. View models talk to the service only through `Services/IAppBackend` (which also saves the settings file, so tests never write the real one) and to the UI only through `Services/IDialogService`, so they can be constructed without hooks, sockets or a desktop.
 - `Services/`: `Notifications` (every toast's wording) shown by `Views/ToastPresenter` as non-activating windows by the tray (the tray icon has no balloons); `UpdateChecker` (GitHub latest release, direct-download builds only, daily); `Diagnostics` (log folder, redacted diagnostics zip, `crash.txt`); `AppState` (`app.json`: app-only settings such as the update check). The pairing code is only ever generated or copied from another PC (`PairingCode.TryFormat`; strength is `PairingCode.IsStrong`, the single rule), never free text. The Network page shows this PC's identity fingerprint, the peer dialog the peer's; a peer failing with `IdentityMismatch` gets a "Pair again" button on the Peers page (`ForgetPeerIdentityAsync`).
-- `Views/`: `SettingsWindow` (nav pane + the four page `UserControl`s, kept alive so unsaved edits survive switching), `PeerSetupWindow`, `MessageDialog`, `DebugPanelWindow`, plus the custom-drawn `ScreenLayoutControl` and `EdgeHighlightWindow`. `WindowDialogService` implements `IDialogService` for a window. `SettingCard` is the WinUI-style settings row.
+- `Views/`: `SettingsWindow` (nav pane + the five page `UserControl`s, kept alive so unsaved edits survive switching), `PeerSetupWindow`, `PairingWizardWindow`, `ToastWindow`, `MessageDialog`, `DebugPanelWindow`, `HotkeyBox`, plus the custom-drawn `ScreenLayoutControl` and `EdgeHighlightWindow`. `WindowDialogService` implements `IDialogService` for a window. `SettingCard` is the WinUI-style settings row.
 - `TrayController` owns the `TrayIcon`, its `NativeMenu` (rebuilt in `NeedsUpdate`) and the `RoboMouseService`; service events arrive on network threads and are marshalled with `Dispatcher.UIThread.Post`. `AvaloniaImageCodec` converts clipboard images between PNG and DIB for the core. Icons come from `FluentIcons.Avalonia` (vector, renders everywhere).
 - **Previewing the UI without Windows:** `tools/RoboMouse.UiPreview` renders every window with the headless platform and a fake backend: `dotnet run --project tools/RoboMouse.UiPreview -- <outDir>` writes light and dark PNGs. Pass resource keys after the directory to check what the theme defines. Use it after any UI change.
 
-### Desktop service (UAC / secure desktop) — in progress
+### Desktop service (UAC / secure desktop)
 
 Separate from the Store app, shipped in the direct-download installer, to drive the secure desktop
 (UAC prompts, lock screen, sign-in) where a normal-user process cannot. See `plans/uac-service.md`
-for the design and security boundary. New projects:
+for the design and security boundary. Projects:
 
 - `RoboMouse.Contracts` — dependency-free pipe names, message envelope (`PipeMessage`) and transport
-  (`PipeConnection`), shared by app/service/helper. Pipe protocol version 2, checked in `Hello`.
+  (`PipeConnection`, frames capped at `PipeNames.MaxFrameLength`, 64 KB), shared by app/service/helper.
+  Pipe protocol version is `PipeNames.ProtocolVersion` (3), checked in `Hello`.
 - `RoboMouse.Service` — LocalSystem Windows service (SCM plumbing in `ServiceNative`/`Program`).
   `ControlPipeServer` hosts the ACL'd control pipe and verifies the caller is RoboMouse.App in the
-  console session (`--app-path`, or `--package-family` for the Store app). While an app is connected,
-  `ServiceWorker` keeps one `HelperHost` alive in the app's session and relays injection commands.
-  Run with `--console` to test.
+  console session (`CallerPolicy`: kernel image path from one held process handle, creation time for
+  pid reuse, Authenticode signer equal to the service's own when it is signed; `--app-path`, or
+  `--package-family` plus the package install folder for the Store app). While an app is connected,
+  `ServiceWorker` keeps one `HelperHost` alive in the app's session (restricted token, powerful
+  privileges removed) and relays injection commands, nothing before a version-checked `Hello` and
+  only well-formed ones. `--console` runs the worker for debugging, but the app refuses it:
+  `DesktopServiceControl.VerifyPipeServer` only accepts the pipe server the SCM started for
+  `RoboMouseService` (session 0, LocalSystem). Test with `Install-DevService.ps1`.
 - `RoboMouse.Helper` — SYSTEM process in the user's session. **Injection only** (no hooks, no raw
   input): one thread applies commands and follows the input desktop with `SetThreadDesktop`
   (`InputDesktop`), so it reaches UAC prompts and the lock screen.
@@ -111,9 +117,10 @@ for the design and security boundary. New projects:
   `InProcessInjector` otherwise; `DesktopServiceControl` detects/starts the service. Setting:
   `UseDesktopService`; the General page card only shows when the service is installed.
 
-Phases 1-5 are written and the input path is verified on real Windows. Pipe servers must keep a
-non-zero buffer (`PipeNames.BufferSize`): unbuffered, both ends block sending `Hello`, and Linux
-pipes hide that. Not covered yet: sign-in after a reboot (no app is running to connect).
+Shipped since 1.1.0 and hardened in 1.2.0 (`plans/audit-fixes.md` Phase 1); the input path is
+verified on real Windows. Pipe servers must keep a non-zero buffer (`PipeNames.BufferSize`):
+unbuffered, both ends block sending `Hello`, and Linux pipes hide that. Not covered yet: sign-in
+after a reboot (no app is running to connect) and Ctrl+Alt+Del.
 
 ### Native AOT
 

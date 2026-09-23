@@ -1,13 +1,33 @@
 # Audit fixes: security, reliability, UX and missing features
 
-Status: **planned, nothing written yet.** Comes from the September 2026 code audit (core, network,
-app, desktop service/installer/CI). Findings were read against the code; the ones marked ✔ were
-re-checked by hand.
+Status: **implemented in 1.2.0** (all six phases, shipped together; see `git log 5afa42b..v1.2.0`).
+Comes from the September 2026 code audit (core, network, app, desktop service/installer/CI). Findings
+were read against the code; the ones marked ✔ were re-checked by hand.
 
-Phases are ordered by risk. Phases 1, 2, 4 and 5 need no protocol change and can ship as 1.1.x
-patch releases. Phase 3 changes the wire protocol and should ride along with the virtual-layout
-protocol bump (`plans/virtual-layout.md`, 1.2.0) so users only have to update both machines once.
-Phase 6 is new features.
+Not done:
+- the Phase 6 **nice-to-have** list (drag-and-drop files across screens, localization, opt-in crash
+  reporting, sign-in after reboot / Ctrl+Alt+Del, macOS/Linux clients, cross-subnet rendezvous);
+- **virtual layout** / more than one peer per edge (6.10, `plans/virtual-layout.md`);
+- 1.7 `sc sidtype restricted`: see deviations;
+- 6.5 "Download and install": the update check only notifies and opens the release page; nothing is
+  downloaded or run.
+
+Deviations from the plan:
+- **No PAKE** (3.1): as decided there; generated codes only, version in the PBKDF2 salt, and the
+  code is needed only when pairing thanks to pinned identity keys. Per-pair salts (3.3) were not
+  needed: pinned connections do not use the code at all.
+- **Protocol 4 peers** get a one-byte handshake version answer (so they report "incompatible
+  version"), not a reject reason; nothing is proved to them.
+- **Clipboard loops** (3.5): every change carries an origin id + a clock-based sequence stamp and a
+  machine applies only what is newer than its current content (`ClipboardStamps`), instead of a
+  per-origin sequence table and recent-hash set.
+- **Authenticated discovery** (3.6): broadcasts are signed with the identity key (ECDSA) rather
+  than carrying an HMAC.
+- **Service SID type** (1.7) stays `unrestricted`: a restricted (write-restricted) token would also
+  bind the helper and deny it the Winlogon desktop rights `SendInput` needs. Privileges are limited
+  with `sc privs`. Revisit after a test on real hardware.
+
+Phases were ordered by risk; the numbering is kept for reference.
 
 Each phase lists its tests; nothing in a phase is done until they pass.
 
@@ -337,9 +357,4 @@ cross-subnet rendezvous.
 
 ## Release grouping
 
-| Release | Contents | Protocol |
-|---|---|---|
-| 1.1.5 | Phase 1; Phase 2a–2c; Phase 4.4, 4.6, 4.7; Phase 5.1, 5.3, 5.5 | unchanged (v4) |
-| 1.1.6 | rest of Phase 2; rest of Phase 4; rest of Phase 5; Phase 6.1 | unchanged (v4) |
-| 1.2.0 | Phase 3 + virtual layout; Phase 6.2–6.6 | v5 |
-| later | Phase 6 should/nice-to-have | — |
+Everything above shipped together in 1.2.0 (protocol 5); no 1.1.5 / 1.1.6 releases were made.
