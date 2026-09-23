@@ -29,6 +29,15 @@ public enum MessageType : byte
     /// <summary>The sender's display turned on or off, or it is about to sleep.</summary>
     PowerState = 0x23,
 
+    /// <summary>The controller locked (or unlocked) the cursor to the controlled screen.</summary>
+    CursorLock = 0x24,
+
+    /// <summary>The sender's session locked or unlocked, or its screen saver started or stopped.</summary>
+    SessionState = 0x25,
+
+    /// <summary>"Lock all PCs": the sender asks the receiver to lock its session.</summary>
+    LockRequest = 0x26,
+
     /// <summary>Clipboard data.</summary>
     Clipboard = 0x30,
 

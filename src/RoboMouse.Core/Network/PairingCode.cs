@@ -39,6 +39,20 @@ public static class PairingCode
         return normalized.Length == Length && normalized.All(c => Alphabet.Contains(c));
     }
 
+    /// <summary>
+    /// Accepts a generated code typed or pasted loosely (any case, with or without dashes and spaces)
+    /// and returns it in the display form XXXX-XXXX-XXXX. False when it is not a generated code.
+    /// </summary>
+    public static bool TryFormat(string? input, out string code)
+    {
+        code = string.Empty;
+        if (!IsStrong(input))
+            return false;
+        var raw = Normalize(input);
+        code = $"{raw[..4]}-{raw[4..8]}-{raw[8..]}";
+        return true;
+    }
+
     /// <summary>True when two codes are the same once normalized.</summary>
     public static bool AreEqual(string? a, string? b) => Normalize(a) == Normalize(b);
 }

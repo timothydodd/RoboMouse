@@ -70,6 +70,22 @@ public class AppSettings
     public string? ToggleHotkey { get; set; } = "Ctrl+Alt+M";
 
     /// <summary>
+    /// Hotkey that locks the cursor to the screen it is on (press again to unlock), so it cannot
+    /// cross to another PC by accident. Null or empty for none. Scroll Lock, as in Synergy.
+    /// </summary>
+    public string? LockCursorHotkey { get; set; } = "Scroll";
+
+    /// <summary>
+    /// Hotkey that locks this PC and asks every connected peer to lock too. Null or empty for none.
+    /// </summary>
+    public string? LockAllHotkey { get; set; }
+
+    /// <summary>
+    /// When the cursor may cross to another screen: guards against switching by accident.
+    /// </summary>
+    public CrossingSettings Crossing { get; set; } = new();
+
+    /// <summary>
     /// Pushing through an edge that has no peer comes out on the far side of the peer on the opposite
     /// edge, and a controlled screen hands control back from any edge, so screens form a ring.
     /// </summary>
@@ -85,6 +101,18 @@ public class AppSettings
     /// on while its display is on, and turn this display off when its display turns off or it sleeps.
     /// </summary>
     public bool FollowHostPower { get; set; } = false;
+
+    /// <summary>
+    /// Lock this PC when the machine that last controlled it locks (Win+L, or "Lock all PCs" there).
+    /// Only a configured, enabled peer whose identity key is pinned is followed.
+    /// </summary>
+    public bool LockWithHost { get; set; } = false;
+
+    /// <summary>
+    /// Start this PC's screen saver when the machine that last controlled it starts its own (unless
+    /// this PC was used in the last minute).
+    /// </summary>
+    public bool ScreensaverWithHost { get; set; } = false;
 
     /// <summary>
     /// Number of pixels from screen edge to trigger transition.
@@ -266,6 +294,7 @@ public class AppSettings
                 settings.Peers ??= new();
                 settings.BlockedMachineIds ??= new();
                 settings.Clipboard ??= new();
+                settings.Crossing ??= new();
                 return settings;
             }
         }

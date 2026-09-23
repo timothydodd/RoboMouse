@@ -68,6 +68,17 @@ public sealed class HeldInput
         }
     }
 
+    /// <summary>Returns an up for every held button and forgets the buttons; held keys are kept.</summary>
+    public List<MouseEventType> TakeButtonReleases()
+    {
+        lock (_lock)
+        {
+            var buttons = _buttons.Select(b => UpFor(b)!.Value).ToList();
+            _buttons.Clear();
+            return buttons;
+        }
+    }
+
     /// <summary>Forgets everything without releasing it.</summary>
     public void Clear()
     {

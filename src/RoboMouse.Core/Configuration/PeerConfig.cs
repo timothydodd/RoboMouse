@@ -71,6 +71,20 @@ public class PeerConfig
     public string IdentityKey { get; set; } = string.Empty;
 
     /// <summary>
+    /// Whether clipboard content and copied files are shared with this peer, both ways: with it off,
+    /// nothing copied here (or relayed through here) is sent to it, and nothing it sends is applied
+    /// or passed on. The General page's clipboard switches still apply on top.
+    /// </summary>
+    public bool ShareClipboard { get; set; } = true;
+
+    /// <summary>
+    /// Hotkey that moves the cursor straight onto this peer's screen. Null means the default for its
+    /// place in the list (Ctrl+Alt+F1 to F4 for the first four, see <see cref="Input.HotkeySet.DefaultJumpHotkey"/>);
+    /// empty means none.
+    /// </summary>
+    public string? JumpHotkey { get; set; }
+
+    /// <summary>
     /// Unique identifier for this peer (generated or received).
     /// </summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");

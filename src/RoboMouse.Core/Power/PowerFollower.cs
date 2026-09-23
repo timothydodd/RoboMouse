@@ -95,7 +95,8 @@ public sealed unsafe class PowerFollower : IDisposable
             held = wanted;
     }
 
-    private static uint MillisecondsSinceLastInput()
+    /// <summary>How long ago this machine last saw input (its own or injected).</summary>
+    internal static uint MillisecondsSinceLastInput()
     {
         var info = new NativeMethods.LASTINPUTINFO { cbSize = (uint)sizeof(NativeMethods.LASTINPUTINFO) };
         if (!NativeMethods.GetLastInputInfo(&info))

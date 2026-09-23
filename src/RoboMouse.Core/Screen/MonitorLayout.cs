@@ -105,6 +105,28 @@ public sealed class MonitorLayout
     }
 
     /// <summary>
+    /// True when the point on an outer edge is within <paramref name="distance"/> pixels of where that
+    /// outer edge ends: a corner of the desktop, or the step where a larger or offset monitor takes
+    /// over. Where the edge simply continues on the next monitor (two stacked screens of one width)
+    /// it is not an end. Used for the corner dead zone.
+    /// </summary>
+    public bool IsNearEdgeEnd(ScreenPosition edge, int x, int y, int distance)
+    {
+        if (distance <= 0)
+            return false;
+        var screen = GetScreenAt(x, y);
+        x = Math.Clamp(x, screen.Left, screen.Right - 1);
+        y = Math.Clamp(y, screen.Top, screen.Bottom - 1);
+
+        // Step along the edge both ways; the edge has ended if either point is off the desktop or no
+        // longer on an outer edge (it is on a monitor that sticks out further).
+        var (dx, dy) = edge is ScreenPosition.Left or ScreenPosition.Right ? (0, distance) : (distance, 0);
+        return !StillOnEdge(edge, x - dx, y - dy) || !StillOnEdge(edge, x + dx, y + dy);
+    }
+
+    private bool StillOnEdge(ScreenPosition edge, int x, int y) => Contains(x, y) && IsAtOuterEdge(edge, x, y);
+
+    /// <summary>
     /// The pixel on the given outer edge for a normalized (0..1) position along the bounding box.
     /// Where the bounding box edge is empty space, this is the outermost monitor at that position.
     /// </summary>

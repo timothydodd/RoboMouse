@@ -90,6 +90,30 @@ public sealed class RoboMouseService : IDisposable
     private readonly HeldInput _physical = new();
     private readonly HeldInput _forwarded = new();
 
+    // Crossing guards (CrossingSettings). The guard is only touched on the hook's thread; the full-screen
+    // check is too slow for the hook, so it polls on a timer while that guard is on.
+    private readonly CrossingGuard _crossingGuard = new();
+    private readonly FullScreenDetector _fullScreen = new();
+
+    // Global hotkeys, parsed from the settings; swapped whole when they change. Capturing a new chord in
+    // Settings suspends them, so pressing the current one there records it instead of acting on it.
+    private volatile HotkeySet _hotkeys = HotkeySet.Empty;
+    private int _hotkeySuspensions;
+
+    // The cursor is locked to the screen it is on: this one (no crossing) or, while controlling, the
+    // peer's (it is told, and does not hand the cursor back). On the controlled side, whether the
+    // controller locked it here.
+    private volatile bool _cursorLocked;
+    private volatile bool _returnLocked;
+
+    // Session lock and screen saver, announced to every peer; a peer's announced state is kept to follow
+    // the host's (LockWithHost, ScreensaverWithHost).
+    private const int ScreensaverPollMs = 2000;
+    private volatile bool _sessionLocked;
+    private volatile bool _screensaverRunning;
+    private System.Threading.Timer? _screensaverTimer;
+    private readonly Dictionary<string, (bool Locked, bool Screensaver)> _peerSessionStates = new();
+
     // Controlled state (a remote machine drives this screen)
     private readonly ControlledSession _controlled;
     private int _edgeOvershoot;
@@ -414,6 +438,8 @@ public sealed class RoboMouseService : IDisposable
         _keyboardHook.Install();
 
         _enabled = _settings.Enabled;
+        ApplyCrossingSettings();
+        _screensaverTimer = new System.Threading.Timer(_ => PollScreensaver(), null, ScreensaverPollMs, ScreensaverPollMs);
 
         _reconnectTimer = new System.Threading.Timer(_ => _ = ReconnectConfiguredPeersAsync(), null, ReconnectIntervalMs, ReconnectIntervalMs);
         _offerSweepTimer = new System.Threading.Timer(_ => SweepRetiredOffers(), null, OfferSweepInterval, OfferSweepInterval);
@@ -547,6 +573,9 @@ public sealed class RoboMouseService : IDisposable
         _reconnectTimer = null;
         _offerSweepTimer?.Dispose();
         _offerSweepTimer = null;
+        _screensaverTimer?.Dispose();
+        _screensaverTimer = null;
+        _fullScreen.Enabled = false;
 
         _enabled = false;
         OnEnabledChanged();
@@ -565,6 +594,7 @@ public sealed class RoboMouseService : IDisposable
         lock (_powerLock)
         {
             _peerPowerStates.Clear();
+            _peerSessionStates.Clear();
         }
         UpdatePowerFollowing();
     }
@@ -701,6 +731,7 @@ public sealed class RoboMouseService : IDisposable
         if (changed)
         {
             SaveSettings("peer list");
+            ApplyHotkeySetting(); // jump hotkeys follow the peer list
             PeersChanged?.Invoke(this, EventArgs.Empty);
         }
     }
@@ -807,6 +838,7 @@ public sealed class RoboMouseService : IDisposable
                 existing.IdentityKey = peerConfig.IdentityKey;
         }
         _settings.BlockedMachineIds.Remove(peerConfig.Id);
+        ApplyHotkeySetting();
 
         return peerConfig;
     }
@@ -899,6 +931,7 @@ public sealed class RoboMouseService : IDisposable
             _reportedReconnectFailures.Remove(peerId);
         }
         SetConnectFailure(peerId, null);
+        ApplyHotkeySetting(); // jump hotkeys follow the peer list
         PeersChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -921,6 +954,7 @@ public sealed class RoboMouseService : IDisposable
             _settings.BlockedMachineIds.Add(peer.Id);
         SetConnectFailure(peer.Id, null);
         SaveSettings("removed peer");
+        ApplyHotkeySetting(); // jump hotkeys follow the peer list
         PeersChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -964,6 +998,7 @@ public sealed class RoboMouseService : IDisposable
         connection.Disconnected += (s, e) => RemoveConnection(connection);
         connection.Start();
         connection.Post(new PowerStateMessage { State = _powerMonitor.State });
+        connection.Post(CurrentSessionState());
 
         if (replaced == null)
             PeerConnected?.Invoke(this, connection);
@@ -996,6 +1031,7 @@ public sealed class RoboMouseService : IDisposable
         lock (_powerLock)
         {
             _peerPowerStates.Remove(connection.PeerId);
+            _peerSessionStates.Remove(connection.PeerId);
         }
         UpdatePowerFollowing();
 
@@ -1180,6 +1216,7 @@ public sealed class RoboMouseService : IDisposable
         SimpleLogger.Log("Accept", $"Allowed {pending.MachineName}; placed {config.Position}");
 
         PendingPeersChanged?.Invoke(this, EventArgs.Empty);
+        ApplyHotkeySetting(); // jump hotkeys follow the peer list
         PeersChanged?.Invoke(this, EventArgs.Empty);
 
         // Connect now rather than waiting for either side's retry.
@@ -1241,6 +1278,7 @@ public sealed class RoboMouseService : IDisposable
 
         peer.Enabled = enabled;
         SaveSettings("peer on/off");
+        ApplyHotkeySetting();
 
         if (!enabled)
         {
@@ -1576,11 +1614,13 @@ public sealed class RoboMouseService : IDisposable
 
         var edges = _screenInfo.GetEdgesAt(e.X, e.Y, _settings.EdgeThreshold);
         if (edges.Count == 0)
+        {
+            _crossingGuard.LeftEdge();
             return;
+        }
 
-        // Never cross while a button is held (dragging a window or selecting text): the button would stay
-        // down here while the cursor is parked, and the drag would jump to the middle of the screen.
-        if (_physical.AnyButtonDown && ButtonsReallyHeld())
+        // Locked to this screen (the lock hotkey): edges are just edges.
+        if (_cursorLocked)
             return;
 
         // In a corner the cursor is on two edges; take the one that leads to a peer.
@@ -1610,10 +1650,25 @@ public sealed class RoboMouseService : IDisposable
         }
         if (targetPeer == null || edge == null)
         {
+            _crossingGuard.LeftEdge();
             foreach (var candidate in edges)
                 ConsiderWakingPeerAt(candidate.Edge);
             return;
         }
+
+        // The crossing guards. A button held means dragging a window or selecting text: the button would
+        // stay down here while the cursor is parked, and the drag would jump to the middle of the screen.
+        // Each check is cheap; the full-screen one reads the answer a timer keeps up to date.
+        var crossing = _settings.Crossing;
+        var buttonHeld = _physical.AnyButtonDown && ButtonsReallyHeld();
+        var attempt = new CrossingAttempt(
+            edge.Edge,
+            crossing.CornerDeadZone > 0 && _screenInfo.Layout.IsNearEdgeEnd(edge.Edge, e.X, e.Y, crossing.CornerDeadZone),
+            buttonHeld,
+            crossing.RequiredModifier == CrossingModifier.None ? CrossingModifiers.None : HeldCrossingModifiers(),
+            _fullScreen.IsFullScreen);
+        if (_crossingGuard.Evaluate(crossing, attempt, Environment.TickCount64) != CrossingDecision.Allow)
+            return;
 
         if (StartRemoteControl(targetPeer, edge))
             e.Handled = true;
@@ -1634,6 +1689,17 @@ public sealed class RoboMouseService : IDisposable
         }
         _physical.Clear();
         return false;
+    }
+
+    /// <summary>The modifiers held now, from the hook's tracking, for the "hold a key to cross" guard.</summary>
+    private CrossingModifiers HeldCrossingModifiers()
+    {
+        var held = CrossingModifiers.None;
+        if (_modifiers.Ctrl) held |= CrossingModifiers.Ctrl;
+        if (_modifiers.Alt) held |= CrossingModifiers.Alt;
+        if (_modifiers.Shift) held |= CrossingModifiers.Shift;
+        if (_modifiers.Win) held |= CrossingModifiers.Win;
+        return held;
     }
 
     /// <summary>
@@ -1689,10 +1755,12 @@ public sealed class RoboMouseService : IDisposable
         _modifiers.Update(e.KeyCode, isDown);
         _physical.TrackKey(e.KeyCode, e.ScanCode, e.IsExtendedKey, isDown);
 
-        // Escape hatch and on/off switch. Works whether or not sharing is enabled, and while controlling a
-        // remote it takes priority over forwarding so a hung peer can never trap the keyboard.
-        var hotkey = _hotkey;
-        if (isDown && hotkey != null && hotkey.Key == e.KeyCode)
+        // Global hotkeys: the escape hatch and on/off switch first, then cursor lock, lock all and the
+        // jumps. They work whether or not sharing is enabled, and while controlling a remote they take
+        // priority over forwarding so a hung peer can never trap the keyboard. Settings suspends them
+        // while it records a new chord.
+        var hotkeys = _hotkeys;
+        if (isDown && Volatile.Read(ref _hotkeySuspensions) == 0 && hotkeys.UsesKey(e.KeyCode))
         {
             // Modifier ups pressed on the secure desktop never reached the hook, so a stale "held" could
             // make the plain key fire the hotkey. While not controlling, Windows' own key state is the
@@ -1700,10 +1768,10 @@ public sealed class RoboMouseService : IDisposable
             if (!_isControllingRemote)
                 _modifiers.Confirm(key => (NativeMethods.GetAsyncKeyState((int)key) & 0x8000) != 0);
 
-            if (hotkey.Matches(e.KeyCode, _modifiers))
+            if (hotkeys.Find(e.KeyCode, _modifiers) is { } binding)
             {
                 e.Handled = true;
-                OnHotkeyPressed();
+                OnHotkeyPressed(binding);
                 return;
             }
         }
@@ -1730,6 +1798,8 @@ public sealed class RoboMouseService : IDisposable
     private void OnSessionLockChanged(bool locked)
     {
         SimpleLogger.Log("Session", locked ? "Session locked" : "Session unlocked");
+        _sessionLocked = locked;
+        BroadcastSessionState();
         _modifiers.Clear();
         _physical.Clear();
         ReleaseForwardedInput();
@@ -1748,8 +1818,6 @@ public sealed class RoboMouseService : IDisposable
             connection.Post(new MouseMessage { EventType = up });
     }
 
-    private Hotkey? _hotkey;
-
     /// <summary>How remote input is being applied: in-process, or through the desktop service.</summary>
     public DesktopServiceState DesktopServiceState => _serviceInjector?.State ?? DesktopServiceState.Off;
 
@@ -1766,10 +1834,44 @@ public sealed class RoboMouseService : IDisposable
         _serviceInjector.Enabled = _settings.UseDesktopService && installed;
     }
 
-    /// <summary>Re-reads the toggle hotkey from settings.</summary>
+    /// <summary>
+    /// Re-reads every global hotkey from the settings: toggle, cursor lock, lock all, and each peer's
+    /// jump hotkey. Call after any of them, or the peer list, changed.
+    /// </summary>
     public void ApplyHotkeySetting()
     {
-        _hotkey = Hotkey.Parse(_settings.ToggleHotkey);
+        _hotkeys = HotkeySet.From(_settings);
+    }
+
+    /// <summary>
+    /// Stops the global hotkeys from acting until the returned object is disposed, so a key box that
+    /// records a new chord gets the keys, even the current hotkey's, instead of the hook acting on them.
+    /// Nests; safe from any thread.
+    /// </summary>
+    public IDisposable SuspendHotkeys()
+    {
+        Interlocked.Increment(ref _hotkeySuspensions);
+        return new HotkeySuspension(this);
+    }
+
+    private sealed class HotkeySuspension(RoboMouseService owner) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                Interlocked.Decrement(ref owner._hotkeySuspensions);
+        }
+    }
+
+    /// <summary>
+    /// Turns the full-screen check on or off to match <see cref="CrossingSettings.BlockWhileFullScreen"/>.
+    /// The other crossing guards are read live. Call after saving them.
+    /// </summary>
+    public void ApplyCrossingSettings()
+    {
+        _fullScreen.Enabled = !_disposed && _settings.Crossing.BlockWhileFullScreen;
     }
 
     #region Power
@@ -1809,8 +1911,22 @@ public sealed class RoboMouseService : IDisposable
 
     #endregion
 
-    private void OnHotkeyPressed()
+    /// <summary>A global hotkey was pressed. Runs in the keyboard hook: anything slow is handed off.</summary>
+    private void OnHotkeyPressed(HotkeyBinding binding)
     {
+        switch (binding.Action)
+        {
+            case HotkeyAction.LockCursor:
+                SetCursorLock(!_cursorLocked);
+                return;
+            case HotkeyAction.LockAll:
+                _ = Task.Run(LockAllMachines);
+                return;
+            case HotkeyAction.JumpToPeer when binding.PeerId != null:
+                JumpToPeer(binding.PeerId);
+                return;
+        }
+
         if (_isControllingRemote)
         {
             _uiQueue.BeginInvoke(() => SimpleLogger.Log("Control", "Hotkey pressed: releasing remote control"));
@@ -1827,6 +1943,147 @@ public sealed class RoboMouseService : IDisposable
         var enabled = Enabled;
         _uiQueue.BeginInvoke(() => SimpleLogger.Log("Control", $"Hotkey pressed: sharing {(enabled ? "enabled" : "disabled")}"));
     }
+
+    #region Cursor lock, jump and lock together
+
+    /// <summary>Raised (on the hook's or the caller's thread) when <see cref="CursorLocked"/> changes.</summary>
+    public event EventHandler? CursorLockChanged;
+
+    /// <summary>
+    /// The cursor is locked to the screen it is on: it does not cross from this one, and while
+    /// controlling a peer, that peer does not hand it back. Toggled by the lock hotkey or the tray.
+    /// </summary>
+    public bool CursorLocked => _cursorLocked;
+
+    /// <summary>Locks or unlocks the cursor to the screen it is on. Safe from any thread, including the hook.</summary>
+    public void SetCursorLock(bool locked)
+    {
+        if (_cursorLocked == locked)
+            return;
+        _cursorLocked = locked;
+        if (_isControllingRemote)
+            _registry.Active?.Post(new CursorLockMessage { Locked = locked });
+        _uiQueue.BeginInvoke(() => SimpleLogger.Log("Control", locked ? "Cursor locked to the current screen" : "Cursor unlocked"));
+        CursorLockChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// The jump hotkey: puts the cursor on a peer's screen, entering at the middle of the edge that faces
+    /// this one, whether it is here or on another peer. Runs in the keyboard hook. Nothing happens while
+    /// sharing is off, while this PC is being controlled, or when the peer is not connected.
+    /// </summary>
+    private void JumpToPeer(string peerId)
+    {
+        if (!_enabled || _controlled.IsActive)
+            return;
+        var peer = _settings.Peers.ToList().FirstOrDefault(p => p.Id == peerId && p.Enabled);
+        if (peer == null || (_isControllingRemote && _activePeer?.Id == peerId))
+            return;
+        if (_registry.Get(peerId) == null)
+        {
+            _uiQueue.BeginInvoke(() => SimpleLogger.Log("Control", $"Jump to {peer.Name}: not connected"));
+            return;
+        }
+
+        if (_isControllingRemote)
+            EndRemoteControl(notifyPeer: true);
+
+        var (x, y) = _cursorManager.GetEdgePoint(peer.Position, 0.5f);
+        _crossingGuard.Reset();
+        StartRemoteControl(peer, new EdgeInfo(peer.Position, x, y, 0.5f));
+    }
+
+    /// <summary>
+    /// "Lock all PCs": asks every connected peer to lock (each one honours it only from a paired, enabled
+    /// peer), then locks this PC. Safe from any thread; call it off the hooks.
+    /// </summary>
+    public void LockAllMachines()
+    {
+        var connections = _registry.Snapshot();
+        SimpleLogger.Log("Session", $"Locking this PC and asking {connections.Count} peer(s) to lock");
+        foreach (var connection in connections)
+            connection.Post(new LockRequestMessage());
+        LockThisPc();
+    }
+
+    /// <summary>Locks this Windows session, giving back a cursor parked for a remote first.</summary>
+    private void LockThisPc()
+    {
+        if (_isControllingRemote)
+        {
+            EndRemoteControl(notifyPeer: true);
+            PutCursorBackAtExitEdge();
+        }
+        if (!NativeMethods.LockWorkStation())
+            SimpleLogger.Log("Session", "LockWorkStation failed");
+    }
+
+    /// <summary>What this machine announces: locked, and whether its screen saver runs.</summary>
+    private SessionStateMessage CurrentSessionState() =>
+        new() { Locked = _sessionLocked, ScreensaverRunning = _screensaverRunning };
+
+    private void BroadcastSessionState()
+    {
+        foreach (var connection in _registry.Snapshot())
+            connection.Post(CurrentSessionState());
+    }
+
+    /// <summary>Watches for the screen saver starting or stopping (Windows sends no notification for it).</summary>
+    private unsafe void PollScreensaver()
+    {
+        int running = 0;
+        if (!NativeMethods.SystemParametersInfoW(NativeMethods.SPI_GETSCREENSAVERRUNNING, 0, (nint)(&running), 0))
+            return;
+        var now = running != 0;
+        if (now == _screensaverRunning)
+            return;
+        _screensaverRunning = now;
+        SimpleLogger.Log("Session", now ? "Screen saver started" : "Screen saver stopped");
+        BroadcastSessionState();
+    }
+
+    /// <summary>A peer's session locked or unlocked, or its screen saver started or stopped: follow the host's.</summary>
+    private void HandleSessionState(SessionStateMessage msg, PeerConnection connection)
+    {
+        var current = (msg.Locked, msg.ScreensaverRunning);
+        (bool Locked, bool Screensaver)? previous;
+        string? host;
+        lock (_powerLock)
+        {
+            previous = _peerSessionStates.TryGetValue(connection.PeerId, out var known) ? known : null;
+            _peerSessionStates[connection.PeerId] = current;
+            host = _powerHostId;
+        }
+
+        var wantsScreensaver = _settings.ScreensaverWithHost && msg.ScreensaverRunning;
+        var action = LockPolicy.Follow(_settings, connection.PeerId, Convert.ToBase64String(connection.PeerIdentityKey), host,
+            previous, current, wantsScreensaver ? PowerFollower.MillisecondsSinceLastInput() : uint.MaxValue);
+
+        if (action.HasFlag(SessionFollowAction.Lock))
+        {
+            SimpleLogger.Log("Session", $"{connection.PeerName} locked; locking this PC too");
+            LockThisPc();
+        }
+        else if (action.HasFlag(SessionFollowAction.StartScreensaver))
+        {
+            SimpleLogger.Log("Session", $"{connection.PeerName} started its screen saver; starting this one");
+            _uiQueue.BeginInvoke(() => NativeMethods.DefWindowProcW(_uiQueue.Handle, NativeMethods.WM_SYSCOMMAND, NativeMethods.SC_SCREENSAVE, 0));
+        }
+    }
+
+    /// <summary>"Lock all PCs" from a peer: honoured only from a configured, enabled peer that proved its pinned key.</summary>
+    private void HandleLockRequest(PeerConnection connection)
+    {
+        if (!LockPolicy.AcceptsLockRequest(_settings, connection.PeerId, Convert.ToBase64String(connection.PeerIdentityKey)))
+        {
+            SimpleLogger.Log("Session", $"Ignoring a lock request from {connection.PeerName}: not a paired, enabled peer");
+            return;
+        }
+        SimpleLogger.Log("Session", $"{connection.PeerName} locked all PCs; locking this one");
+        LockThisPc();
+    }
+
+    #endregion
 
     /// <summary>
     /// Hands the cursor to <paramref name="peer"/>. Called from the mouse hook, so only the state change
@@ -1866,6 +2123,8 @@ public sealed class RoboMouseService : IDisposable
             EntryY = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? edge.NormalizedPosition : 0f,
             WrapAround = _settings.WrapAround
         });
+        if (_cursorLocked)
+            connection.Post(new CursorLockMessage { Locked = true });
 
         // Modifiers held while crossing (Ctrl held to copy-drag, Shift to extend a selection) go with the
         // cursor: the peer gets the downs so the chord still works there, and they are released here so
@@ -1877,6 +2136,10 @@ public sealed class RoboMouseService : IDisposable
             connection.Post(new KeyboardMessage { KeyCode = key, ScanCode = scan, EventType = KeyboardEventType.KeyDown, IsExtendedKey = extended });
         }
 
+        // Only when the button guard is off can a button still be down here (or after a jump hotkey):
+        // release it on this machine, whose mouse is about to be swallowed, rather than leave it stuck.
+        var buttonUps = _physical.AnyButtonDown ? _physical.TakeButtonReleases() : null;
+
         var parkedX = _parkedX;
         var parkedY = _parkedY;
         _uiQueue.BeginInvoke(() =>
@@ -1887,6 +2150,11 @@ public sealed class RoboMouseService : IDisposable
 
             foreach (var (key, scan, extended) in modifiers)
                 InputSimulator.SimulateKeyboardEvent(key, scan, KeyboardEventType.KeyUp, extended);
+            if (buttonUps != null)
+            {
+                foreach (var up in buttonUps)
+                    InputSimulator.SimulateMouseEvent(up);
+            }
 
             try
             {
@@ -2049,6 +2317,22 @@ public sealed class RoboMouseService : IDisposable
                     UpdatePowerFollowing();
                     break;
 
+                case CursorLockMessage lockMsg:
+                    if (_controlled.IsControlledBy(connection))
+                    {
+                        _returnLocked = lockMsg.Locked;
+                        _edgeOvershoot = 0;
+                    }
+                    break;
+
+                case SessionStateMessage sessionMsg:
+                    HandleSessionState(sessionMsg, connection);
+                    break;
+
+                case LockRequestMessage:
+                    HandleLockRequest(connection);
+                    break;
+
                 case CursorLeaveMessage leaveMsg:
                     if (_isControllingRemote && connection == _registry.Active)
                     {
@@ -2107,6 +2391,7 @@ public sealed class RoboMouseService : IDisposable
         SimpleLogger.Log("Control", $"Controlled by {connection.PeerName} via {msg.EntryEdge} edge");
 
         _edgeOvershoot = 0;
+        _returnLocked = false;
         _injectionBlocked = false;
         _localBlockReason = InputBlockReason.None;
         SetPowerHost(connection.PeerId, isHost: true);
@@ -2175,6 +2460,10 @@ public sealed class RoboMouseService : IDisposable
     /// </summary>
     private void CheckForReturnEdge(int dx, int dy)
     {
+        // The controller locked the cursor to this screen: edges are just edges until it unlocks.
+        if (_returnLocked)
+            return;
+
         var (x, y) = _injector.GetCursorPosition();
         var layout = _screenInfo.Layout;
         var entryEdge = _controlled.EntryEdge;
@@ -2315,10 +2604,14 @@ public sealed class RoboMouseService : IDisposable
             OnLocalFilesCleared(this, EventArgs.Empty);
             _clipboardManager.ClearVirtualFiles(null);
         }
-    }
 
-    /// <summary>Same as <see cref="ApplyClipboardSettings"/>.</summary>
-    public void ApplyClipboardSetting() => ApplyClipboardSettings();
+        // Files offered by a peer whose sharing was just switched off can no longer be pasted here.
+        foreach (var peer in _settings.Peers.ToList())
+        {
+            if (!peer.ShareClipboard)
+                ForgetRemoteOffer(peer.Id);
+        }
+    }
 
     private void OnClipboardChanged(object? sender, ClipboardMessage message)
     {
@@ -2332,6 +2625,9 @@ public sealed class RoboMouseService : IDisposable
 
     private void HandleRemoteClipboardChunk(ClipboardChunkMessage chunk, PeerConnection from)
     {
+        if (!ClipboardSharing.SharesWith(_settings, from.PeerId))
+            return;
+
         ClipboardAssembler? assembler;
         lock (_clipboardAssemblers)
         {
@@ -2348,7 +2644,8 @@ public sealed class RoboMouseService : IDisposable
 
     private void HandleRemoteClipboard(ClipboardMessage msg, PeerConnection from)
     {
-        if (!_settings.Clipboard.Allows(msg.ContentType, msg.Data.Length))
+        // A peer with sharing off contributes nothing, not even to the peers relayed through here.
+        if (!_settings.Clipboard.Allows(msg.ContentType, msg.Data.Length) || !ClipboardSharing.SharesWith(_settings, from.PeerId))
             return;
 
         // Only the newest change is applied and passed on, so the same content never goes round a ring
@@ -2361,19 +2658,22 @@ public sealed class RoboMouseService : IDisposable
         PostClipboardToPeers(msg, except: from);
     }
 
-    /// <summary>Posts clipboard content to every peer except one, in chunks when it is big.</summary>
+    /// <summary>Posts clipboard content to every sharing peer except one, in chunks when it is big.</summary>
     private void PostClipboardToPeers(ClipboardMessage message, PeerConnection? except)
     {
         foreach (var part in ClipboardChunkMessage.Split(message))
-            PostToPeers(part, except);
+            PostToPeers(part, except, sharingOnly: true);
     }
 
-    /// <summary>Posts a message to every connected peer except the one it came from.</summary>
-    private void PostToPeers(ProtocolMessage message, PeerConnection? except)
+    /// <summary>
+    /// Posts a message to every connected peer except the one it came from. Clipboard content and file
+    /// offers go only to peers the clipboard is shared with (<paramref name="sharingOnly"/>).
+    /// </summary>
+    private void PostToPeers(ProtocolMessage message, PeerConnection? except, bool sharingOnly = false)
     {
         foreach (var connection in _registry.Snapshot())
         {
-            if (connection != except)
+            if (connection != except && (!sharingOnly || ClipboardSharing.SharesWith(_settings, connection.PeerId)))
                 connection.Post(message);
         }
     }
@@ -2404,7 +2704,7 @@ public sealed class RoboMouseService : IDisposable
 
         if (previous != null)
             PostToPeers(new FileOfferRevokedMessage { OfferId = previous }, except: null);
-        PostToPeers(message, except: null);
+        PostToPeers(message, except: null, sharingOnly: true);
     }
 
     private void OnLocalFilesCleared(object? sender, EventArgs e)
@@ -2462,6 +2762,14 @@ public sealed class RoboMouseService : IDisposable
 
     private void ServeTransferRequest(PeerConnection connection, FileRequestMessage request, FileChunkMessage reply)
     {
+        // Offers never go to a peer the clipboard is not shared with, so it has nothing to ask for.
+        if (!ClipboardSharing.SharesWith(_settings, connection.PeerId))
+        {
+            reply.Error = "Clipboard sharing with this PC is switched off.";
+            connection.Post(reply);
+            return;
+        }
+
         var length = Math.Clamp(request.Length, 0, FileTransferClient.ChunkSize);
         FileOfferSource? local = null;
         FileTransferClient? relay = null;
@@ -2516,7 +2824,8 @@ public sealed class RoboMouseService : IDisposable
 
     private void HandleRemoteFileOffer(FileOfferMessage offer, PeerConnection connection)
     {
-        if (!_settings.Clipboard.Enabled || !_settings.Clipboard.SyncFiles || offer.Entries.Count == 0)
+        if (!_settings.Clipboard.Enabled || !_settings.Clipboard.SyncFiles || offer.Entries.Count == 0
+            || !ClipboardSharing.SharesWith(_settings, connection.PeerId))
             return;
 
         // The names become paths when Explorer pastes them; refuse anything that could land outside
@@ -2575,7 +2884,7 @@ public sealed class RoboMouseService : IDisposable
         });
 
         // Pass it on so peers that are not connected to the source can paste it too, through us.
-        PostToPeers(offer, except: connection);
+        PostToPeers(offer, except: connection, sharingOnly: true);
     }
 
     private void HandleRemoteOfferRevoked(FileOfferRevokedMessage revoked, PeerConnection connection)
@@ -2686,6 +2995,7 @@ public sealed class RoboMouseService : IDisposable
         }
 
         _desktopPollTimer?.Dispose();
+        _fullScreen.Dispose();
         _sessionMonitor.Dispose();
         _powerMonitor.Dispose();
         _powerFollower.Dispose();

@@ -581,6 +581,45 @@ internal static unsafe partial class NativeMethods
 
     #endregion
 
+    #region Session lock, screen saver and full-screen detection
+
+    public const nint SC_SCREENSAVE = 0xF140;
+    public const uint SPI_GETSCREENSAVERRUNNING = 0x0072;
+    public const uint MONITOR_DEFAULTTONULL = 0;
+
+    // SHQueryUserNotificationState results that mean a full-screen program is in front.
+    public const int QUNS_BUSY = 2;
+    public const int QUNS_RUNNING_D3D_FULL_SCREEN = 3;
+    public const int QUNS_PRESENTATION_MODE = 4;
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool LockWorkStation();
+
+    [LibraryImport("shell32.dll")]
+    public static partial int SHQueryUserNotificationState(int* pquns);
+
+    [LibraryImport("user32.dll")]
+    public static partial nint GetForegroundWindow();
+
+    [LibraryImport("user32.dll")]
+    public static partial nint GetShellWindow();
+
+    [LibraryImport("user32.dll")]
+    public static partial nint GetDesktopWindow();
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetWindowRect(nint hWnd, RECT* lpRect);
+
+    [LibraryImport("user32.dll")]
+    public static partial nint MonitorFromWindow(nint hwnd, uint dwFlags);
+
+    [LibraryImport("user32.dll")]
+    public static partial int GetClassNameW(nint hWnd, char* lpClassName, int nMaxCount);
+
+    #endregion
+
     #region OLE
 
     [LibraryImport("ole32.dll")]

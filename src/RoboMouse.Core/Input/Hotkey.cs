@@ -7,6 +7,8 @@ public sealed record Hotkey(Keys Key, bool Ctrl, bool Alt, bool Shift, bool Win)
 {
     /// <summary>
     /// Parses text like "Ctrl+Alt+M" or "Win+Shift+F12". Returns null when the text is empty or invalid.
+    /// A chord needs at least one modifier, except for keys that never type anything
+    /// (<see cref="WorksAlone"/>: Scroll Lock, Pause, F13-F24).
     /// </summary>
     public static Hotkey? Parse(string? text)
     {
@@ -39,11 +41,17 @@ public sealed record Hotkey(Keys Key, bool Ctrl, bool Alt, bool Shift, bool Win)
             }
         }
 
-        if (key == null || !(ctrl || alt || shift || win))
-            return null; // Require at least one modifier so ordinary typing can never trigger it
+        if (key == null || !(ctrl || alt || shift || win || WorksAlone(key.Value)))
+            return null; // Require a modifier so ordinary typing can never trigger it
 
         return new Hotkey(key.Value, ctrl, alt, shift, win);
     }
+
+    /// <summary>
+    /// Keys that may be a hotkey on their own: nothing types them and almost nothing else uses them
+    /// (Synergy locks the cursor with Scroll Lock the same way).
+    /// </summary>
+    public static bool WorksAlone(Keys key) => key is Keys.Scroll or Keys.Pause or (>= Keys.F13 and <= Keys.F24);
 
     /// <summary>
     /// True when <paramref name="pressed"/> is this chord's key and <paramref name="modifiers"/> holds exactly
