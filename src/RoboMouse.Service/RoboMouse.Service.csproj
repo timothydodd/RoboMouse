@@ -14,7 +14,7 @@
     <IsAotCompatible>true</IsAotCompatible>
     <PublishAot>true</PublishAot>
     <AssemblyName>RoboMouse.Service</AssemblyName>
-    <Version>1.1.4</Version>
+    <Version>1.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
