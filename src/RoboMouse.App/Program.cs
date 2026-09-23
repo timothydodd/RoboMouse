@@ -33,8 +33,8 @@ internal static class Program
         }
         Instance = instance;
 
-        // Clear log file on startup
-        SimpleLogger.ClearLog();
+        // New log file per run; the previous runs' files are kept.
+        SimpleLogger.StartNewRun();
 
         // The system cursor is hidden while controlling a remote by swapping the system cursors.
         // Make sure they come back even if we crash, otherwise the user is left with no pointer.
