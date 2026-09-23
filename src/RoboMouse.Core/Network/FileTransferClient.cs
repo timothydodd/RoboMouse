@@ -17,11 +17,14 @@ public sealed class FileTransferClient : IDisposable
 
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
 
+    /// <summary>The request waiting for its chunk. A reply is only taken if it answers exactly this.</summary>
+    private sealed record PendingRequest(string OfferId, int EntryIndex, long Offset, int Length, TaskCompletionSource<FileChunkMessage> Reply);
+
     private readonly Func<CancellationToken, Task<PeerConnection>> _connect;
     private readonly object _lock = new();
     private PeerConnection? _connection;
-    private TaskCompletionSource<FileChunkMessage>? _pending;
-    private bool _disposed;
+    private volatile PendingRequest? _pending;
+    private volatile bool _disposed;
 
     public string PeerName { get; }
 
@@ -43,26 +46,36 @@ public sealed class FileTransferClient : IDisposable
                 throw new IOException("Transfer cancelled.");
 
             var connection = EnsureConnected();
-            var tcs = new TaskCompletionSource<FileChunkMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pending = tcs;
+            var request = new PendingRequest(offerId, entryIndex, offset, Math.Min(length, ChunkSize),
+                new TaskCompletionSource<FileChunkMessage>(TaskCreationOptions.RunContinuationsAsynchronously));
+            _pending = request;
 
             connection.Post(new FileRequestMessage
             {
                 OfferId = offerId,
                 EntryIndex = entryIndex,
                 Offset = offset,
-                Length = Math.Min(length, ChunkSize)
+                Length = request.Length
             });
 
-            if (!tcs.Task.Wait(RequestTimeout))
+            try
+            {
+                if (!request.Reply.Task.Wait(RequestTimeout))
+                {
+                    DropConnectionLocked();
+                    throw new IOException($"{PeerName} did not send file data within {RequestTimeout.TotalSeconds:0} seconds.");
+                }
+            }
+            catch (AggregateException ex)
+            {
+                throw ex.GetBaseException();
+            }
+            finally
             {
                 _pending = null;
-                DropConnection();
-                throw new IOException($"{PeerName} did not send file data within {RequestTimeout.TotalSeconds:0} seconds.");
             }
 
-            _pending = null;
-            var chunk = tcs.Task.Result;
+            var chunk = request.Reply.Task.Result;
             if (!string.IsNullOrEmpty(chunk.Error))
                 throw new IOException($"{PeerName}: {chunk.Error}");
 
@@ -85,7 +98,7 @@ public sealed class FileTransferClient : IDisposable
         {
             // No lock here: Fetch holds it while it waits, and this must be able to wake it.
             Interlocked.CompareExchange(ref _connection, null, connection);
-            _pending?.TrySetException(new IOException($"Transfer connection to {PeerName} was lost."));
+            _pending?.Reply.TrySetException(new IOException($"Transfer connection to {PeerName} was lost."));
         };
         connection.Start();
         _connection = connection;
@@ -95,27 +108,44 @@ public sealed class FileTransferClient : IDisposable
 
     private void OnMessage(object? sender, ProtocolMessage message)
     {
-        if (message is FileChunkMessage chunk)
-            _pending?.TrySetResult(chunk);
+        if (message is not FileChunkMessage chunk)
+            return;
+
+        // A late reply to a request that already timed out must not answer the next one.
+        var pending = _pending;
+        if (pending == null || chunk.OfferId != pending.OfferId || chunk.EntryIndex != pending.EntryIndex || chunk.Offset != pending.Offset)
+            return;
+
+        if (chunk.Data.Length > pending.Length)
+            pending.Reply.TrySetException(new IOException($"{PeerName} sent more file data than was asked for."));
+        else
+            pending.Reply.TrySetResult(chunk);
     }
 
-    /// <summary>Closes the transfer connection; the next read opens a new one.</summary>
+    /// <summary>
+    /// Closes the transfer connection (a waiting read fails at once); the next read opens a new one.
+    /// Safe from any thread.
+    /// </summary>
     public void DropConnection()
     {
-        var connection = _connection;
-        _connection = null;
+        _pending?.Reply.TrySetException(new IOException($"Transfer connection to {PeerName} was closed."));
+        DropConnectionLocked();
+    }
+
+    private void DropConnectionLocked()
+    {
+        var connection = Interlocked.Exchange(ref _connection, null);
         connection?.Dispose();
     }
 
     public void Dispose()
     {
-        lock (_lock)
-        {
-            if (_disposed)
-                return;
-            _disposed = true;
-            _pending?.TrySetException(new IOException("Transfer cancelled."));
-            DropConnection();
-        }
+        if (_disposed)
+            return;
+        _disposed = true;
+
+        // Not under the lock: a Fetch holds it while it waits, and this has to wake it.
+        _pending?.Reply.TrySetException(new IOException("Transfer cancelled."));
+        DropConnectionLocked();
     }
 }

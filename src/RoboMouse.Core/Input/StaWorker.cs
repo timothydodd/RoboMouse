@@ -75,6 +75,46 @@ public sealed unsafe class StaWorker : IDisposable
         _pump.Invoke(action);
     }
 
+    /// <summary>
+    /// Runs <paramref name="action"/> on the STA thread and waits up to <paramref name="timeout"/> for it.
+    /// Returns false when it did not finish in time (it may still run later) or failed.
+    /// </summary>
+    public bool TryInvoke(Action action, TimeSpan timeout)
+    {
+        var pump = _pump;
+        if (pump == null || _disposed)
+            return false;
+        if (pump.IsOwnerThread)
+        {
+            try { action(); return true; }
+            catch { return false; }
+        }
+
+        var done = new ManualResetEventSlim(false);
+        var ok = false;
+        pump.BeginInvoke(() =>
+        {
+            try
+            {
+                action();
+                ok = true;
+            }
+            catch
+            {
+            }
+            finally
+            {
+                done.Set();
+            }
+        });
+
+        // Not disposed here when it timed out: the action may still set it.
+        if (!done.Wait(timeout))
+            return false;
+        done.Dispose();
+        return ok;
+    }
+
     /// <summary>Runs <paramref name="func"/> on the STA thread and returns its result.</summary>
     public T Invoke<T>(Func<T> func)
     {

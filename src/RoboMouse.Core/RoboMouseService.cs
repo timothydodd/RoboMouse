@@ -121,6 +121,7 @@ public sealed class RoboMouseService : IDisposable
     // relayed to every other peer, so a machine in the middle of a chain proxies reads between its neighbours.
     private readonly object _fileLock = new();
     private readonly List<PeerConnection> _transferServers = new();
+    private readonly Dictionary<PeerConnection, SerialWorkQueue> _transferQueues = new();
     private readonly Dictionary<string, LocalOffer> _localOffers = new();
     private readonly Dictionary<string, RemoteOffer> _remoteOffers = new();
     private string? _currentLocalOfferId;
@@ -475,6 +476,7 @@ public sealed class RoboMouseService : IDisposable
         {
             servers = _transferServers.ToList();
             _transferServers.Clear();
+            _transferQueues.Clear();
             clients = _remoteOffers.Values.Select(o => o.Client).ToList();
         }
         foreach (var server in servers)
@@ -917,6 +919,7 @@ public sealed class RoboMouseService : IDisposable
                 lock (_fileLock)
                 {
                     _transferServers.Add(connection);
+                    _transferQueues[connection] = new SerialWorkQueue(maxPending: 4);
                 }
                 connection.MessageReceived += OnTransferRequest;
                 connection.Disconnected += (s, e) =>
@@ -924,6 +927,7 @@ public sealed class RoboMouseService : IDisposable
                     lock (_fileLock)
                     {
                         _transferServers.Remove(connection);
+                        _transferQueues.Remove(connection);
                     }
                     connection.Dispose();
                 };
@@ -2240,7 +2244,7 @@ public sealed class RoboMouseService : IDisposable
             if (id != null && _localOffers.TryGetValue(id, out var offer))
             {
                 offer.Retired = true;
-                offer.LastUsedTicks = Environment.TickCount64;
+                offer.RetiredTicks = offer.LastUsedTicks = Environment.TickCount64;
             }
             return id;
         }
@@ -2251,7 +2255,6 @@ public sealed class RoboMouseService : IDisposable
         if (sender is not PeerConnection connection || message is not FileRequestMessage request)
             return;
 
-        var length = Math.Clamp(request.Length, 0, FileTransferClient.ChunkSize);
         var reply = new FileChunkMessage
         {
             OfferId = request.OfferId,
@@ -2259,6 +2262,24 @@ public sealed class RoboMouseService : IDisposable
             Offset = request.Offset
         };
 
+        // Reading a 1 MB chunk from disk, or pulling it from another peer, must not run on the receive
+        // thread (it also answers pings). One request per connection is served at a time, in order;
+        // a client only ever has one outstanding, so a full queue means a misbehaving peer.
+        SerialWorkQueue? queue;
+        lock (_fileLock)
+        {
+            _transferQueues.TryGetValue(connection, out queue);
+        }
+        if (queue == null || !queue.TryEnqueue(() => ServeTransferRequest(connection, request, reply)))
+        {
+            reply.Error = "Too many file requests at once.";
+            connection.Post(reply);
+        }
+    }
+
+    private void ServeTransferRequest(PeerConnection connection, FileRequestMessage request, FileChunkMessage reply)
+    {
+        var length = Math.Clamp(request.Length, 0, FileTransferClient.ChunkSize);
         FileOfferSource? local = null;
         FileTransferClient? relay = null;
         lock (_fileLock)
@@ -2296,20 +2317,16 @@ public sealed class RoboMouseService : IDisposable
             return;
         }
 
-        // The offer belongs to one of our other peers: pull the chunk from there and pass it on. This
-        // waits on the network, so it must not block the receive thread (which also answers pings).
-        _ = Task.Run(() =>
+        // The offer belongs to one of our other peers: pull the chunk from there and pass it on.
+        try
         {
-            try
-            {
-                reply.Data = relay.Fetch(request.OfferId, request.EntryIndex, request.Offset, length);
-            }
-            catch (Exception ex)
-            {
-                reply.Error = ex.Message;
-            }
-            connection.Post(reply);
-        });
+            reply.Data = relay.Fetch(request.OfferId, request.EntryIndex, request.Offset, length);
+        }
+        catch (Exception ex)
+        {
+            reply.Error = ex.Message;
+        }
+        connection.Post(reply);
     }
 
     // Paste side: an offer from a peer becomes virtual files on our clipboard, fetched on demand.
@@ -2318,6 +2335,15 @@ public sealed class RoboMouseService : IDisposable
     {
         if (!_settings.Clipboard.Enabled || !_settings.Clipboard.SyncFiles || offer.Entries.Count == 0)
             return;
+
+        // The names become paths when Explorer pastes them; refuse anything that could land outside
+        // the folder being pasted into.
+        var problem = FileOfferValidator.Validate(offer.Entries);
+        if (problem != null)
+        {
+            SimpleLogger.Log("Files", $"Ignoring file offer from {connection.PeerName}: {problem}");
+            return;
+        }
 
         var address = connection.RemoteEndPoint?.Address;
         var port = connection.PeerListenPort;
@@ -2349,7 +2375,16 @@ public sealed class RoboMouseService : IDisposable
         }
 
         var offerId = offer.OfferId;
-        _clipboardManager.SetVirtualFiles(offer, (index, offset, length) => client.Fetch(offerId, index, offset, length));
+        _clipboardManager.SetVirtualFiles(offer, (index, offset, length) =>
+        {
+            // A paste still copying keeps the offer alive even after the clipboard moved on.
+            lock (_fileLock)
+            {
+                if (_remoteOffers.TryGetValue(offerId, out var held))
+                    held.LastUsedTicks = Environment.TickCount64;
+            }
+            return client.Fetch(offerId, index, offset, length);
+        });
 
         // Pass it on so peers that are not connected to the source can paste it too, through us.
         PostToPeers(offer, except: connection);
@@ -2400,30 +2435,36 @@ public sealed class RoboMouseService : IDisposable
     {
         if (offerId == null)
             return;
-        if (_remoteOffers.TryGetValue(offerId, out var offer))
+        if (_remoteOffers.TryGetValue(offerId, out var offer) && !offer.Retired)
         {
             offer.Retired = true;
-            offer.LastUsedTicks = Environment.TickCount64;
+            offer.RetiredTicks = offer.LastUsedTicks = Environment.TickCount64;
         }
         if (_currentRemoteOfferId == offerId)
             _currentRemoteOfferId = null;
     }
 
-    /// <summary>Drops retired offers nobody has read from for the grace period.</summary>
+    /// <summary>
+    /// Drops retired offers nobody has read from for the grace period, and any retired longer than the
+    /// absolute limit however busy: a paste that keeps reading for half an hour after the clipboard
+    /// moved on is stuck, not copying.
+    /// </summary>
     private void SweepRetiredOffers()
     {
         var clients = new List<FileTransferClient>();
-        var cutoff = Environment.TickCount64 - (long)OfferGrace.TotalMilliseconds;
+        var now = Environment.TickCount64;
+        var idleCutoff = now - (long)OfferGrace.TotalMilliseconds;
+        var lifetimeCutoff = now - (long)OfferMaxRetiredLifetime.TotalMilliseconds;
         lock (_fileLock)
         {
             foreach (var (id, offer) in _localOffers.ToList())
             {
-                if (offer.Retired && offer.LastUsedTicks < cutoff)
+                if (offer.Retired && (offer.LastUsedTicks < idleCutoff || offer.RetiredTicks < lifetimeCutoff))
                     _localOffers.Remove(id);
             }
             foreach (var (id, offer) in _remoteOffers.ToList())
             {
-                if (offer.Retired && offer.LastUsedTicks < cutoff)
+                if (offer.Retired && (offer.LastUsedTicks < idleCutoff || offer.RetiredTicks < lifetimeCutoff))
                 {
                     _remoteOffers.Remove(id);
                     clients.Add(offer.Client);
@@ -2453,6 +2494,7 @@ public sealed class RoboMouseService : IDisposable
             foreach (var server in _transferServers)
                 server.Dispose();
             _transferServers.Clear();
+            _transferQueues.Clear();
         }
 
         _desktopPollTimer?.Dispose();

@@ -122,8 +122,11 @@ public sealed unsafe partial class VirtualFileDataObject : VirtualFileDataObject
 
         if (format->cfFormat == CfFileDescriptor && (format->tymed & Native.TYMED_HGLOBAL) != 0)
         {
+            var descriptor = BuildFileGroupDescriptor();
+            if (descriptor == 0)
+                return Native.E_OUTOFMEMORY;
             medium->tymed = Native.TYMED_HGLOBAL;
-            medium->unionmember = BuildFileGroupDescriptor();
+            medium->unionmember = descriptor;
             return Native.S_OK;
         }
 
@@ -143,7 +146,13 @@ public sealed unsafe partial class VirtualFileDataObject : VirtualFileDataObject
         if (format->cfFormat == CfPreferredDropEffect && (format->tymed & Native.TYMED_HGLOBAL) != 0)
         {
             var handle = NativeMethods.GlobalAlloc(NativeMethods.GHND, 4);
-            var ptr = NativeMethods.GlobalLock(handle);
+            var ptr = handle == 0 ? 0 : NativeMethods.GlobalLock(handle);
+            if (ptr == 0)
+            {
+                if (handle != 0)
+                    NativeMethods.GlobalFree(handle);
+                return Native.E_OUTOFMEMORY;
+            }
             *(int*)ptr = Native.DROPEFFECT_COPY;
             NativeMethods.GlobalUnlock(handle);
             medium->tymed = Native.TYMED_HGLOBAL;
@@ -228,12 +237,22 @@ public sealed unsafe partial class VirtualFileDataObject : VirtualFileDataObject
 
     #endregion
 
-    /// <summary>Builds a FILEGROUPDESCRIPTORW in global memory: a count followed by one FILEDESCRIPTORW per entry.</summary>
+    /// <summary>
+    /// Builds a FILEGROUPDESCRIPTORW in global memory: a count followed by one FILEDESCRIPTORW per entry.
+    /// Returns 0 when the memory could not be allocated.
+    /// </summary>
     private nint BuildFileGroupDescriptor()
     {
-        var size = 4 + Native.FileDescriptorSize * _entries.Count;
+        var size = 4 + (long)Native.FileDescriptorSize * _entries.Count;
         var handle = NativeMethods.GlobalAlloc(NativeMethods.GHND, (nuint)size);
+        if (handle == 0)
+            return 0;
         var ptr = (byte*)NativeMethods.GlobalLock(handle);
+        if (ptr == null)
+        {
+            NativeMethods.GlobalFree(handle);
+            return 0;
+        }
         try
         {
             *(int*)ptr = _entries.Count;
@@ -425,6 +444,7 @@ public sealed unsafe partial class VirtualFileDataObject : VirtualFileDataObject
         public const int S_FALSE = 1;
         public const int E_NOTIMPL = unchecked((int)0x80004001);
         public const int E_POINTER = unchecked((int)0x80004003);
+        public const int E_OUTOFMEMORY = unchecked((int)0x8007000E);
         public const int DV_E_FORMATETC = unchecked((int)0x80040064);
         public const int OLE_E_ADVISENOTSUPPORTED = unchecked((int)0x80040003);
         public const int DATA_S_SAMEFORMATETC = 0x00040130;

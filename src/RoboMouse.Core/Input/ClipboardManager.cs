@@ -27,7 +27,6 @@ public sealed unsafe class ClipboardManager : IDisposable
     private readonly StaWorker _fileSta;
     private bool _monitoring;
     private bool _disposed;
-    private volatile bool _ignoreNextChange;
     private string? _lastTextHash;
     private readonly long _maxDataSize;
     private VirtualFileDataObject? _virtualFiles;
@@ -79,18 +78,23 @@ public sealed unsafe class ClipboardManager : IDisposable
 
         _fileSta.BeginInvoke(() =>
         {
+            BeginOwnChange();
+            var changed = false;
             try
             {
                 var dataObject = new VirtualFileDataObject(offer.OfferId, offer.Entries, read);
-                _ignoreNextChange = true;
                 dataObject.SetOnClipboard();
+                changed = true;
                 _virtualFiles = dataObject;
                 SimpleLogger.Log("Files", $"Clipboard now offers {offer.Entries.Count} remote item(s), {offer.TotalSize / 1024.0 / 1024.0:0.#} MB");
             }
             catch (Exception ex)
             {
-                _ignoreNextChange = false;
                 SimpleLogger.Log("Files", $"Could not place remote files on the clipboard: {ex.Message}");
+            }
+            finally
+            {
+                EndOwnChange(changed);
             }
         });
     }
@@ -109,18 +113,23 @@ public sealed unsafe class ClipboardManager : IDisposable
             if (current == null || (offerId != null && current.OfferId != offerId))
                 return;
 
+            BeginOwnChange();
+            var changed = false;
             try
             {
                 if (current.IsOnClipboard())
                 {
-                    _ignoreNextChange = true;
                     current.RemoveFromClipboard();
+                    changed = true;
                 }
             }
             catch (Exception ex)
             {
-                _ignoreNextChange = false;
                 SimpleLogger.Log("Files", $"Could not clear remote files from the clipboard: {ex.Message}");
+            }
+            finally
+            {
+                EndOwnChange(changed);
             }
             _virtualFiles = null;
         });
@@ -165,8 +174,8 @@ public sealed unsafe class ClipboardManager : IDisposable
             return;
         }
 
-        _ignoreNextChange = true;
-
+        BeginOwnChange();
+        var changed = false;
         try
         {
             switch (message.ContentType)
@@ -174,30 +183,78 @@ public sealed unsafe class ClipboardManager : IDisposable
                 case ClipboardContentType.Text:
                     _lastTextHash = HashOf(message.Data);
                     SetClipboardText(Encoding.UTF8.GetString(message.Data));
+                    changed = true;
                     break;
 
                 case ClipboardContentType.Image:
                     SetClipboardImage(message.Data, message.FormatHint);
+                    changed = true;
                     break;
 
                 case ClipboardContentType.Html:
                     SetClipboardHtml(Encoding.UTF8.GetString(message.Data));
+                    changed = true;
                     break;
 
                 case ClipboardContentType.Rtf:
                     SetClipboardRtf(Encoding.UTF8.GetString(message.Data));
-                    break;
-
-                default:
-                    _ignoreNextChange = false;
+                    changed = true;
                     break;
             }
         }
         catch (Exception ex)
         {
-            // Nothing was set, so no change notification will arrive to consume the flag.
-            _ignoreNextChange = false;
             SimpleLogger.Log("Clipboard", $"Failed to set clipboard: {ex.Message}");
+        }
+        finally
+        {
+            EndOwnChange(changed);
+        }
+    }
+
+    // Telling our own clipboard writes apart from everyone else's. Each write records the clipboard
+    // sequence number it left behind; an update notification whose current number matches is ours.
+    // Unlike a "skip the next notification" flag, this cannot swallow somebody else's copy when our
+    // write produced no notification, or two notifications. A write in progress on the file STA defers
+    // the check until it has recorded its number.
+    private readonly object _ownChangeLock = new();
+    private uint _ownSequence;
+    private int _ownChangesInProgress;
+    private bool _updateDeferred;
+
+    private void BeginOwnChange()
+    {
+        lock (_ownChangeLock)
+            _ownChangesInProgress++;
+    }
+
+    private void EndOwnChange(bool changed)
+    {
+        bool recheck;
+        lock (_ownChangeLock)
+        {
+            if (changed)
+                _ownSequence = NativeMethods.GetClipboardSequenceNumber();
+            _ownChangesInProgress--;
+            recheck = _updateDeferred && _ownChangesInProgress == 0;
+            if (recheck)
+                _updateDeferred = false;
+        }
+        if (recheck)
+            _window.BeginInvoke(OnClipboardUpdated);
+    }
+
+    /// <summary>True when the clipboard's current content is what we last wrote; defers the answer while a write is running.</summary>
+    private bool IsOwnChangeOrDeferred()
+    {
+        lock (_ownChangeLock)
+        {
+            if (_ownChangesInProgress > 0)
+            {
+                _updateDeferred = true;
+                return true;
+            }
+            return NativeMethods.GetClipboardSequenceNumber() == _ownSequence;
         }
     }
 
@@ -212,11 +269,8 @@ public sealed unsafe class ClipboardManager : IDisposable
 
     private void OnClipboardUpdated()
     {
-        if (_ignoreNextChange)
-        {
-            _ignoreNextChange = false;
+        if (IsOwnChangeOrDeferred())
             return;
-        }
 
         // Files: announce them (names only) after enumerating on a background thread, since a large
         // folder can take a while to walk and this runs on the UI thread.
@@ -230,7 +284,18 @@ public sealed unsafe class ClipboardManager : IDisposable
                 {
                     Task.Run(() =>
                     {
-                        var offer = FileOfferSource.FromPaths(paths);
+                        FileOfferSource? offer;
+                        try
+                        {
+                            offer = FileOfferSource.FromPaths(paths);
+                        }
+                        catch (Exception ex)
+                        {
+                            // A folder that vanished or a path too long mid-walk: offer nothing rather
+                            // than leave the previous offer standing.
+                            SimpleLogger.Log("Files", $"Could not read the copied files: {ex.Message}");
+                            offer = null;
+                        }
                         if (scan != _fileScanVersion)
                             return; // Clipboard changed again while we were scanning
                         if (offer == null)
@@ -620,11 +685,10 @@ public sealed unsafe class ClipboardManager : IDisposable
             return;
 
         _disposed = true;
-        try
-        {
-            _fileSta.Invoke(() => _virtualFiles?.RemoveFromClipboard());
-        }
-        catch { }
+        // The STA may be busy serving a paste (Explorer pulling a large file over a slow link); do not
+        // hang shutdown waiting for it.
+        if (!_fileSta.TryInvoke(() => _virtualFiles?.RemoveFromClipboard(), TimeSpan.FromSeconds(2)))
+            SimpleLogger.Log("Files", "Clipboard file thread busy at shutdown; not waiting for it");
         _fileSta.Dispose();
         Stop();
         _window.Message -= OnWindowMessage;
