@@ -114,10 +114,11 @@ public sealed unsafe class RawMouseInput : IDisposable
         int dx, dy;
         if ((raw->mouse.usFlags & NativeMethods.MOUSE_MOVE_ABSOLUTE) != 0)
         {
-            // Absolute devices report 0..65535 over the (virtual) desktop; convert to a pixel delta.
-            var (vx, vy, vw, vh) = InputSimulator.GetVirtualScreenBounds();
-            var absX = (int)(raw->mouse.lLastX / 65535.0 * vw) + vx;
-            var absY = (int)(raw->mouse.lLastY / 65535.0 * vh) + vy;
+            // Absolute devices report 0..65535 over the primary monitor, or over the whole virtual
+            // desktop when they say so; convert to a pixel position, then to a delta.
+            var isVirtual = (raw->mouse.usFlags & NativeMethods.MOUSE_VIRTUAL_DESKTOP) != 0;
+            var (absX, absY) = AbsoluteToPixel(raw->mouse.lLastX, raw->mouse.lLastY,
+                isVirtual ? InputSimulator.GetVirtualScreenBounds() : PrimaryBounds());
 
             if (!_haveLastAbsolute)
             {
@@ -142,6 +143,24 @@ public sealed unsafe class RawMouseInput : IDisposable
         {
             Motion?.Invoke(dx, dy);
         }
+    }
+
+    private static (int X, int Y, int Width, int Height) PrimaryBounds()
+    {
+        var (width, height) = InputSimulator.GetPrimaryScreenSize();
+        return (0, 0, width, height);
+    }
+
+    /// <summary>
+    /// Maps an absolute raw-input position (0..65535 on each axis) to a pixel on <paramref name="area"/>,
+    /// the virtual desktop when the device set MOUSE_VIRTUAL_DESKTOP, otherwise the primary monitor,
+    /// whose top-left is always the origin.
+    /// </summary>
+    internal static (int X, int Y) AbsoluteToPixel(int lastX, int lastY, (int X, int Y, int Width, int Height) area)
+    {
+        var x = area.X + (int)(Math.Clamp(lastX, 0, 65535) / 65535.0 * (area.Width - 1));
+        var y = area.Y + (int)(Math.Clamp(lastY, 0, 65535) / 65535.0 * (area.Height - 1));
+        return (x, y);
     }
 
     public void Dispose()
