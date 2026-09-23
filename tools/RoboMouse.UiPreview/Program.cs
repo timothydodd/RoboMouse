@@ -80,12 +80,29 @@ internal static class Program
             window.ViewModel.Layout.Reload();
             Capture(window, Path.Combine(outDir, $"settings-layout-multimonitor{suffix}.png"));
             ScreenLayoutControl.LayoutSource = null;
+
+            // Error states: a cleared port box, and startup turned off from Task Manager.
+            window.ViewModel.Network.LocalPort = null;
+            window.ViewModel.SelectedPage = window.ViewModel.Pages.First(p => p.Title == "Network");
+            Capture(window, Path.Combine(outDir, $"settings-network-invalid{suffix}.png"));
+            window.ViewModel.General.ShowStartupState(RoboMouse.App.StartupState.DisabledByUser);
+            window.ViewModel.SelectedPage = window.ViewModel.Pages.First(p => p.Title == "General");
+            Capture(window, Path.Combine(outDir, $"settings-general-startup-off{suffix}.png"));
             window.Close();
 
             var setup = new PeerSetupWindow(new PeerSetupViewModel(settings.Peers[0], settings, backend, new WindowDialogService(null, backend)));
             setup.Show();
             Capture(setup, Path.Combine(outDir, $"peer-setup{suffix}.png"));
             setup.Close();
+
+            // A machine picked from discovery is a new peer: "Add", on the first free edge.
+            var found = backend.DiscoveredPeers[0];
+            var draft = PeerActions.FromDiscovered(found, PeerActions.FirstFreeEdge(settings) ?? RoboMouse.Core.Configuration.ScreenPosition.Right);
+            var add = new PeerSetupWindow(new PeerSetupViewModel(draft, settings, backend, new WindowDialogService(null, backend)));
+            add.Show();
+            Capture(add, Path.Combine(outDir, $"peer-setup-add{suffix}.png"));
+            add.Close();
+
 
             var message = new MessageDialog("Laptop is already left of this screen.\n\nSwap them so Laptop moves right?", "Edge already in use", DialogButtons.YesNoCancel, DialogIcon.Question);
             message.Show();

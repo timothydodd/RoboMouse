@@ -46,6 +46,12 @@ public interface IAppBackend
     /// Reads the setting already stored. Returns false when the service could not be started.
     /// </summary>
     Task<bool> ApplyDesktopServiceSettingAsync(bool enabled);
+
+    /// <summary>Whether Windows starts RoboMouse at sign-in (Run key or Store startup task).</summary>
+    Task<StartupState> GetStartupStateAsync();
+
+    /// <summary>Turns "start with Windows" on or off; returns what Windows reports afterwards.</summary>
+    Task<StartupState> ApplyStartupAsync(bool enabled);
 }
 
 /// <summary>The real backend: a thin adapter over <see cref="RoboMouseService"/>.</summary>
@@ -91,4 +97,8 @@ public sealed class ServiceBackend : IAppBackend
         _service.ApplyDesktopServiceSetting();
         return ok || !enabled;
     }
+
+    public Task<StartupState> GetStartupStateAsync() => StartupRegistration.GetStateAsync();
+    public Task<StartupState> ApplyStartupAsync(bool enabled) => StartupRegistration.ApplyAsync(enabled);
+
 }

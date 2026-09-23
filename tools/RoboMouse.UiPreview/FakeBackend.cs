@@ -38,6 +38,9 @@ internal sealed class FakeBackend : IAppBackend
     public bool DesktopServiceInstalled => true;
     public RoboMouse.Core.Input.DesktopServiceState DesktopServiceState => RoboMouse.Core.Input.DesktopServiceState.Active;
     public Task<bool> ApplyDesktopServiceSettingAsync(bool enabled) => Task.FromResult(true);
+    public Task<RoboMouse.App.StartupState> GetStartupStateAsync() => Task.FromResult(RoboMouse.App.StartupState.On);
+    public Task<RoboMouse.App.StartupState> ApplyStartupAsync(bool enabled) =>
+        Task.FromResult(enabled ? RoboMouse.App.StartupState.On : RoboMouse.App.StartupState.Off);
 
     public static AppSettings SampleSettings() => new()
     {

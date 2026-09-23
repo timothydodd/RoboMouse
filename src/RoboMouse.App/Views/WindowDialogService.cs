@@ -12,12 +12,15 @@ namespace RoboMouse.App.Views;
 /// </summary>
 public sealed class WindowDialogService : IDialogService
 {
-    private readonly Window? _owner;
     private readonly IAppBackend? _backend;
+
+    /// <summary>The window dialogs are modal to. Settable because a window's view model (which takes
+    /// this service) is created before the window itself.</summary>
+    public Window? Owner { get; set; }
 
     public WindowDialogService(Window? owner, IAppBackend? backend)
     {
-        _owner = owner;
+        Owner = owner;
         _backend = backend;
     }
 
@@ -30,22 +33,26 @@ public sealed class WindowDialogService : IDialogService
 
     public Task<PeerConfig?> ShowPeerSetupAsync(PeerConfig? peer, AppSettings settings)
     {
-        var dialog = new PeerSetupWindow(new PeerSetupViewModel(peer, settings, _backend, new WindowDialogService(null, _backend)));
+        // The dialog's own warnings (duplicate peer, edge in use) are modal to the dialog.
+        var dialogs = new WindowDialogService(null, _backend);
+        var dialog = new PeerSetupWindow(new PeerSetupViewModel(peer, settings, _backend, dialogs));
+        dialogs.Owner = dialog;
         return ShowAsync(dialog, () => dialog.ViewModel.Result);
     }
 
     public async Task CopyTextAsync(string text)
     {
-        var clipboard = _owner?.Clipboard;
+        var clipboard = Owner?.Clipboard;
         if (clipboard != null)
             await clipboard.SetTextAsync(text);
     }
 
     private async Task<T> ShowAsync<T>(Window dialog, Func<T> result)
     {
-        if (_owner is { IsVisible: true })
+        if (Owner is { IsVisible: true } owner)
         {
-            await dialog.ShowDialog(_owner);
+            await dialog.ShowDialog(owner);
+
             return result();
         }
 

@@ -215,34 +215,31 @@ public sealed class TrayController : IDisposable
         }
     }
 
+    /// <summary>
+    /// Same flow as the Peers page: the config is added and saved first, so a peer that is slow to
+    /// answer is not lost, then connected.
+    /// </summary>
     private async Task AddDiscoveredPeerAsync(DiscoveredPeer found, ScreenPosition position)
     {
-        try
+        var config = _settings.Peers.FirstOrDefault(p => p.Id == found.MachineId);
+        if (config == null)
         {
-            await _service.ConnectToPeerAsync(found, position);
-
-            var config = _settings.Peers.FirstOrDefault(p => p.Id == found.MachineId);
-            if (config == null)
-            {
-                _settings.Peers.Add(new PeerConfig
-                {
-                    Id = found.MachineId,
-                    Name = found.MachineName,
-                    Address = found.Address.ToString(),
-                    Port = found.Port,
-                    Position = position,
-                    ScreenWidth = found.ScreenWidth,
-                    ScreenHeight = found.ScreenHeight
-                });
-            }
+            config = PeerActions.FromDiscovered(found, position);
+            _settings.Peers.Add(config);
             _settings.Save();
         }
-        catch (Exception ex)
-        {
-            await new WindowDialogService(null, _backend).ErrorAsync($"Could not connect to {found.MachineName}: {ex.Message}");
-        }
+
+        var error = await PeerActions.ConnectNewPeerAsync(_backend, config);
+        if (error == null)
+            _settings.Save(); // the connect learned its machine id and screen size
+        else
+            await Dialogs().WarnAsync($"Added {config.Name}, but could not connect yet: {error}\n\nRoboMouse keeps trying in the background.");
         UpdateStatus();
     }
+
+    /// <summary>Dialogs from the tray: modal to the Settings window when it is open.</summary>
+    private WindowDialogService Dialogs() => new(_settingsWindow, _backend);
+
 
     private void UpdateStatus()
     {

@@ -12,7 +12,7 @@ namespace RoboMouse.App.ViewModels;
 public sealed record NavigationItem(string Title, Symbol Icon, PageViewModel Page);
 
 /// <summary>A settings page. <see cref="IsActive"/> drives which page view is visible.</summary>
-public abstract partial class PageViewModel : ObservableObject
+public abstract partial class PageViewModel : ValidatingObservableObject
 {
     [ObservableProperty] private bool _isActive;
 }
@@ -73,6 +73,19 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         Peers.PeersChanged += (_, _) => Layout.Reload();
         Refresh();
+        _ = LoadStartupStateAsync();
+    }
+
+    private async Task LoadStartupStateAsync()
+    {
+        try
+        {
+            General.ShowStartupState(await _backend.GetStartupStateAsync());
+        }
+        catch (Exception ex)
+        {
+            Core.Logging.SimpleLogger.Log("Startup", $"Could not read the startup state: {ex.Message}");
+        }
     }
 
     /// <summary>Pulls the live status from the service. Called by the window on a timer.</summary>
@@ -104,22 +117,35 @@ public sealed partial class SettingsViewModel : ObservableObject
         var code = Network.PairingCode.Trim().ToUpperInvariant();
         if (code.Replace("-", "").Replace(" ", "").Length < 8)
         {
+            SelectedPage = Pages.First(p => p.Page == Network);
             await _dialogs.WarnAsync("The pairing code must be at least 8 characters.");
             return;
         }
 
+        // Without a hotkey there is no way back from a remote screen that stops answering.
         var hotkey = General.ToggleHotkey.Trim();
-        if (hotkey.Length > 0 && Hotkey.Parse(hotkey) == null)
+        if (Hotkey.Parse(hotkey) == null)
         {
-            await _dialogs.WarnAsync("The hotkey must be a key with at least one modifier, for example Ctrl+Alt+M.");
+            SelectedPage = Pages.First(p => p.Page == General);
+            await _dialogs.WarnAsync(hotkey.Length == 0
+                ? "Choose a toggle hotkey. It is how you get the mouse back if another screen stops responding."
+                : "The hotkey must be a key with at least one modifier, for example Ctrl+Alt+M.");
+            return;
+        }
+
+        if (Network.HasErrors)
+        {
+            SelectedPage = Pages.First(p => p.Page == Network);
+            await _dialogs.WarnAsync("Some fields on the Network page are empty or out of range. Fix the highlighted fields, then save again.");
             return;
         }
 
         _settings.PairingCode = code;
         _settings.MachineName = string.IsNullOrWhiteSpace(General.MachineName) ? _settings.MachineName : General.MachineName.Trim();
+        var startupChanged = _settings.StartWithWindows != General.StartWithWindows;
         _settings.StartWithWindows = General.StartWithWindows;
         _settings.StartMinimized = General.StartMinimized;
-        _settings.ToggleHotkey = hotkey.Length == 0 ? null : hotkey;
+        _settings.ToggleHotkey = hotkey;
         _settings.Clipboard.Enabled = General.ShareClipboard;
         _settings.Clipboard.SyncFiles = General.ShareFiles;
         _settings.EdgeHighlight = General.SelectedHighlight.Style;
@@ -129,14 +155,25 @@ public sealed partial class SettingsViewModel : ObservableObject
         _settings.DebugPanelEnabled = General.ShowDebugPanel;
         var desktopServiceChanged = _settings.UseDesktopService != General.UseDesktopService;
         _settings.UseDesktopService = General.UseDesktopService;
-        _settings.LocalPort = (int)Network.LocalPort;
-        _settings.DiscoveryPort = (int)Network.DiscoveryPort;
+        _settings.LocalPort = (int)Network.LocalPort!.Value;
+        _settings.DiscoveryPort = (int)Network.DiscoveryPort!.Value;
         Layout.Save();
 
         _settings.Save();
         _backend.ApplyClipboardSetting();
         _backend.ApplyHotkeySetting();
         _backend.ApplyPowerSetting();
+
+        // Startup is applied whatever happens to the desktop service below.
+        var startup = await _backend.ApplyStartupAsync(_settings.StartWithWindows);
+        General.ShowStartupState(startup);
+        if (startupChanged && _settings.StartWithWindows && startup is StartupState.DisabledByUser or StartupState.DisabledByPolicy)
+        {
+            await _dialogs.WarnAsync(startup == StartupState.DisabledByUser
+                ? "RoboMouse was turned off in the Startup apps list (Task Manager or Settings > Apps > Startup), so it will not start with Windows until it is turned back on there."
+                : "A policy on this PC stops RoboMouse from starting with Windows.");
+        }
+
         if (desktopServiceChanged && !await _backend.ApplyDesktopServiceSettingAsync(_settings.UseDesktopService))
         {
             _settings.UseDesktopService = false;
@@ -145,7 +182,6 @@ public sealed partial class SettingsViewModel : ObservableObject
             await _dialogs.WarnAsync("The RoboMouse desktop service could not be started, so UAC prompts and the lock screen stay out of reach. Approve the Windows prompt when turning this on.");
             return;
         }
-        _ = StartupRegistration.ApplyAsync(_settings.StartWithWindows);
 
         CloseRequested?.Invoke(this, EventArgs.Empty);
     }
@@ -181,6 +217,17 @@ public sealed partial class GeneralPageViewModel : PageViewModel
     [ObservableProperty] private bool _followHostPower;
     [ObservableProperty] private bool _showDebugPanel;
     [ObservableProperty] private bool _useDesktopService;
+
+    /// <summary>Under "Start with Windows": says when Windows itself has it turned off.</summary>
+    [ObservableProperty] private string? _startupDescription;
+
+    /// <summary>Shows what Windows reports for the startup entry.</summary>
+    public void ShowStartupState(StartupState state) => StartupDescription = state switch
+    {
+        StartupState.DisabledByUser => "Turned off in the Startup apps list (Task Manager or Settings > Apps > Startup). Turn it back on there.",
+        StartupState.DisabledByPolicy => "Blocked by a policy on this PC.",
+        _ => null
+    };
 
     /// <summary>The desktop service is a separate download; the card only appears once it is installed.</summary>
     public bool DesktopServiceInstalled { get; }
@@ -224,8 +271,11 @@ public sealed partial class NetworkPageViewModel : PageViewModel
     private readonly IDialogService _dialogs;
 
     [ObservableProperty] private string _pairingCode;
-    [ObservableProperty] private decimal _localPort;
-    [ObservableProperty] private decimal _discoveryPort;
+    [ObservableProperty] private decimal? _localPort;
+    [ObservableProperty] private decimal? _discoveryPort;
+
+    partial void OnLocalPortChanged(decimal? value) => RequireValue(value, nameof(LocalPort), "Enter a port number.");
+    partial void OnDiscoveryPortChanged(decimal? value) => RequireValue(value, nameof(DiscoveryPort), "Enter a port number.");
     public string MachineId { get; }
 
     /// <summary>This computer's IPv4 addresses, one per connected adapter, for typing into another machine.</summary>
@@ -270,18 +320,32 @@ public sealed partial class NetworkPageViewModel : PageViewModel
             PairingCode = Core.Network.SecureChannel.GeneratePairingCode();
     }
 
+    /// <summary>
+    /// The elevated command behind "Add rules": replaces any previous RoboMouse rules with inbound
+    /// rules for this program only, on private and domain networks, from the local subnet.
+    /// </summary>
+    internal static string BuildFirewallScript(string programPath, int tcpPort, int udpPort)
+    {
+        const string scope = "remoteip=localsubnet profile=private,domain";
+        var program = $"program=\"{programPath}\"";
+        return
+            "netsh advfirewall firewall delete rule name=\"RoboMouse (TCP)\" & " +
+            "netsh advfirewall firewall delete rule name=\"RoboMouse (UDP)\" & " +
+            $"netsh advfirewall firewall add rule name=\"RoboMouse (TCP)\" dir=in action=allow protocol=TCP localport={tcpPort} {program} {scope} & " +
+            $"netsh advfirewall firewall add rule name=\"RoboMouse (UDP)\" dir=in action=allow protocol=UDP localport={udpPort} {program} {scope}";
+    }
+
     [RelayCommand]
     private async Task AllowThroughFirewallAsync()
     {
-        var tcp = (int)LocalPort;
-        var udp = (int)DiscoveryPort;
-
-        // One elevated cmd that replaces any previous RoboMouse rules.
-        var script =
-            $"netsh advfirewall firewall delete rule name=\"RoboMouse (TCP)\" & " +
-            $"netsh advfirewall firewall delete rule name=\"RoboMouse (UDP)\" & " +
-            $"netsh advfirewall firewall add rule name=\"RoboMouse (TCP)\" dir=in action=allow protocol=TCP localport={tcp} remoteip=any profile=any & " +
-            $"netsh advfirewall firewall add rule name=\"RoboMouse (UDP)\" dir=in action=allow protocol=UDP localport={udp} remoteip=any profile=any";
+        if (LocalPort is not { } localPort || DiscoveryPort is not { } discoveryPort || Environment.ProcessPath is not { } programPath)
+        {
+            await _dialogs.WarnAsync("Enter both port numbers first.");
+            return;
+        }
+        var tcp = (int)localPort;
+        var udp = (int)discoveryPort;
+        var script = BuildFirewallScript(programPath, tcp, udp);
 
         try
         {
@@ -293,13 +357,18 @@ public sealed partial class NetworkPageViewModel : PageViewModel
                 UseShellExecute = true,
                 WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden
             });
-            if (process != null)
-                await Task.Run(() => process.WaitForExit(15000));
+            using (process)
+            {
+                // ExitCode throws while the process is still running, so only read it once it has exited.
+                var exited = process != null && await Task.Run(() => process.WaitForExit(15000));
+                if (exited && process!.ExitCode == 0)
+                    await _dialogs.InfoAsync($"Firewall rules added for TCP {tcp} and UDP {udp} (private and domain networks, this subnet).");
+                else if (process != null && !exited)
+                    await _dialogs.WarnAsync("The firewall command is taking longer than expected. Check Windows Defender Firewall with Advanced Security for the RoboMouse rules.");
+                else
+                    await _dialogs.WarnAsync("The firewall command did not complete. You can add the rules manually in Windows Defender Firewall with Advanced Security.");
+            }
 
-            if (process?.ExitCode == 0)
-                await _dialogs.InfoAsync($"Firewall rules added for TCP {tcp} and UDP {udp}.");
-            else
-                await _dialogs.WarnAsync("The firewall command did not complete. You can add the rules manually in Windows Defender Firewall with Advanced Security.");
         }
         catch (System.ComponentModel.Win32Exception)
         {
@@ -310,23 +379,6 @@ public sealed partial class NetworkPageViewModel : PageViewModel
             await _dialogs.ErrorAsync($"Could not update the firewall: {ex.Message}");
         }
     }
-}
-
-/// <summary>Layout page: the drag-to-arrange canvas. The view registers how to save its state.</summary>
-public sealed class LayoutPageViewModel : PageViewModel
-{
-    public AppSettings Settings { get; }
-
-    /// <summary>Set by the view: asks the canvas to rebuild from the peer list.</summary>
-    public Action? ReloadRequested { get; set; }
-
-    /// <summary>Set by the view: asks the canvas to write its offsets into the peer configs.</summary>
-    public Action? SaveRequested { get; set; }
-
-    public LayoutPageViewModel(AppSettings settings) => Settings = settings;
-
-    public void Reload() => ReloadRequested?.Invoke();
-    public void Save() => SaveRequested?.Invoke();
 }
 
 /// <summary>Peers page: configured peers and machines found on the network.</summary>
@@ -434,9 +486,28 @@ public sealed partial class PeersPageViewModel : PageViewModel
         var result = await _dialogs.ShowPeerSetupAsync(null, _settings);
         if (result == null)
             return;
-        _settings.Peers.Add(result);
+        await AddAndConnectAsync(result);
+    }
+
+    /// <summary>
+    /// The one flow for a new peer (the tray menu uses it too): add the config and save, then connect.
+    /// A failed connect keeps the peer; the background retry keeps trying.
+    /// </summary>
+    private async Task AddAndConnectAsync(PeerConfig peer)
+    {
+        _settings.Peers.Add(peer);
         _settings.Save();
         RebuildPeers();
+
+        if (!peer.Enabled)
+            return;
+
+        var error = await PeerActions.ConnectNewPeerAsync(_backend, peer);
+        if (error == null)
+            _settings.Save(); // the connect learned its machine id and screen size
+        else
+            await _dialogs.WarnAsync($"Added {peer.Name}, but could not connect yet: {error}\n\nRoboMouse keeps trying in the background.");
+        Refresh();
     }
 
     [RelayCommand(CanExecute = nameof(HasSelectedPeer))]
@@ -488,42 +559,13 @@ public sealed partial class PeersPageViewModel : PageViewModel
     {
         if (SelectedDiscovered is not { } found)
             return;
-        var discovered = found.Peer;
-
-        var draft = new PeerConfig
-        {
-            Id = discovered.MachineId,
-            Name = discovered.MachineName,
-            Address = discovered.Address.ToString(),
-            Port = discovered.Port,
-            ScreenWidth = discovered.ScreenWidth,
-            ScreenHeight = discovered.ScreenHeight,
-            Position = PeerPositions.All.FirstOrDefault(pos => _settings.Peers.All(p => p.Position != pos), ScreenPosition.Right)
-        };
-
+        var draft = PeerActions.FromDiscovered(found.Peer, PeerActions.FirstFreeEdge(_settings) ?? ScreenPosition.Right);
         var result = await _dialogs.ShowPeerSetupAsync(draft, _settings);
         if (result == null)
             return;
-
-        _settings.Peers.Add(result);
-        _settings.Save();
-        RebuildPeers();
-
-        if (!result.Enabled)
-            return;
-
-        try
-        {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-            await _backend.ConnectToPeerAsync(result, cts.Token);
-            _settings.Save();
-        }
-        catch (Exception ex)
-        {
-            await _dialogs.WarnAsync($"Added {result.Name}, but could not connect yet: {ex.Message}");
-        }
-        Refresh();
+        await AddAndConnectAsync(result);
     }
+
 }
 
 /// <summary>One configured peer in the list.</summary>

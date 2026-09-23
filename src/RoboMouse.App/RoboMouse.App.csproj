@@ -46,4 +46,8 @@
     <ProjectReference Include="..\RoboMouse.Core\RoboMouse.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="RoboMouse.App.Tests" />
+  </ItemGroup>
+
 </Project>

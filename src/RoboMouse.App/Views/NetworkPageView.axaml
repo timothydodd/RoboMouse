@@ -51,7 +51,7 @@
 
       <TextBlock Classes="section" Text="Firewall" />
       <views:SettingCard Header="Allow RoboMouse through Windows Firewall"
-                         Description="Adds inbound rules for the ports above from any address, on all network profiles. Needed when the other machine is on a different subnet: the rule Windows creates automatically is often limited to the local subnet. Requires administrator approval.">
+                         Description="Adds inbound rules that let RoboMouse, and only RoboMouse, receive on the ports above from machines on this subnet, on private and domain networks (not public Wi-Fi). Requires administrator approval.">
         <Button Content="Add rules…" Command="{Binding AllowThroughFirewallCommand}" />
       </views:SettingCard>
       <TextBlock Classes="caption" Margin="4,8,0,0"
