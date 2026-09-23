@@ -119,59 +119,192 @@ public class AppSettings
     }
 
     /// <summary>
-    /// Loads settings from the default configuration file.
+    /// Machine ids of peers the user removed. They are refused instead of coming back as pending
+    /// connection requests; adding the machine again by hand takes it off this list.
+    /// </summary>
+    public List<string> BlockedMachineIds { get; set; } = new();
+
+    /// <summary>
+    /// What <see cref="Load"/> had to do because the settings file could not be read. The app shows
+    /// it once; it is never saved.
+    /// </summary>
+    [JsonIgnore]
+    public SettingsLoadNotice LoadNotice { get; private set; }
+
+    /// <summary>Where the unreadable settings file was moved to, when <see cref="LoadNotice"/> is set.</summary>
+    [JsonIgnore]
+    public string? CorruptFilePath { get; private set; }
+
+    // One lock for every load and save in the process: saves come from the UI thread and from
+    // background work (a peer's MAC address, a peer switched on or off) and must not interleave.
+    private static readonly object FileLock = new();
+
+    /// <summary>
+    /// Loads settings from the configuration file. A file that cannot be parsed is never overwritten:
+    /// it is moved aside to <c>settings.corrupt-&lt;timestamp&gt;.json</c>, the backup from the last
+    /// good save is tried, and only then do the defaults apply. <see cref="LoadNotice"/> says which.
     /// </summary>
     public static AppSettings Load(string? path = null)
     {
         var configPath = path ?? DefaultConfigPath;
 
-        AppSettings settings;
-        if (!File.Exists(configPath))
+        lock (FileLock)
         {
-            settings = new AppSettings();
-        }
-        else
-        {
-            try
+            var settings = TryRead(configPath, out var unreadable);
+            if (settings == null)
             {
-                var json = File.ReadAllText(configPath);
-                settings = JsonSerializer.Deserialize(json, SettingsJsonContext.Default.AppSettings) ?? new AppSettings();
+                string? corrupt = unreadable ? MoveAside(configPath) : null;
+
+                // A missing file with a backup beside it also means the last save went wrong.
+                settings = TryRead(BackupPath(configPath), out _);
+                if (settings != null)
+                    settings.LoadNotice = SettingsLoadNotice.RestoredFromBackup;
+                else
+                    settings = new AppSettings { LoadNotice = unreadable ? SettingsLoadNotice.Reset : SettingsLoadNotice.None };
+                settings.CorruptFilePath = corrupt;
             }
-            catch
+
+            var needsSave = settings.LoadNotice != SettingsLoadNotice.None || !File.Exists(configPath);
+            if (string.IsNullOrWhiteSpace(settings.PairingCode))
             {
-                settings = new AppSettings();
+                settings.PairingCode = Network.SecureChannel.GeneratePairingCode();
+                needsSave = true;
             }
-        }
 
-        if (string.IsNullOrWhiteSpace(settings.PairingCode))
-        {
-            settings.PairingCode = Network.SecureChannel.GeneratePairingCode();
-            settings.Save(configPath);
-        }
-        else if (!File.Exists(configPath))
-        {
-            settings.Save(configPath);
-        }
+            if (needsSave)
+                settings.SaveLocked(configPath);
 
-        return settings;
+            return settings;
+        }
     }
 
     /// <summary>
-    /// Saves settings to the configuration file.
+    /// Saves settings. The file is written to <c>settings.json.tmp</c> and then swapped in, keeping the
+    /// previous version as <c>settings.json.bak</c>, so a crash or a full disk mid-write never leaves a
+    /// truncated file. Safe to call from any thread.
     /// </summary>
     public void Save(string? path = null)
     {
-        var configPath = path ?? DefaultConfigPath;
-        var directory = Path.GetDirectoryName(configPath);
-
-        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+        lock (FileLock)
         {
+            SaveLocked(path ?? DefaultConfigPath);
+        }
+    }
+
+    private void SaveLocked(string configPath)
+    {
+        var directory = Path.GetDirectoryName(configPath);
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
             Directory.CreateDirectory(directory);
+
+        var json = JsonSerializer.SerializeToUtf8Bytes(Snapshot(), SettingsJsonContext.Default.AppSettings);
+
+        var temp = configPath + ".tmp";
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(json);
+            stream.Flush(flushToDisk: true);
         }
 
-        var json = JsonSerializer.Serialize(this, SettingsJsonContext.Default.AppSettings);
-        File.WriteAllText(configPath, json);
+        if (!File.Exists(configPath))
+        {
+            File.Move(temp, configPath, overwrite: true);
+            return;
+        }
+
+        try
+        {
+            File.Replace(temp, configPath, BackupPath(configPath), ignoreMetadataErrors: true);
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            // Some file systems (network shares) cannot replace in one step; copy, then move instead.
+            File.Copy(configPath, BackupPath(configPath), overwrite: true);
+            File.Move(temp, configPath, overwrite: true);
+        }
     }
+
+    /// <summary>
+    /// A copy to serialize with its own lists, so the UI adding or removing a peer while a background
+    /// save runs cannot change a collection underneath the serializer.
+    /// </summary>
+    private AppSettings Snapshot()
+    {
+        var copy = (AppSettings)MemberwiseClone();
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                copy.Peers = Peers.Where(p => p is not null).ToList();
+                copy.BlockedMachineIds = BlockedMachineIds.Where(id => id is not null).ToList();
+                return copy;
+            }
+            catch (InvalidOperationException) when (attempt < 3)
+            {
+                // Changed mid-copy on another thread; take the copy again.
+            }
+        }
+    }
+
+    private static string BackupPath(string configPath) => configPath + ".bak";
+
+    /// <summary>
+    /// Parses a settings file. Returns null when it is missing (<paramref name="unreadable"/> false) or
+    /// cannot be read or parsed (true).
+    /// </summary>
+    private static AppSettings? TryRead(string file, out bool unreadable)
+    {
+        unreadable = false;
+        if (!File.Exists(file))
+            return null;
+        try
+        {
+            var settings = JsonSerializer.Deserialize(File.ReadAllBytes(file), SettingsJsonContext.Default.AppSettings);
+            if (settings != null)
+            {
+                // "null" in the file for a collection would otherwise surface as a crash much later.
+                settings.Peers ??= new();
+                settings.BlockedMachineIds ??= new();
+                settings.Clipboard ??= new();
+                return settings;
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+        }
+        unreadable = true;
+        return null;
+    }
+
+    /// <summary>Renames an unreadable settings file so it is kept for inspection. Returns the new path, or null.</summary>
+    private static string? MoveAside(string configPath)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(configPath) ?? string.Empty;
+            var name = Path.GetFileNameWithoutExtension(configPath);
+            var target = Path.Combine(directory, $"{name}.corrupt-{DateTime.Now:yyyyMMdd-HHmmss}.json");
+            File.Move(configPath, target, overwrite: true);
+            return target;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+}
+
+/// <summary>What loading the settings had to do because the file could not be read.</summary>
+public enum SettingsLoadNotice
+{
+    /// <summary>The file was read normally, or did not exist yet.</summary>
+    None,
+
+    /// <summary>The file was unreadable; the backup from the previous save was used.</summary>
+    RestoredFromBackup,
+
+    /// <summary>The file and its backup were unreadable; the defaults were used.</summary>
+    Reset
 }
 
 /// <summary>
