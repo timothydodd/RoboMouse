@@ -10,7 +10,7 @@ namespace RoboMouse.Core.Network;
 /// Both machines share a pairing code. On connect they run an ECDH (P-256) key exchange whose
 /// public values are authenticated with HMACs keyed from the pairing code, so a machine that does
 /// not know the code cannot complete the handshake and cannot sit in the middle. Traffic is then
-/// AES-256-GCM, one frame per Write, with separate keys and nonce counters per direction.
+/// AES-256-GCM, one frame per Write (split at 1 MB), with separate keys and nonce counters per direction.
 ///
 /// Wire format after the handshake: [4-byte length][8-byte counter][ciphertext][16-byte tag].
 /// </summary>
@@ -20,6 +20,9 @@ public sealed class SecureChannel : Stream
     private const int NonceBytes = 32;
     private const int TagBytes = 16;
     private const int MaxFrameBytes = 64 * 1024 * 1024;
+
+    /// <summary>Largest plaintext sent in one frame; bigger writes are split.</summary>
+    internal const int MaxWriteBytes = 1024 * 1024;
 
     private readonly Stream _inner;
     private readonly AesGcm _send;
@@ -141,7 +144,7 @@ public sealed class SecureChannel : Stream
     private static (byte[] Nonce, byte[] PublicKey, byte[] Proof) ParseHello(byte[] data, bool expectProof)
     {
         if (data.Length < 1 + NonceBytes + 2 || data[0] != HandshakeVersion)
-            throw new PairingException("The other machine is running an incompatible RoboMouse version.");
+            throw new IncompatibleVersionException("The other machine is running an incompatible RoboMouse version.");
 
         var offset = 1;
         var nonce = data.AsSpan(offset, NonceBytes).ToArray(); offset += NonceBytes;
@@ -209,6 +212,19 @@ public sealed class SecureChannel : Stream
 
     public override void Write(byte[] buffer, int offset, int count)
     {
+        // A frame is only decrypted once all of it has arrived, so a big write goes out as several
+        // frames: the reader sees progress (and counts it as liveness) instead of one long silence.
+        while (count > MaxWriteBytes)
+        {
+            WriteFrame(buffer, offset, MaxWriteBytes);
+            offset += MaxWriteBytes;
+            count -= MaxWriteBytes;
+        }
+        WriteFrame(buffer, offset, count);
+    }
+
+    private void WriteFrame(byte[] buffer, int offset, int count)
+    {
         if (count == 0)
             return;
 
@@ -250,17 +266,34 @@ public sealed class SecureChannel : Stream
         return available;
     }
 
-    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
-        => await Task.Run(() => Read(buffer, offset, count), ct);
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        => ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
 
-    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
-        => new(Task.Run(() =>
+    /// <summary>
+    /// Handshake-phase readers use this. The read itself is synchronous on the pool, which a token
+    /// cannot interrupt, so cancelling closes the underlying stream: the blocked read then fails and the
+    /// caller sees the cancellation. The channel is unusable afterwards, which is what a cancelled
+    /// handshake wants anyway.
+    /// </summary>
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var abort = ct.Register(static state => { try { ((Stream)state!).Dispose(); } catch { } }, _inner);
+        try
         {
-            var temp = new byte[buffer.Length];
-            var read = Read(temp, 0, temp.Length);
-            temp.AsSpan(0, read).CopyTo(buffer.Span);
-            return read;
-        }, ct));
+            return await Task.Run(() =>
+            {
+                var temp = new byte[buffer.Length];
+                var read = Read(temp, 0, temp.Length);
+                temp.AsSpan(0, read).CopyTo(buffer.Span);
+                return read;
+            }, CancellationToken.None);
+        }
+        catch (Exception ex) when (ct.IsCancellationRequested && ex is not OperationCanceledException)
+        {
+            throw new OperationCanceledException("The read was cancelled.", ex, ct);
+        }
+    }
 
     /// <summary>Reads and decrypts one frame into the plaintext buffer. Returns false at end of stream.</summary>
     private bool ReadFrame()
@@ -345,4 +378,12 @@ public sealed class SecureChannel : Stream
 public class PairingException : Exception
 {
     public PairingException(string message) : base(message) { }
+}
+
+/// <summary>
+/// Thrown when the other machine speaks a different version of the RoboMouse protocol.
+/// </summary>
+public class IncompatibleVersionException : Exception
+{
+    public IncompatibleVersionException(string message) : base(message) { }
 }

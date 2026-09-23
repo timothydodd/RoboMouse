@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using RoboMouse.Core.Logging;
+using RoboMouse.Core.Network.Protocol;
 
 namespace RoboMouse.Core.Network;
 
@@ -15,6 +16,8 @@ public sealed class ConnectionListener : IDisposable
     private readonly int _screenWidth;
     private readonly int _screenHeight;
     private readonly Func<byte[]> _pairingKey;
+    private readonly HandshakeGate _gate = new();
+    private readonly LogThrottle _rejectLog = new(TimeSpan.FromMinutes(1));
     private CancellationTokenSource? _cts;
     private Task? _acceptTask;
     private bool _disposed;
@@ -28,6 +31,13 @@ public sealed class ConnectionListener : IDisposable
     /// Whether the listener is currently running.
     /// </summary>
     public bool IsListening { get; private set; }
+
+    /// <summary>
+    /// Decides, from a peer's handshake and address, whether to take the connection: null accepts it,
+    /// anything else is the reject reason sent back (see <see cref="RejectReasons"/>). Runs on the
+    /// accept path, after the pairing code has been verified. Without a policy everything is accepted.
+    /// </summary>
+    public Func<HandshakeMessage, IPEndPoint?, string?>? AcceptPolicy { get; set; }
 
     /// <summary>
     /// Event raised when a new peer connects.
@@ -57,15 +67,16 @@ public sealed class ConnectionListener : IDisposable
     }
 
     /// <summary>
-    /// Starts listening for connections.
+    /// Starts listening for connections. Throws <see cref="SocketException"/> when the port cannot be
+    /// bound (another program already uses it).
     /// </summary>
     public void Start()
     {
         if (IsListening)
             return;
 
-        _cts = new CancellationTokenSource();
         _listener.Start();
+        _cts = new CancellationTokenSource();
         IsListening = true;
 
         SimpleLogger.Log("Listener", $"Started listening on port {Port}");
@@ -96,14 +107,25 @@ public sealed class ConnectionListener : IDisposable
             {
                 var client = await _listener.AcceptTcpClientAsync(ct);
 
-                // Handle connection in background
-                _ = HandleConnectionAsync(client, ct);
+                var address = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
+                if (!_gate.TryEnter(address))
+                {
+                    _rejectLog.Log(address.ToString(), "Listener", $"Too many handshakes in progress; dropping connection from {address}");
+                    client.Dispose();
+                    continue;
+                }
+
+                _ = HandleConnectionAsync(client, address, ct);
             }
             catch (OperationCanceledException)
             {
                 break;
             }
-            catch (SocketException)
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (SocketException) when (!IsListening)
             {
                 // Listener stopped
                 break;
@@ -115,10 +137,9 @@ public sealed class ConnectionListener : IDisposable
         }
     }
 
-    private async Task HandleConnectionAsync(TcpClient client, CancellationToken ct)
+    private async Task HandleConnectionAsync(TcpClient client, IPAddress address, CancellationToken ct)
     {
         var remoteEp = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
-        SimpleLogger.Log("Listener", $"Incoming connection from {remoteEp}");
 
         try
         {
@@ -130,15 +151,20 @@ public sealed class ConnectionListener : IDisposable
                 _screenWidth,
                 _screenHeight,
                 Port,
-                ct);
+                ct,
+                AcceptPolicy);
 
-            SimpleLogger.Log("Listener", $"Connection accepted from {remoteEp} - Peer: {connection.PeerName} ({connection.PeerId})");
             PeerConnected?.Invoke(this, connection);
         }
         catch (Exception ex)
         {
-            SimpleLogger.Log("Listener", $"Failed to accept connection from {remoteEp}: {ex.Message}");
+            // Rejections repeat every few seconds while the other machine keeps retrying.
+            _rejectLog.Log(address + ":" + ex.GetType().Name, "Accept", $"Rejected {remoteEp}: {ex.Message}");
             client.Dispose();
+        }
+        finally
+        {
+            _gate.Exit(address);
         }
     }
 

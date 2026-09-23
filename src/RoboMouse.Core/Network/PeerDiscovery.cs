@@ -31,6 +31,9 @@ public sealed class PeerDiscovery : IDisposable
     private static readonly byte[] DiscoveryMagic = "MSDISC"u8.ToArray();
     private const byte DiscoveryVersion = 1;
 
+    /// <summary>Most machines kept in the discovered list; the longest unseen is dropped for a new one.</summary>
+    public const int MaxPeers = 64;
+
     /// <summary>
     /// Event raised when a new peer is discovered.
     /// </summary>
@@ -70,13 +73,22 @@ public sealed class PeerDiscovery : IDisposable
         if (_listener != null)
             return;
 
-        _cts = new CancellationTokenSource();
+        // Create UDP listener. A bind failure (port in use without address reuse) is the caller's to report.
+        var listener = new UdpClient();
+        try
+        {
+            listener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            listener.Client.Bind(new IPEndPoint(IPAddress.Any, _discoveryPort));
+            listener.EnableBroadcast = true;
+        }
+        catch
+        {
+            listener.Dispose();
+            throw;
+        }
 
-        // Create UDP listener
-        _listener = new UdpClient();
-        _listener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        _listener.Client.Bind(new IPEndPoint(IPAddress.Any, _discoveryPort));
-        _listener.EnableBroadcast = true;
+        _listener = listener;
+        _cts = new CancellationTokenSource();
 
         // Start listening for discovery messages
         _listenTask = ListenAsync(_cts.Token);
@@ -170,7 +182,7 @@ public sealed class PeerDiscovery : IDisposable
         }
     }
 
-    private byte[] CreateDiscoveryMessage()
+    internal byte[] CreateDiscoveryMessage()
     {
         var buffer = new List<byte>();
 
@@ -208,7 +220,7 @@ public sealed class PeerDiscovery : IDisposable
         return buffer.ToArray();
     }
 
-    private void ProcessDiscoveryMessage(byte[] data, IPEndPoint remoteEndpoint)
+    internal void ProcessDiscoveryMessage(byte[] data, IPEndPoint remoteEndpoint)
     {
         if (data.Length < 7) // Minimum: magic(6) + version(1)
             return;
@@ -265,6 +277,13 @@ public sealed class PeerDiscovery : IDisposable
             };
 
             var isNew = !_discoveredPeers.ContainsKey(machineId);
+            if (isNew && _discoveredPeers.Count >= MaxPeers)
+            {
+                // Broadcasts are unauthenticated; a flood of made-up ids must not grow this without bound.
+                var oldest = _discoveredPeers.Values.MinBy(p => p.LastSeen);
+                if (oldest != null)
+                    _discoveredPeers.TryRemove(oldest.MachineId, out _);
+            }
             _discoveredPeers[machineId] = peer;
 
             if (isNew)

@@ -102,4 +102,25 @@ public class FramingTests
         Assert.Equal((5, 5), (((MouseMessage)first[0]).DeltaX, ((MouseMessage)first[0]).DeltaY));
         Assert.Equal((1, 1), (((MouseMessage)second[0]).DeltaX, ((MouseMessage)second[0]).DeltaY));
     }
+
+    [Fact]
+    public void OutboundQueue_PingsAndPongsJumpTheQueue()
+    {
+        var queue = new OutboundQueue();
+        queue.Post(new ClipboardMessage { Data = new byte[1024] });
+        queue.Post(MouseMessage.Motion(1, 1));
+        queue.Post(new PongMessage());
+        queue.Post(MouseMessage.Motion(1, 1));
+        queue.Post(new PingMessage());
+
+        var drained = new List<ProtocolMessage>();
+        queue.DrainTo(drained);
+
+        Assert.Collection(drained,
+            m => Assert.IsType<PongMessage>(m),
+            m => Assert.IsType<PingMessage>(m),
+            m => Assert.IsType<ClipboardMessage>(m),
+            // The pong in between does not split the motion run.
+            m => Assert.Equal(2, ((MouseMessage)m).DeltaX));
+    }
 }

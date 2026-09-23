@@ -21,7 +21,10 @@ public sealed class PeerConnection : IDisposable
     private const int HeaderSize = MessageFramer.HeaderSize;
     private const int MaxMessageSize = MessageFramer.MaxMessageSize;
     private const int PingIntervalMs = 1000;
-    private const int PongTimeoutMs = 5000;
+    private const int SilenceTimeoutMs = 5000;
+
+    /// <summary>Messages are coalesced into writes of up to this size; bigger ones are written alone.</summary>
+    private const int MaxBatchBytes = 256 * 1024;
 
     private readonly TcpClient _client;
     private Stream _stream;
@@ -70,7 +73,9 @@ public sealed class PeerConnection : IDisposable
     /// <summary>True when this machine initiated the connection.</summary>
     public bool IsOutbound { get; private set; }
 
-    private long _lastPongTicks;
+    // Last time anything arrived from the peer. Any data proves it is alive, not just a pong: a pong
+    // can be stuck behind a big clipboard message that is still streaming in.
+    private long _lastHeardTicks;
 
     /// <summary>Remote endpoint address.</summary>
     public IPEndPoint? RemoteEndPoint => _client.Client.RemoteEndPoint as IPEndPoint;
@@ -97,20 +102,74 @@ public sealed class PeerConnection : IDisposable
     }
 
     /// <summary>
+    /// How long connect, secure handshake and the handshake message exchange may take together. A peer
+    /// that accepts TCP and then says nothing must not hold a reconnect attempt (or an accept slot) for ever.
+    /// </summary>
+    public static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// Replaces the raw socket stream with an authenticated, encrypted channel. Must run before any
     /// protocol message is exchanged.
     /// </summary>
     private async Task SecureAsync(byte[] pairingKey, bool isClient, CancellationToken ct)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(10));
         _stream = isClient
-            ? await SecureChannel.ConnectAsync(_stream, pairingKey, timeout.Token)
-            : await SecureChannel.AcceptAsync(_stream, pairingKey, timeout.Token);
+            ? await SecureChannel.ConnectAsync(_stream, pairingKey, ct)
+            : await SecureChannel.AcceptAsync(_stream, pairingKey, ct);
     }
 
     /// <summary>
-    /// Creates a connection by connecting to a remote peer.
+    /// Runs <paramref name="handshake"/> under one timeout (<see cref="HandshakeTimeout"/>, or sooner if
+    /// <paramref name="ct"/> says so). Cancelling closes the socket, which is the only thing that
+    /// reliably ends a read blocked inside the encrypted stream; the failure is then reported as a
+    /// cancellation. The socket is closed on any failure.
+    /// </summary>
+    private static async Task<PeerConnection> WithHandshakeTimeoutAsync(
+        TcpClient client, CancellationToken ct, Func<CancellationToken, Task<PeerConnection>> handshake)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(HandshakeTimeout);
+        var token = timeout.Token;
+
+        var abort = token.Register(static state => { try { ((TcpClient)state!).Dispose(); } catch { } }, client);
+        try
+        {
+            var connection = await handshake(token);
+
+            // Once this returns the socket can no longer be closed from under the new connection.
+            abort.Dispose();
+            if (token.IsCancellationRequested)
+            {
+                connection.Dispose();
+                throw new OperationCanceledException(TimeoutMessage(ct), token);
+            }
+            return connection;
+        }
+        catch (Exception ex) when (token.IsCancellationRequested && ex is not OperationCanceledException)
+        {
+            client.Dispose();
+            throw new OperationCanceledException(TimeoutMessage(ct), ex, token);
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+        finally
+        {
+            abort.Dispose();
+        }
+    }
+
+    private static string TimeoutMessage(CancellationToken callerToken) => callerToken.IsCancellationRequested
+        ? "The connection attempt was cancelled."
+        : $"The other machine did not complete the handshake within {HandshakeTimeout.TotalSeconds:0} seconds.";
+
+    /// <summary>
+    /// Creates a connection by connecting to a remote peer. Throws <see cref="PairingException"/> when the
+    /// pairing codes differ, <see cref="ConnectionRejectedException"/> when the peer refuses us,
+    /// <see cref="IncompatibleVersionException"/> for a different protocol version, and
+    /// <see cref="OperationCanceledException"/> on timeout.
     /// </summary>
     public static async Task<PeerConnection> ConnectAsync(
         string host,
@@ -127,66 +186,74 @@ public sealed class PeerConnection : IDisposable
         SimpleLogger.Log("Connect", $"Connecting to {host}:{port} ({kind})...");
 
         var client = new TcpClient();
-        await client.ConnectAsync(host, port, ct);
-
-        var connection = new PeerConnection(client);
-        try
+        var result = await WithHandshakeTimeoutAsync(client, ct, async token =>
         {
-            await connection.SecureAsync(pairingKey, isClient: true, ct);
-        }
-        catch
-        {
-            connection.Dispose();
-            throw;
-        }
+            await client.ConnectAsync(host, port, token);
 
-        var handshake = new HandshakeMessage
-        {
-            MachineId = localMachineId,
-            MachineName = localMachineName,
-            ScreenWidth = localScreenWidth,
-            ScreenHeight = localScreenHeight,
-            SupportsClipboard = true,
-            Kind = kind,
-            ListenPort = localListenPort,
-            MacAddress = connection.LocalMacAddress
-        };
-        connection.Kind = kind;
-        connection.IsOutbound = true;
+            var connection = new PeerConnection(client);
+            try
+            {
+                await connection.SecureAsync(pairingKey, isClient: true, token);
 
-        await connection.WriteDirectAsync(handshake, ct);
-        var response = await connection.ReadOneAsync(ct);
+                var handshake = new HandshakeMessage
+                {
+                    MachineId = localMachineId,
+                    MachineName = localMachineName,
+                    ScreenWidth = localScreenWidth,
+                    ScreenHeight = localScreenHeight,
+                    SupportsClipboard = true,
+                    Kind = kind,
+                    ListenPort = localListenPort,
+                    MacAddress = connection.LocalMacAddress
+                };
+                connection.Kind = kind;
+                connection.IsOutbound = true;
 
-        if (response is not HandshakeAckMessage ack)
-        {
-            var responseType = response?.GetType().Name ?? "null/invalid";
-            connection.Dispose();
-            throw new InvalidOperationException(response == null
-                ? "No valid handshake reply. The other machine may be running a different RoboMouse version."
-                : $"Invalid handshake response: received {responseType}");
-        }
+                await connection.WriteDirectAsync(handshake, token);
+                var response = await connection.ReadOneAsync(token);
 
-        if (!ack.Accepted)
-        {
-            connection.Dispose();
-            throw new InvalidOperationException($"Connection rejected: {ack.RejectReason}");
-        }
+                if (response is not HandshakeAckMessage ack)
+                {
+                    throw response == null
+                        ? new IncompatibleVersionException("No valid handshake reply. The other machine may be running a different RoboMouse version.")
+                        : new InvalidOperationException($"Invalid handshake response: received {response.GetType().Name}");
+                }
 
-        connection.PeerId = ack.MachineId;
-        connection.PeerName = ack.MachineName;
-        connection.PeerScreenWidth = ack.ScreenWidth;
-        connection.PeerScreenHeight = ack.ScreenHeight;
-        connection.PeerListenPort = ack.ListenPort;
-        connection.PeerMacAddress = WakeOnLan.Normalize(ack.MacAddress);
+                if (!ack.Accepted)
+                {
+                    var (code, text) = RejectReasons.Parse(ack.RejectReason);
+                    throw new ConnectionRejectedException(code, text);
+                }
 
-        SimpleLogger.Log("Connect", $"Connected to {ack.MachineName} ({ack.ScreenWidth}x{ack.ScreenHeight})");
-        return connection;
+                if (ack.MachineId == localMachineId)
+                    throw new ConnectionRejectedException(RejectCode.SameMachine, "That address is this PC.");
+
+                connection.PeerId = ack.MachineId;
+                connection.PeerName = ack.MachineName;
+                connection.PeerScreenWidth = ack.ScreenWidth;
+                connection.PeerScreenHeight = ack.ScreenHeight;
+                connection.PeerListenPort = ack.ListenPort;
+                connection.PeerMacAddress = WakeOnLan.Normalize(ack.MacAddress);
+                return connection;
+            }
+            catch
+            {
+                connection.Dispose();
+                throw;
+            }
+        });
+
+        SimpleLogger.Log("Connect", $"Connected to {result.PeerName} ({result.PeerScreenWidth}x{result.PeerScreenHeight})");
+        return result;
     }
 
     /// <summary>
-    /// Creates a connection from an accepted TCP client.
+    /// Creates a connection from an accepted TCP client. <paramref name="decide"/> sees the peer's
+    /// handshake and returns null to accept it, or a reject reason (see <see cref="RejectReasons"/>),
+    /// which is sent back before the connection is closed and <see cref="ConnectionRejectedException"/>
+    /// is thrown. The TCP client is disposed on any failure.
     /// </summary>
-    public static async Task<PeerConnection> AcceptAsync(
+    public static Task<PeerConnection> AcceptAsync(
         TcpClient client,
         byte[] pairingKey,
         string localMachineId,
@@ -194,51 +261,61 @@ public sealed class PeerConnection : IDisposable
         int localScreenWidth,
         int localScreenHeight,
         int localListenPort,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Func<HandshakeMessage, IPEndPoint?, string?>? decide = null)
     {
-        var remoteEp = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
-        var connection = new PeerConnection(client);
-        try
+        var remote = client.Client.RemoteEndPoint as IPEndPoint;
+        return WithHandshakeTimeoutAsync(client, ct, async token =>
         {
-            await connection.SecureAsync(pairingKey, isClient: false, ct);
-        }
-        catch (Exception ex)
-        {
-            SimpleLogger.Log("Accept", $"Rejected {remoteEp}: {ex.Message}");
-            connection.Dispose();
-            throw;
-        }
+            var connection = new PeerConnection(client);
+            try
+            {
+                await connection.SecureAsync(pairingKey, isClient: false, token);
 
-        var message = await connection.ReadOneAsync(ct);
+                var message = await connection.ReadOneAsync(token);
+                if (message is not HandshakeMessage handshake)
+                    throw new InvalidOperationException($"Expected handshake message, got {message?.GetType().Name ?? "null"}");
 
-        if (message is not HandshakeMessage handshake)
-        {
-            connection.Dispose();
-            throw new InvalidOperationException($"Expected handshake message, got {message?.GetType().Name ?? "null"}");
-        }
+                connection.PeerId = handshake.MachineId;
+                connection.PeerName = handshake.MachineName;
+                connection.PeerScreenWidth = handshake.ScreenWidth;
+                connection.PeerScreenHeight = handshake.ScreenHeight;
+                connection.Kind = handshake.Kind;
+                connection.PeerListenPort = handshake.ListenPort;
+                connection.PeerMacAddress = WakeOnLan.Normalize(handshake.MacAddress);
 
-        connection.PeerId = handshake.MachineId;
-        connection.PeerName = handshake.MachineName;
-        connection.PeerScreenWidth = handshake.ScreenWidth;
-        connection.PeerScreenHeight = handshake.ScreenHeight;
-        connection.Kind = handshake.Kind;
-        connection.PeerListenPort = handshake.ListenPort;
-        connection.PeerMacAddress = WakeOnLan.Normalize(handshake.MacAddress);
+                var reject = handshake.MachineId == localMachineId
+                    ? RejectReasons.Format(RejectCode.SameMachine, "That address is this PC.")
+                    : decide?.Invoke(handshake, remote);
 
-        var ack = new HandshakeAckMessage
-        {
-            Accepted = true,
-            MachineId = localMachineId,
-            MachineName = localMachineName,
-            ScreenWidth = localScreenWidth,
-            ScreenHeight = localScreenHeight,
-            ListenPort = localListenPort,
-            MacAddress = connection.LocalMacAddress
-        };
+                var ack = new HandshakeAckMessage
+                {
+                    Accepted = reject == null,
+                    RejectReason = reject,
+                    MachineId = localMachineId,
+                    MachineName = localMachineName,
+                    ScreenWidth = localScreenWidth,
+                    ScreenHeight = localScreenHeight,
+                    ListenPort = localListenPort,
+                    MacAddress = connection.LocalMacAddress
+                };
+                await connection.WriteDirectAsync(ack, token);
 
-        await connection.WriteDirectAsync(ack, ct);
-        SimpleLogger.Log("Accept", $"Accepted {handshake.MachineName} from {remoteEp} ({handshake.ScreenWidth}x{handshake.ScreenHeight})");
-        return connection;
+                if (reject != null)
+                {
+                    var (code, text) = RejectReasons.Parse(reject);
+                    throw new ConnectionRejectedException(code, $"{handshake.MachineName}: {text}");
+                }
+
+                SimpleLogger.Log("Accept", $"Accepted {handshake.MachineName} from {remote} ({handshake.ScreenWidth}x{handshake.ScreenHeight}, {handshake.Kind})");
+                return connection;
+            }
+            catch
+            {
+                connection.Dispose();
+                throw;
+            }
+        });
     }
 
     /// <summary>
@@ -267,7 +344,7 @@ public sealed class PeerConnection : IDisposable
         _sendThread.Start();
         _receiveThread.Start();
 
-        _lastPongTicks = Environment.TickCount64;
+        _lastHeardTicks = Environment.TickCount64;
         _pingTimer = new System.Threading.Timer(OnPingTimer, null, PingIntervalMs, PingIntervalMs);
     }
 
@@ -276,10 +353,10 @@ public sealed class PeerConnection : IDisposable
         if (_disposed)
             return;
 
-        if (Environment.TickCount64 - Interlocked.Read(ref _lastPongTicks) > PongTimeoutMs)
+        if (Environment.TickCount64 - Interlocked.Read(ref _lastHeardTicks) > SilenceTimeoutMs)
         {
-            SimpleLogger.Log("Conn", $"{PeerName} stopped answering pings; dropping connection");
-            RaiseDisconnected(new TimeoutException($"{PeerName} did not respond for {PongTimeoutMs / 1000} seconds."));
+            SimpleLogger.Log("Conn", $"Nothing heard from {PeerName} for {SilenceTimeoutMs / 1000} s; dropping connection");
+            RaiseDisconnected(new TimeoutException($"{PeerName} did not respond for {SilenceTimeoutMs / 1000} seconds."));
             Dispose();
             return;
         }
@@ -320,15 +397,29 @@ public sealed class PeerConnection : IDisposable
                     continue;
                 }
 
+                // Small messages are coalesced into one write. A big one (a clipboard image) goes out on
+                // its own after flushing what is ahead of it, so input and pings queued before it are
+                // not held until all of it has been encrypted and sent.
                 buffer.SetLength(0);
                 foreach (var message in batch)
                 {
                     var data = message.Serialize();
-                    buffer.Write(data, 0, data.Length);
+                    if (buffer.Length > 0 && buffer.Length + data.Length > MaxBatchBytes)
+                    {
+                        _stream.Write(buffer.GetBuffer(), 0, (int)buffer.Length);
+                        buffer.SetLength(0);
+                    }
+                    if (data.Length > MaxBatchBytes)
+                        _stream.Write(data, 0, data.Length);
+                    else
+                        buffer.Write(data, 0, data.Length);
                 }
                 batch.Clear();
 
-                _stream.Write(buffer.GetBuffer(), 0, (int)buffer.Length);
+                if (buffer.Length > 0)
+                    _stream.Write(buffer.GetBuffer(), 0, (int)buffer.Length);
+                if (buffer.Capacity > 4 * MaxBatchBytes)
+                    buffer = new MemoryStream(4096);
 
                 if (_outbound.Count == 0)
                     _outboundDrained.Set();
@@ -358,6 +449,7 @@ public sealed class PeerConnection : IDisposable
                 if (read == 0)
                     break; // Closed gracefully
                 filled += read;
+                Interlocked.Exchange(ref _lastHeardTicks, Environment.TickCount64);
 
                 // Grow the buffer if the next frame is larger than what we can hold.
                 if (filled >= HeaderSize)
@@ -416,7 +508,7 @@ public sealed class PeerConnection : IDisposable
                 return true;
 
             case PongMessage pong:
-                Interlocked.Exchange(ref _lastPongTicks, Environment.TickCount64);
+                Interlocked.Exchange(ref _lastHeardTicks, Environment.TickCount64);
                 var rtt = (int)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pong.Timestamp);
                 if (rtt >= 0)
                 {
