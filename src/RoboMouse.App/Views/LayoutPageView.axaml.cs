@@ -13,7 +13,6 @@ public partial class LayoutPageView : UserControl
             if (DataContext is LayoutPageViewModel vm)
             {
                 vm.ReloadRequested = Canvas.Reload;
-                vm.SaveRequested = Canvas.SaveLayout;
             }
         };
     }

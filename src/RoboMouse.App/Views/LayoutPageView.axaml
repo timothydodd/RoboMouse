@@ -8,9 +8,9 @@
   <Grid Margin="{StaticResource AppPagePadding}" RowDefinitions="Auto,Auto,*" MaxWidth="860">
     <TextBlock Classes="title" Text="Layout" />
     <TextBlock Grid.Row="1" Classes="caption" Margin="0,0,0,12"
-               Text="Drag a peer screen to the edge of this screen where that computer sits. Its position along the edge is kept too. Faded screens are disabled peers. Changes are applied when you click Save." />
+               Text="Drag a peer screen to the edge of this screen where that computer sits; its position along the edge is kept too. Dropping it on an edge another peer uses swaps the two. Faded screens are disabled peers. Nothing changes until you click Save." />
     <Border Grid.Row="2" Classes="card panel">
-      <views:ScreenLayoutControl x:Name="Canvas" Settings="{Binding Settings}" />
+      <views:ScreenLayoutControl x:Name="Canvas" Layout="{Binding}" />
     </Border>
   </Grid>
 

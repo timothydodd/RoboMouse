@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Media;
+using RoboMouse.App.ViewModels;
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Screen;
 
@@ -10,21 +11,20 @@ namespace RoboMouse.App.Views;
 
 /// <summary>
 /// Custom-drawn canvas for visual screen layout editing: drag a peer screen to the edge of this
-/// screen it sits on.
+/// screen it sits on. It edits the page's <see cref="PeerPlacement"/>s, never the peer configs.
 /// </summary>
 public sealed class ScreenLayoutControl : Control
 {
-    public static readonly StyledProperty<AppSettings?> SettingsProperty =
-        AvaloniaProperty.Register<ScreenLayoutControl, AppSettings?>(nameof(Settings));
+    public static readonly StyledProperty<LayoutPageViewModel?> LayoutProperty =
+        AvaloniaProperty.Register<ScreenLayoutControl, LayoutPageViewModel?>(nameof(Layout));
 
-    /// <summary>The settings whose peers are laid out. Offsets are written back by <see cref="SaveLayout"/>.</summary>
-    public AppSettings? Settings
+    /// <summary>The page whose placements are laid out and edited.</summary>
+    public LayoutPageViewModel? Layout
     {
-        get => GetValue(SettingsProperty);
-        set => SetValue(SettingsProperty, value);
+        get => GetValue(LayoutProperty);
+        set => SetValue(LayoutProperty, value);
     }
 
-    private AppSettings _settings = new();
     private readonly List<ScreenRect> _screens = new();
     private ScreenRect? _localScreen;
     private MonitorLayout? _localLayout;
@@ -50,14 +50,11 @@ public sealed class ScreenLayoutControl : Control
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
-        if (change.Property == SettingsProperty)
-        {
-            _settings = change.GetNewValue<AppSettings?>() ?? new AppSettings();
+        if (change.Property == LayoutProperty)
             Reload();
-        }
     }
 
-    /// <summary>Rebuilds the canvas from the current peer list (after peers are added, edited or removed).</summary>
+    /// <summary>Rebuilds the canvas from the placements (after peers are added, edited or removed).</summary>
     public void Reload()
     {
         _selectedScreen = null;
@@ -86,14 +83,15 @@ public sealed class ScreenLayoutControl : Control
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
-        // Monitors may have changed since the control was built. Keep any unsaved drags.
-        SaveLayout();
+        // Monitors may have changed since the control was built. Drags live in the placements.
         InitializeScreens();
         InvalidateVisual();
     }
 
     private double CanvasWidth => Bounds.Width > 0 ? Bounds.Width : 600;
     private double CanvasHeight => Bounds.Height > 0 ? Bounds.Height : 400;
+
+    private IReadOnlyList<PeerPlacement> Placements => Layout?.Placements ?? Array.Empty<PeerPlacement>();
 
     private void InitializeScreens()
     {
@@ -114,18 +112,19 @@ public sealed class ScreenLayoutControl : Control
         };
         _screens.Add(_localScreen);
 
-        foreach (var peer in _settings.Peers)
+        foreach (var placement in Placements)
         {
+            var peer = placement.Peer;
             var peerRect = new ScreenRect
             {
                 Name = peer.Name,
-                PeerConfig = peer,
+                Placement = placement,
                 OriginalWidth = peer.ScreenWidth,
                 OriginalHeight = peer.ScreenHeight,
                 DisplayBounds = new Rect(0, 0, peer.ScreenWidth / _scaleFactor, peer.ScreenHeight / _scaleFactor)
             };
 
-            PositionPeerScreen(peerRect, peer.Position, peer.OffsetX, peer.OffsetY);
+            PositionPeerScreen(peerRect, placement.Position, placement.OffsetX, placement.OffsetY);
             _screens.Add(peerRect);
         }
 
@@ -139,14 +138,15 @@ public sealed class ScreenLayoutControl : Control
     private int FitScale(System.Drawing.Rectangle local)
     {
         var minX = 0; var minY = 0; var maxX = local.Width; var maxY = local.Height;
-        foreach (var peer in _settings.Peers)
+        foreach (var peer in Placements)
         {
+            var size = new System.Drawing.Size(peer.Peer.ScreenWidth, peer.Peer.ScreenHeight);
             System.Drawing.Rectangle r = peer.Position switch
             {
-                ScreenPosition.Left => new(-peer.ScreenWidth, peer.OffsetY, peer.ScreenWidth, peer.ScreenHeight),
-                ScreenPosition.Right => new(local.Width, peer.OffsetY, peer.ScreenWidth, peer.ScreenHeight),
-                ScreenPosition.Top => new(peer.OffsetX, -peer.ScreenHeight, peer.ScreenWidth, peer.ScreenHeight),
-                _ => new(peer.OffsetX, local.Height, peer.ScreenWidth, peer.ScreenHeight)
+                ScreenPosition.Left => new(-size.Width, peer.OffsetY, size.Width, size.Height),
+                ScreenPosition.Right => new(local.Width, peer.OffsetY, size.Width, size.Height),
+                ScreenPosition.Top => new(peer.OffsetX, -size.Height, size.Width, size.Height),
+                _ => new(peer.OffsetX, local.Height, size.Width, size.Height)
             };
             minX = Math.Min(minX, r.Left); minY = Math.Min(minY, r.Top);
             maxX = Math.Max(maxX, r.Right); maxY = Math.Max(maxY, r.Bottom);
@@ -215,7 +215,7 @@ public sealed class ScreenLayoutControl : Control
     private void DrawScreen(DrawingContext context, ScreenRect screen)
     {
         var rect = screen.DisplayBounds;
-        var disabled = screen.PeerConfig is { Enabled: false };
+        var disabled = screen.Placement is { Peer.Enabled: false };
         var selected = screen == _selectedScreen;
 
         Color fill, edge;
@@ -343,19 +343,34 @@ public sealed class ScreenLayoutControl : Control
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
-
         if (_draggingScreen != null)
-        {
-            SnapToEdge(_draggingScreen);
-            _draggingScreen = null;
-            e.Pointer.Capture(null);
-            InvalidateVisual();
-        }
+            e.Pointer.Capture(null); // ends the drag through OnPointerCaptureLost
+        EndDrag();
+    }
+
+    /// <summary>
+    /// Capture ends on release, but also when the window loses focus or another control takes the
+    /// pointer mid-drag; either way the screen snaps to the nearest edge instead of staying stuck.
+    /// </summary>
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        base.OnPointerCaptureLost(e);
+        EndDrag();
+    }
+
+    private void EndDrag()
+    {
+        if (_draggingScreen == null)
+            return;
+        var screen = _draggingScreen;
+        _draggingScreen = null;
+        SnapToEdge(screen);
+        InvalidateVisual();
     }
 
     private void SnapToEdge(ScreenRect peer)
     {
-        if (_localScreen == null || peer.PeerConfig == null)
+        if (_localScreen == null || peer.Placement == null || Layout == null)
             return;
 
         var local = _localScreen.DisplayBounds;
@@ -398,37 +413,17 @@ public sealed class ScreenLayoutControl : Control
         }
 
         peer.DisplayBounds = new Rect(newX, newY, peerBounds.Width, peerBounds.Height);
-        peer.PeerConfig.Position = position;
-    }
 
-    public void SaveLayout()
-    {
-        if (_localScreen == null)
-            return;
+        // Offset along the edge in real pixels; the other axis is unused for that edge.
+        var horizontal = position is ScreenPosition.Left or ScreenPosition.Right;
+        var offsetX = horizontal ? 0 : (int)Math.Round((newX - local.X) * _scaleFactor);
+        var offsetY = horizontal ? (int)Math.Round((newY - local.Y) * _scaleFactor) : 0;
 
-        foreach (var screen in _screens)
-        {
-            if (screen.IsLocal || screen.PeerConfig == null)
-                continue;
-
-            var local = _localScreen.DisplayBounds;
-            var peer = screen.DisplayBounds;
-
-            switch (screen.PeerConfig.Position)
-            {
-                case ScreenPosition.Left:
-                case ScreenPosition.Right:
-                    screen.PeerConfig.OffsetY = (int)Math.Round((peer.Y - local.Y) * _scaleFactor);
-                    screen.PeerConfig.OffsetX = 0;
-                    break;
-
-                case ScreenPosition.Top:
-                case ScreenPosition.Bottom:
-                    screen.PeerConfig.OffsetX = (int)Math.Round((peer.X - local.X) * _scaleFactor);
-                    screen.PeerConfig.OffsetY = 0;
-                    break;
-            }
-        }
+        // Dropping on an occupied edge swaps the two; redraw the one that moved out of the way.
+        var swapped = Layout.MoveToEdge(peer.Placement, position, offsetX, offsetY);
+        var swappedRect = swapped == null ? null : _screens.FirstOrDefault(s => s.Placement == swapped);
+        if (swapped != null && swappedRect != null)
+            PositionPeerScreen(swappedRect, swapped.Position, swapped.OffsetX, swapped.OffsetY);
     }
 
     protected override void OnSizeChanged(SizeChangedEventArgs e)
@@ -437,11 +432,10 @@ public sealed class ScreenLayoutControl : Control
         if (_draggingScreen != null || e.NewSize.Width <= 0 || e.NewSize.Height <= 0)
             return;
 
-        // Keep any unsaved drags, then rebuild at a scale that fits the new size.
-        SaveLayout();
-        var selected = _selectedScreen?.PeerConfig;
+        // Rebuild at a scale that fits the new size; drags are already in the placements.
+        var selected = _selectedScreen?.Placement;
         InitializeScreens();
-        _selectedScreen = _screens.FirstOrDefault(s => s.PeerConfig == selected);
+        _selectedScreen = selected == null ? null : _screens.FirstOrDefault(s => s.Placement == selected);
         InvalidateVisual();
     }
 
@@ -449,7 +443,8 @@ public sealed class ScreenLayoutControl : Control
     {
         public string Name { get; set; } = string.Empty;
         public bool IsLocal { get; set; }
-        public PeerConfig? PeerConfig { get; set; }
+        public PeerPlacement? Placement { get; set; }
+
         public int OriginalWidth { get; set; }
         public int OriginalHeight { get; set; }
         public Rect DisplayBounds { get; set; }
