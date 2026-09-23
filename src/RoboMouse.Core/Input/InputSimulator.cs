@@ -155,10 +155,13 @@ public static unsafe class InputSimulator
     #region Keyboard Simulation
 
     /// <summary>
-    /// Simulates a keyboard event.
+    /// Simulates a keyboard event: by scan code when there is one, so this machine's layout decides the
+    /// character (see <see cref="KeyInjection"/>); <see cref="Keys.Packet"/> types the Unicode character
+    /// carried in <paramref name="scanCode"/>.
     /// </summary>
     public static bool SimulateKeyboardEvent(Keys keyCode, uint scanCode, KeyboardEventType eventType, bool isExtended)
     {
+        var plan = KeyInjection.For(keyCode, scanCode, eventType, isExtended);
         var input = new NativeMethods.INPUT
         {
             type = NativeMethods.INPUT_KEYBOARD,
@@ -166,9 +169,9 @@ public static unsafe class InputSimulator
             {
                 ki = new NativeMethods.KEYBDINPUT
                 {
-                    wVk = (ushort)keyCode,
-                    wScan = (ushort)scanCode,
-                    dwFlags = GetKeyboardFlags(eventType, isExtended),
+                    wVk = plan.VirtualKey,
+                    wScan = plan.ScanCode,
+                    dwFlags = plan.Flags,
                     time = 0,
                     dwExtraInfo = IntPtr.Zero
                 }
@@ -254,23 +257,6 @@ public static unsafe class InputSimulator
 
         fixed (NativeMethods.INPUT* p = inputs)
             NativeMethods.SendInput(2, p, InputSize);
-    }
-
-    private static uint GetKeyboardFlags(KeyboardEventType eventType, bool isExtended)
-    {
-        uint flags = 0;
-
-        if (eventType is KeyboardEventType.KeyUp or KeyboardEventType.SysKeyUp)
-        {
-            flags |= NativeMethods.KEYEVENTF_KEYUP;
-        }
-
-        if (isExtended)
-        {
-            flags |= NativeMethods.KEYEVENTF_EXTENDEDKEY;
-        }
-
-        return flags;
     }
 
     private static bool IsExtendedKey(Keys key)

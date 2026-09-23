@@ -4,7 +4,11 @@ using RoboMouse.Core.Input;
 namespace RoboMouse.Core.Network.Protocol;
 
 /// <summary>
-/// Keyboard input event message.
+/// Keyboard input event message. The receiver injects it by <see cref="ScanCode"/> (plus the extended
+/// flag), so its own keyboard layout decides the character; <see cref="KeyCode"/> is the sender's
+/// virtual key, used for keys without a scan code. With <see cref="KeyCode"/> = <see cref="Keys.Packet"/>
+/// the event types one Unicode character, whose UTF-16 code unit is in <see cref="ScanCode"/> (as
+/// Windows reports it for VK_PACKET). See <see cref="KeyInjection"/>.
 /// </summary>
 public class KeyboardMessage : Message
 {
@@ -16,7 +20,7 @@ public class KeyboardMessage : Message
     public Keys KeyCode { get; set; }
 
     /// <summary>
-    /// Scan code.
+    /// Hardware scan code (without the extended prefix), or the UTF-16 code unit for <see cref="Keys.Packet"/>.
     /// </summary>
     public uint ScanCode { get; set; }
 

@@ -1673,10 +1673,11 @@ public sealed class RoboMouseService : IDisposable
         if (e.IsInjected)
         {
             // Volume knobs and media buttons are often turned into keystrokes by the vendor's software,
-            // so they arrive marked as injected. While controlling a remote they belong to it. Nothing
-            // of ours injects keys on this side while it is the controller, apart from releasing held
-            // modifiers at the moment of crossing, and those are not media keys.
-            if (_enabled && _isControllingRemote && IsMediaKey(e.KeyCode))
+            // so they arrive marked as injected; so is text typed as Unicode characters (VK_PACKET) by
+            // an on-screen keyboard, the emoji panel or a password manager. While controlling a remote
+            // they belong to it. Nothing of ours injects keys on this side while it is the controller,
+            // apart from releasing held modifiers at the moment of crossing, and those are neither.
+            if (_enabled && _isControllingRemote && (IsMediaKey(e.KeyCode) || e.KeyCode == Keys.Packet))
             {
                 e.Handled = true;
                 _registry.Active?.Post(KeyboardMessage.FromEvent(e));
