@@ -17,6 +17,12 @@ internal sealed unsafe class AvaloniaImageCodec : IClipboardImageCodec
     private const uint BI_RGB = 0;
     private const uint BI_BITFIELDS = 3;
 
+    /// <summary>
+    /// Largest image converted either way (100 megapixels, 400 MB as 32-bit pixels). A peer's PNG is
+    /// only a few bytes of header away from asking for a gigantic bitmap, so the size is checked first.
+    /// </summary>
+    internal const long MaxPixels = 100_000_000;
+
     public byte[]? DibToPng(ReadOnlySpan<byte> dib)
     {
         try
@@ -29,7 +35,9 @@ internal sealed unsafe class AvaloniaImageCodec : IClipboardImageCodec
             var height = BitConverter.ToInt32(dib[8..]);
             var bitCount = BitConverter.ToUInt16(dib[14..]);
             var compression = BitConverter.ToUInt32(dib[16..]);
-            if (headerLength < HeaderSize || width <= 0 || height == 0 || (bitCount != 24 && bitCount != 32))
+            if (headerLength < HeaderSize || width <= 0 || height == 0 || height == int.MinValue || (bitCount != 24 && bitCount != 32))
+                return null;
+            if ((long)width * Math.Abs((long)height) > MaxPixels)
                 return null;
             if (compression != BI_RGB && !(compression == BI_BITFIELDS && bitCount == 32))
                 return null;
@@ -105,14 +113,36 @@ internal sealed unsafe class AvaloniaImageCodec : IClipboardImageCodec
         }
     }
 
+    /// <summary>
+    /// Reads the dimensions from a PNG's IHDR chunk (always the first chunk, right after the
+    /// 8-byte signature) without decoding anything. False when it is not a PNG header.
+    /// </summary>
+    internal static bool TryReadPngSize(ReadOnlySpan<byte> png, out long width, out long height)
+    {
+        width = height = 0;
+        ReadOnlySpan<byte> signature = [0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        if (png.Length < 24 || !png[..8].SequenceEqual(signature) || !png[12..16].SequenceEqual("IHDR"u8))
+            return false;
+        width = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(png[16..]);
+        height = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(png[20..]);
+        return true;
+    }
+
     public byte[]? PngToDib(ReadOnlySpan<byte> png)
     {
         try
         {
+            if (!TryReadPngSize(png, out var headerWidth, out var headerHeight)
+                || headerWidth <= 0 || headerHeight <= 0 || headerWidth * headerHeight > MaxPixels)
+            {
+                SimpleLogger.Log("Clipboard", $"PNG to DIB refused: not a PNG or too large ({headerWidth} x {headerHeight})");
+                return null;
+            }
+
             using var source = new MemoryStream(png.ToArray());
             using var decoded = new Bitmap(source);
             var size = decoded.PixelSize;
-            if (size.Width <= 0 || size.Height <= 0)
+            if (size.Width <= 0 || size.Height <= 0 || (long)size.Width * size.Height > MaxPixels)
                 return null;
 
             using var bitmap = new WriteableBitmap(size, new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Unpremul);
@@ -121,15 +151,20 @@ internal sealed unsafe class AvaloniaImageCodec : IClipboardImageCodec
             if (fb.Format != PixelFormat.Bgra8888)
                 return null;
 
+            // Within MaxPixels, 4 bytes a pixel stays well inside an int; computed in long regardless.
             var stride = size.Width * 4;
-            var dib = new byte[HeaderSize + stride * size.Height];
+            var imageSize = (long)stride * size.Height;
+            if (HeaderSize + imageSize > Array.MaxLength)
+                return null;
+            var dib = new byte[HeaderSize + imageSize];
             BitConverter.TryWriteBytes(dib.AsSpan(0), HeaderSize);          // biSize
             BitConverter.TryWriteBytes(dib.AsSpan(4), size.Width);          // biWidth
             BitConverter.TryWriteBytes(dib.AsSpan(8), size.Height);         // biHeight (positive: bottom-up)
             BitConverter.TryWriteBytes(dib.AsSpan(12), (ushort)1);          // biPlanes
             BitConverter.TryWriteBytes(dib.AsSpan(14), (ushort)32);         // biBitCount
             BitConverter.TryWriteBytes(dib.AsSpan(16), BI_RGB);             // biCompression
-            BitConverter.TryWriteBytes(dib.AsSpan(20), stride * size.Height); // biSizeImage
+            BitConverter.TryWriteBytes(dib.AsSpan(20), (int)imageSize);     // biSizeImage
+
             BitConverter.TryWriteBytes(dib.AsSpan(24), 2835);               // biXPelsPerMeter (72 dpi)
             BitConverter.TryWriteBytes(dib.AsSpan(28), 2835);               // biYPelsPerMeter
 
