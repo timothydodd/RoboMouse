@@ -29,6 +29,12 @@ public class FileOfferMessage : Message
 
     public string OfferId { get; set; } = string.Empty;
 
+    /// <summary>Machine id where the files were copied; see <see cref="ClipboardMessage.OriginId"/>.</summary>
+    public string OriginId { get; set; } = string.Empty;
+
+    /// <summary>The origin's clipboard sequence number; see <see cref="ClipboardMessage.Sequence"/>.</summary>
+    public ulong Sequence { get; set; }
+
     public List<FileOfferEntry> Entries { get; set; } = new();
 
     public long TotalSize => Entries.Sum(e => e.Size);
@@ -37,8 +43,12 @@ public class FileOfferMessage : Message
     {
         var buffer = new List<byte>();
         MessageHelpers.WriteString(buffer, OfferId);
+        MessageHelpers.WriteString(buffer, OriginId);
 
         Span<byte> num = stackalloc byte[8];
+        BinaryPrimitives.WriteUInt64LittleEndian(num, Sequence);
+        buffer.AddRange(num.ToArray());
+
         BinaryPrimitives.WriteInt32LittleEndian(num, Entries.Count);
         buffer.AddRange(num[..4].ToArray());
 
@@ -59,8 +69,13 @@ public class FileOfferMessage : Message
     {
         var offset = 0;
         var message = new FileOfferMessage { OfferId = MessageHelpers.ReadString(payload, ref offset) };
+        message.OriginId = MessageHelpers.ReadString(payload, ref offset);
+        message.Sequence = BinaryPrimitives.ReadUInt64LittleEndian(payload.Slice(offset));
+        offset += 8;
         var count = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(offset));
         offset += 4;
+        if (count < 0)
+            throw new InvalidDataException("Negative entry count.");
 
         for (var i = 0; i < count; i++)
         {

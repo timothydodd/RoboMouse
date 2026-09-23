@@ -590,4 +590,30 @@ internal static unsafe partial class NativeMethods
     public static partial void OleUninitialize();
 
     #endregion
+
+    #region DPAPI
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DATA_BLOB
+    {
+        public uint cbData;
+        public nint pbData;
+    }
+
+    public const uint CRYPTPROTECT_UI_FORBIDDEN = 0x1;
+
+    [LibraryImport("crypt32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CryptProtectData(DATA_BLOB* pDataIn, string? szDataDescr, DATA_BLOB* pOptionalEntropy,
+        nint pvReserved, nint pPromptStruct, uint dwFlags, DATA_BLOB* pDataOut);
+
+    [LibraryImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CryptUnprotectData(DATA_BLOB* pDataIn, nint ppszDataDescr, DATA_BLOB* pOptionalEntropy,
+        nint pvReserved, nint pPromptStruct, uint dwFlags, DATA_BLOB* pDataOut);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint LocalFree(nint hMem);
+
+    #endregion
 }

@@ -47,6 +47,9 @@ public enum MessageType : byte
     /// <summary>A range of file bytes, or an error, answering a FileRequest.</summary>
     FileChunk = 0x35,
 
+    /// <summary>One piece of clipboard content too big to send in one message (protocol 5).</summary>
+    ClipboardChunk = 0x36,
+
     /// <summary>Keep-alive ping.</summary>
     Ping = 0x40,
 

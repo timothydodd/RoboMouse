@@ -115,6 +115,15 @@ public sealed class RoboMouseService : IDisposable
     // The pairing code the live connections were authenticated with.
     private string _connectedPairingCode;
 
+    // This install's identity key. Peers pin its public half when they first pair; after that the
+    // handshake proves it instead of the pairing code.
+    private readonly IdentityKey _identity;
+
+    // Clipboard changes are stamped (origin + sequence) so every machine applies the newest and none
+    // loops; big content arrives in chunks, reassembled per connection.
+    private readonly ClipboardStamps _clipboardStamps;
+    private readonly Dictionary<PeerConnection, ClipboardAssembler> _clipboardAssemblers = new();
+
     // File sharing. Offers are kept by id on both sides: what we offer (serving side) and what we hold
     // from peers (paste side). A superseded or revoked offer stays servable for a grace period after its
     // last read, so a paste that is still copying is not cut off when the clipboard moves on. Offers are
@@ -127,7 +136,6 @@ public sealed class RoboMouseService : IDisposable
     private string? _currentLocalOfferId;
     private string? _currentRemoteOfferId;
     private System.Threading.Timer? _offerSweepTimer;
-    private string? _lastClipboardHash;
 
     /// <summary>How long a retired offer stays readable after its last request.</summary>
     private static readonly TimeSpan OfferGrace = TimeSpan.FromSeconds(60);
@@ -168,6 +176,29 @@ public sealed class RoboMouseService : IDisposable
         }
         return _pairingKey;
     }
+
+    /// <summary>What every handshake needs: the pairing key, our identity, and which identities are pinned.</summary>
+    private ChannelCredentials GetCredentials() => new(GetPairingKey(), _identity, IsPinnedIdentity);
+
+    /// <summary>True when a configured peer pinned this identity key, so it may connect without the pairing code.</summary>
+    private bool IsPinnedIdentity(byte[] publicKey)
+    {
+        var text = Convert.ToBase64String(publicKey);
+        return _settings.Peers.ToList().Any(p => p.IdentityKey == text);
+    }
+
+    /// <summary>The pinned identity key of a peer (by machine id), or null when none is pinned.</summary>
+    private byte[]? PinnedKeyFor(string peerId) =>
+        IdentityKey.Decode(_settings.Peers.ToList().FirstOrDefault(p => p.Id == peerId && !string.IsNullOrEmpty(p.IdentityKey))?.IdentityKey);
+
+    /// <summary>A short fingerprint of this PC's identity key, for showing next to a peer's.</summary>
+    public string IdentityFingerprint => _identity.Fingerprint;
+
+    /// <summary>
+    /// False when the pairing code is not a generated one (typed by hand, or from before generated codes
+    /// were required). It still works, but the UI should ask for a new one: see <see cref="PairingCode.IsStrong"/>.
+    /// </summary>
+    public bool IsPairingCodeStrong => PairingCode.IsStrong(_settings.PairingCode);
 
     /// <summary>
     /// Converter between PNG and Windows DIB clipboard images, supplied by the app (the core has no
@@ -262,9 +293,14 @@ public sealed class RoboMouseService : IDisposable
     /// <summary>Raised for each forwarded motion sample while controlling (for the debug panel).</summary>
     public event EventHandler<MouseDebugEventArgs>? MouseDebugUpdate;
 
-    public RoboMouseService(AppSettings settings, IInputInjector? injector = null)
+    /// <param name="settings">The loaded settings.</param>
+    /// <param name="injector">Applies a controller's input here (default: in-process, or the desktop service).</param>
+    /// <param name="identity">This install's identity key (default: loaded from, or created in, <see cref="IdentityKey.DefaultPath"/>).</param>
+    public RoboMouseService(AppSettings settings, IInputInjector? injector = null, IdentityKey? identity = null)
     {
         _settings = settings;
+        _identity = identity ?? LoadIdentity();
+        _clipboardStamps = new ClipboardStamps(settings.MachineId);
         // Inert (plain in-process injection) until the desktop-service setting turns it on.
         _injector = injector ?? (_serviceInjector = new DesktopServiceInjector());
         _controlled = new ControlledSession(_injector);
@@ -291,7 +327,9 @@ public sealed class RoboMouseService : IDisposable
 
         _clipboardManager = new ClipboardManager(_settings.Clipboard.MaxSizeBytes)
         {
-            ShareFiles = _settings.Clipboard.SyncFiles
+            ShareFiles = _settings.Clipboard.SyncFiles,
+            ShareText = _settings.Clipboard.SyncText,
+            ShareImages = _settings.Clipboard.SyncImages
         };
         _clipboardManager.ClipboardChanged += OnClipboardChanged;
         _clipboardManager.FilesCopied += OnLocalFilesCopied;
@@ -305,6 +343,24 @@ public sealed class RoboMouseService : IDisposable
         ApplyHotkeySetting();
     }
 
+    /// <summary>
+    /// Loads the identity key, creating it on first run. If it cannot be stored (disk, DPAPI), a key for
+    /// this session only is used: paired peers then refuse this PC until it is paired again, which is
+    /// safer than connecting without one.
+    /// </summary>
+    private static IdentityKey LoadIdentity()
+    {
+        try
+        {
+            return IdentityKey.LoadOrCreate(IdentityKey.DefaultPath, new DpapiKeyProtector());
+        }
+        catch (Exception ex)
+        {
+            SimpleLogger.Log("Identity", $"Identity key could not be loaded or saved ({ex.Message}); using a temporary one");
+            return IdentityKey.Create();
+        }
+    }
+
     private PeerDiscovery CreateDiscovery()
     {
         var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
@@ -314,7 +370,11 @@ public sealed class RoboMouseService : IDisposable
             _settings.MachineId,
             _settings.MachineName,
             width,
-            height);
+            height,
+            _identity)
+        {
+            AcceptPeer = IsDiscoveredPeerGenuine
+        };
         discovery.PeerDiscovered += OnPeerDiscovered;
         discovery.PeerLost += OnPeerLost;
         return discovery;
@@ -325,7 +385,7 @@ public sealed class RoboMouseService : IDisposable
         var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
         var listener = new ConnectionListener(
             _settings.LocalPort,
-            GetPairingKey,
+            GetCredentials,
             _settings.MachineId,
             _settings.MachineName,
             width,
@@ -440,49 +500,41 @@ public sealed class RoboMouseService : IDisposable
     }
 
     /// <summary>
-    /// Call after <see cref="AppSettings.PairingCode"/> changed. Every live connection was authenticated
-    /// with the old code, so all of them (control, file transfers) are dropped; the background retry
-    /// connects again with the new one. Returns true when connections were dropped.
+    /// Call after <see cref="AppSettings.PairingCode"/> changed. Paired peers (identity key pinned) no
+    /// longer use the code, so their connections stay up: a new code only affects machines pairing from
+    /// now on. A connection to a peer with no pinned key was authenticated with the old code and is
+    /// dropped (the background retry pairs again with the new one). Returns true when any was dropped.
     /// </summary>
     public bool ApplyPairingCode()
     {
-        static string Normalize(string code) => code.Trim().ToUpperInvariant().Replace("-", string.Empty).Replace(" ", string.Empty);
-
-        if (Normalize(_settings.PairingCode) == Normalize(_connectedPairingCode))
+        if (PairingCode.AreEqual(_settings.PairingCode, _connectedPairingCode))
             return false;
         _connectedPairingCode = _settings.PairingCode;
 
-        SimpleLogger.Log("Connect", "Pairing code changed; dropping connections made with the old one");
-        DropAllConnections();
+        // Requests from unknown machines were made with the old code.
+        var unpaired = _registry.Snapshot().Where(c => PinnedKeyFor(c.PeerId) == null).ToList();
+        bool hadPending;
         lock (_connectionLock)
         {
             _reportedReconnectFailures.Clear();
+            hadPending = _pendingPeers.Count > 0;
+            _pendingPeers.Clear();
         }
-        return true;
-    }
+        if (hadPending)
+            PendingPeersChanged?.Invoke(this, EventArgs.Empty);
+        if (unpaired.Count == 0)
+        {
+            SimpleLogger.Log("Connect", "Pairing code changed; paired peers keep their connections");
+            return false;
+        }
 
-    /// <summary>Drops every control connection, transfer server and transfer client.</summary>
-    private void DropAllConnections()
-    {
-        foreach (var connection in _registry.Snapshot())
+        SimpleLogger.Log("Connect", $"Pairing code changed; dropping {unpaired.Count} connection(s) made with the old one");
+        foreach (var connection in unpaired)
         {
             try { connection.DisconnectAsync().GetAwaiter().GetResult(); } catch { }
             RemoveConnection(connection);
         }
-
-        List<PeerConnection> servers;
-        List<FileTransferClient> clients;
-        lock (_fileLock)
-        {
-            servers = _transferServers.ToList();
-            _transferServers.Clear();
-            _transferQueues.Clear();
-            clients = _remoteOffers.Values.Select(o => o.Client).ToList();
-        }
-        foreach (var server in servers)
-            server.Dispose();
-        foreach (var client in clients)
-            client.DropConnection();
+        return true;
     }
 
     private string _listenerName = string.Empty;
@@ -566,6 +618,8 @@ public sealed class RoboMouseService : IDisposable
             peerConfig.Id = connection.PeerId;
             peerConfig.ScreenWidth = connection.PeerScreenWidth;
             peerConfig.ScreenHeight = connection.PeerScreenHeight;
+            if (string.IsNullOrEmpty(peerConfig.IdentityKey))
+                peerConfig.IdentityKey = Convert.ToBase64String(connection.PeerIdentityKey);
         }
     }
 
@@ -578,17 +632,30 @@ public sealed class RoboMouseService : IDisposable
         var connection = await PeerConnection.ConnectAsync(
             peerConfig.Address,
             peerConfig.Port,
-            GetPairingKey(),
+            GetCredentials(),
             _settings.MachineId,
             _settings.MachineName,
             width,
             height,
             _settings.LocalPort,
-            ct);
+            ct,
+            expectedPeerKey: IdentityKey.Decode(peerConfig.IdentityKey));
+
+        // The address answered with the pinned key, or this is the first pairing. Either way, another
+        // entry that pinned a different key for the id it claims means it is not that machine.
+        var identityText = Convert.ToBase64String(connection.PeerIdentityKey);
+        var clash = _settings.Peers.ToList().FirstOrDefault(p => p.Id == connection.PeerId
+            && !string.IsNullOrEmpty(p.IdentityKey) && p.IdentityKey != identityText);
+        if (clash != null)
+        {
+            connection.Dispose();
+            throw new IdentityMismatchException($"The machine at {peerConfig.Address} claims to be {clash.Name} but does not have its identity key.");
+        }
 
         peerConfig.ScreenWidth = connection.PeerScreenWidth;
         peerConfig.ScreenHeight = connection.PeerScreenHeight;
         peerConfig.Id = connection.PeerId;
+        PinIdentity(peerConfig, connection);
 
         OnConfigConnected(peerConfig, configId);
         AddConnection(connection);
@@ -625,6 +692,8 @@ public sealed class RoboMouseService : IDisposable
             duplicate.Address = peerConfig.Address;
             duplicate.Port = peerConfig.Port;
             duplicate.Enabled |= peerConfig.Enabled;
+            if (string.IsNullOrEmpty(duplicate.IdentityKey))
+                duplicate.IdentityKey = peerConfig.IdentityKey;
             _settings.Peers.Remove(peerConfig);
             changed = true;
         }
@@ -734,6 +803,8 @@ public sealed class RoboMouseService : IDisposable
             existing.Port = peerConfig.Port;
             existing.Position = peerConfig.Position;
             existing.Name = peerConfig.Name;
+            if (string.IsNullOrEmpty(existing.IdentityKey))
+                existing.IdentityKey = peerConfig.IdentityKey;
         }
         _settings.BlockedMachineIds.Remove(peerConfig.Id);
 
@@ -789,6 +860,51 @@ public sealed class RoboMouseService : IDisposable
             RemoveConnection(connection);
         }
     }
+
+    /// <summary>
+    /// Pins the identity key a connection proved on a peer that has none yet: trust on first pairing,
+    /// inside a channel the pairing code authenticated. Saves when the peer is configured.
+    /// </summary>
+    private void PinIdentity(PeerConfig peer, PeerConnection connection)
+    {
+        if (!string.IsNullOrEmpty(peer.IdentityKey) || connection.PeerIdentityKey.Length == 0)
+            return;
+        peer.IdentityKey = Convert.ToBase64String(connection.PeerIdentityKey);
+        SimpleLogger.Log("Connect", $"Paired with {connection.PeerName}; identity {IdentityKey.FingerprintOf(connection.PeerIdentityKey)}");
+        if (_settings.Peers.Contains(peer))
+            SaveSettings("peer identity");
+    }
+
+    /// <summary>
+    /// Forgets the identity key pinned for a peer (by machine id), so the next connection pairs with the
+    /// pairing code again and pins whatever key the machine then proves. Use it after the other machine
+    /// was reinstalled (<see cref="PeerFailureKind.IdentityMismatch"/>). Drops the live connection, if
+    /// any, and saves. Returns false when there is no such peer.
+    /// </summary>
+    public async Task<bool> ForgetPeerIdentityAsync(string peerId)
+    {
+        var peer = _settings.Peers.ToList().FirstOrDefault(p => p.Id == peerId);
+        if (peer == null)
+            return false;
+
+        peer.IdentityKey = string.Empty;
+        SaveSettings("forgot peer identity");
+        SimpleLogger.Log("Connect", $"Forgot the identity key of {peer.Name}; it pairs again with the pairing code");
+
+        try { await DisconnectFromPeerAsync(peerId); }
+        catch (Exception ex) { SimpleLogger.Log("Connect", $"Disconnecting {peer.Name} failed: {ex.Message}"); }
+
+        lock (_connectionLock)
+        {
+            _reportedReconnectFailures.Remove(peerId);
+        }
+        SetConnectFailure(peerId, null);
+        PeersChanged?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    /// <summary>Synchronous form of <see cref="ForgetPeerIdentityAsync"/>.</summary>
+    public bool ForgetPeerIdentity(string peerId) => ForgetPeerIdentityAsync(peerId).GetAwaiter().GetResult();
 
     /// <summary>
     /// Removes a configured peer: drops its connection, deletes its settings entry and blocks its
@@ -859,6 +975,10 @@ public sealed class RoboMouseService : IDisposable
             return;
 
         connection.Dispose();
+        lock (_clipboardAssemblers)
+        {
+            _clipboardAssemblers.Remove(connection);
+        }
 
         if (wasActive)
         {
@@ -886,18 +1006,22 @@ public sealed class RoboMouseService : IDisposable
     /// The listener's accept policy: runs after the pairing code was verified, before the handshake is
     /// acknowledged. Unknown machines become pending requests.
     /// </summary>
-    private string? DecideIncoming(HandshakeMessage handshake, IPEndPoint? remote)
+    private string? DecideIncoming(IncomingPeer incoming)
     {
+        var handshake = incoming.Handshake;
         bool ignored;
         lock (_connectionLock)
         {
             ignored = _ignoredPeers.Contains(handshake.MachineId);
         }
 
-        var decision = AcceptPolicy.Decide(_settings, handshake.MachineId, handshake.Kind, remote?.Address,
-            handshake.ListenPort, ignored, out _);
+        var identity = Convert.ToBase64String(incoming.IdentityKey);
+        var decision = AcceptPolicy.Decide(_settings, handshake.MachineId, handshake.Kind, incoming.Remote?.Address,
+            handshake.ListenPort, ignored, out _, identity, incoming.PairedWithCode);
         if (decision == AcceptDecision.Pending)
-            RegisterPending(handshake, remote);
+            RegisterPending(handshake, incoming.Remote, identity);
+        else if (decision == AcceptDecision.RejectIdentityMismatch)
+            SimpleLogger.Log("Accept", $"{handshake.MachineName} ({incoming.Remote?.Address}) has a different identity key from the one pinned for it; refused");
 
         return AcceptPolicy.RejectReason(decision, handshake.Kind, _settings.MachineName);
     }
@@ -938,7 +1062,8 @@ public sealed class RoboMouseService : IDisposable
         // Settings can change between the accept decision and now; check again, and learn the id of a
         // peer that was configured by address and is connecting for the first time.
         var decision = AcceptPolicy.Decide(_settings, connection.PeerId, connection.Kind, connection.RemoteEndPoint?.Address,
-            connection.PeerListenPort, ignoredThisSession: false, out var config);
+            connection.PeerListenPort, ignoredThisSession: false, out var config,
+            Convert.ToBase64String(connection.PeerIdentityKey), connection.PairedWithCode);
         if (decision != AcceptDecision.Accept || config == null)
         {
             SimpleLogger.Log("Accept", $"Refusing connection from {connection.PeerName} ({decision})");
@@ -947,6 +1072,9 @@ public sealed class RoboMouseService : IDisposable
             _ = connection.DisconnectAsync();
             return;
         }
+
+        // Pin before a first-time id could merge this entry into another one (which then takes the key).
+        PinIdentity(config, connection);
 
         if (config.Id != connection.PeerId)
         {
@@ -976,7 +1104,7 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
-    private void RegisterPending(HandshakeMessage handshake, IPEndPoint? remote)
+    private void RegisterPending(HandshakeMessage handshake, IPEndPoint? remote, string identityKey)
     {
         var pending = new PendingPeer(
             handshake.MachineId,
@@ -986,7 +1114,10 @@ public sealed class RoboMouseService : IDisposable
             handshake.ScreenWidth,
             handshake.ScreenHeight,
             WakeOnLan.Normalize(handshake.MacAddress),
-            DateTime.Now);
+            DateTime.Now)
+        {
+            IdentityKey = identityKey
+        };
 
         bool isNew;
         lock (_connectionLock)
@@ -1033,13 +1164,16 @@ public sealed class RoboMouseService : IDisposable
                 Position = position ?? FirstFreeEdge(),
                 ScreenWidth = pending.ScreenWidth,
                 ScreenHeight = pending.ScreenHeight,
-                MacAddress = pending.MacAddress
+                MacAddress = pending.MacAddress,
+                IdentityKey = pending.IdentityKey
             };
             _settings.Peers.Add(config);
         }
         else
         {
             config.Enabled = true;
+            if (string.IsNullOrEmpty(config.IdentityKey))
+                config.IdentityKey = pending.IdentityKey;
         }
         _settings.BlockedMachineIds.Remove(machineId);
         SaveSettings("allowed peer");
@@ -1156,7 +1290,7 @@ public sealed class RoboMouseService : IDisposable
         var existing = GetConnection(peer.Id);
         return existing != null
             ? MeasureExistingAsync(existing, ct)
-            : TestConnectionAsync(peer.Address, peer.Port, ct);
+            : ProbeAsync(peer.Address, peer.Port, IdentityKey.Decode(peer.IdentityKey), ct);
     }
 
     /// <summary>
@@ -1164,7 +1298,10 @@ public sealed class RoboMouseService : IDisposable
     /// The remote does not register us as a peer for this (an unknown machine shows there as a request
     /// to connect).
     /// </summary>
-    public async Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct = default)
+    public Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct = default)
+        => ProbeAsync(address, port, null, ct);
+
+    private async Task<ConnectionTestResult> ProbeAsync(string address, int port, byte[]? expectedPeerKey, CancellationToken ct)
     {
         var result = new ConnectionTestResult { Address = address, Port = port };
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -1174,8 +1311,8 @@ public sealed class RoboMouseService : IDisposable
         {
             var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
             probe = await PeerConnection.ConnectAsync(
-                address, port, GetPairingKey(), _settings.MachineId, _settings.MachineName, width, height,
-                _settings.LocalPort, ct, ConnectionKind.Probe);
+                address, port, GetCredentials(), _settings.MachineId, _settings.MachineName, width, height,
+                _settings.LocalPort, ct, ConnectionKind.Probe, expectedPeerKey);
             probe.Start();
 
             result.ConnectMs = (int)sw.ElapsedMilliseconds;
@@ -1245,6 +1382,16 @@ public sealed class RoboMouseService : IDisposable
             total += await connection.MeasureRoundTripAsync(ct);
         }
         return total / samples;
+    }
+
+    /// <summary>
+    /// A signed broadcast using the id of a peer whose key is pinned must be signed with that key;
+    /// otherwise it is someone else claiming to be that peer, and is not listed.
+    /// </summary>
+    private bool IsDiscoveredPeerGenuine(DiscoveredPeer peer)
+    {
+        var pinned = _settings.Peers.ToList().FirstOrDefault(p => p.Id == peer.MachineId && !string.IsNullOrEmpty(p.IdentityKey));
+        return pinned == null || pinned.IdentityKey == peer.IdentityKey;
     }
 
     private void OnPeerDiscovered(object? sender, DiscoveredPeer peer)
@@ -1916,6 +2063,10 @@ public sealed class RoboMouseService : IDisposable
                     HandleRemoteClipboard(clipMsg, connection);
                     break;
 
+                case ClipboardChunkMessage chunk:
+                    HandleRemoteClipboardChunk(chunk, connection);
+                    break;
+
                 case FileOfferMessage offer:
                     HandleRemoteFileOffer(offer, connection);
                     break;
@@ -2142,52 +2293,78 @@ public sealed class RoboMouseService : IDisposable
 
     #region Clipboard
 
-    /// <summary>Starts or stops clipboard monitoring to match the current setting.</summary>
-    public void ApplyClipboardSetting()
+    /// <summary>
+    /// Applies the clipboard settings while running: sharing on or off, the text / image / file
+    /// switches, and the size limit (for what is sent and what is accepted). Call after saving them.
+    /// </summary>
+    public void ApplyClipboardSettings()
     {
-        _clipboardManager.ShareFiles = _settings.Clipboard.SyncFiles;
-        if (_settings.Clipboard.Enabled)
+        var clipboard = _settings.Clipboard;
+        _clipboardManager.ShareFiles = clipboard.SyncFiles;
+        _clipboardManager.ShareText = clipboard.SyncText;
+        _clipboardManager.ShareImages = clipboard.SyncImages;
+        _clipboardManager.MaxDataSize = clipboard.MaxSizeBytes;
+        if (clipboard.Enabled)
             _clipboardManager.Start();
         else
             _clipboardManager.Stop();
 
-        if (!_settings.Clipboard.SyncFiles)
+        if (!clipboard.Enabled || !clipboard.SyncFiles)
         {
             OnLocalFilesCleared(this, EventArgs.Empty);
             _clipboardManager.ClearVirtualFiles(null);
         }
     }
 
+    /// <summary>Same as <see cref="ApplyClipboardSettings"/>.</summary>
+    public void ApplyClipboardSetting() => ApplyClipboardSettings();
+
     private void OnClipboardChanged(object? sender, ClipboardMessage message)
     {
-        if (!_enabled || !_settings.Clipboard.Enabled)
+        if (!_enabled || !_settings.Clipboard.Allows(message.ContentType, message.Data.Length))
             return;
 
-        _lastClipboardHash = HashOf(message);
-        PostToPeers(message, except: null);
+        message.OriginId = _settings.MachineId;
+        message.Sequence = _clipboardStamps.StampLocal();
+        PostClipboardToPeers(message, except: null);
+    }
+
+    private void HandleRemoteClipboardChunk(ClipboardChunkMessage chunk, PeerConnection from)
+    {
+        ClipboardAssembler? assembler;
+        lock (_clipboardAssemblers)
+        {
+            if (!_clipboardAssemblers.TryGetValue(from, out assembler))
+                _clipboardAssemblers[from] = assembler = new ClipboardAssembler();
+        }
+
+        // Only the connection's receive thread gets here, so the assembler itself needs no lock.
+        var limit = _settings.Clipboard.Allows(chunk.ContentType, chunk.TotalLength) ? _settings.Clipboard.MaxSizeBytes : 0;
+        var message = assembler.Add(chunk, limit);
+        if (message != null)
+            HandleRemoteClipboard(message, from);
     }
 
     private void HandleRemoteClipboard(ClipboardMessage msg, PeerConnection from)
     {
-        if (!_settings.Clipboard.Enabled)
+        if (!_settings.Clipboard.Allows(msg.ContentType, msg.Data.Length))
             return;
 
-        // Peers only connect to their neighbours, so pass it on to ours. The hash stops the same content
-        // going round a ring for ever.
-        var hash = HashOf(msg);
-        if (hash == _lastClipboardHash)
+        // Only the newest change is applied and passed on, so the same content never goes round a ring
+        // and every machine settles on the same one (see ClipboardStamps). Peers only connect to their
+        // neighbours, so pass it on to ours.
+        if (!_clipboardStamps.TryAccept(msg.OriginId, msg.Sequence))
             return;
-        _lastClipboardHash = hash;
 
         _clipboardManager.SetClipboard(msg);
-        PostToPeers(msg, except: from);
+        PostClipboardToPeers(msg, except: from);
     }
 
-    private static string HashOf(ClipboardMessage message)
+    /// <summary>Posts clipboard content to every peer except one, in chunks when it is big.</summary>
+    private void PostClipboardToPeers(ClipboardMessage message, PeerConnection? except)
     {
-        Span<byte> hash = stackalloc byte[32];
-        System.Security.Cryptography.SHA256.HashData(message.Data, hash);
-        return $"{(int)message.ContentType}:{Convert.ToHexString(hash)}";
+        foreach (var part in ClipboardChunkMessage.Split(message))
+            PostToPeers(part, except);
     }
 
     /// <summary>Posts a message to every connected peer except the one it came from.</summary>
@@ -2220,9 +2397,13 @@ public sealed class RoboMouseService : IDisposable
 
         SimpleLogger.Log("Files", $"Offering {offer.Entries.Count} item(s), {offer.TotalSize / 1024.0 / 1024.0:0.#} MB");
 
+        var message = offer.ToMessage();
+        message.OriginId = _settings.MachineId;
+        message.Sequence = _clipboardStamps.StampLocal();
+
         if (previous != null)
             PostToPeers(new FileOfferRevokedMessage { OfferId = previous }, except: null);
-        PostToPeers(offer.ToMessage(), except: null);
+        PostToPeers(message, except: null);
     }
 
     private void OnLocalFilesCleared(object? sender, EventArgs e)
@@ -2346,6 +2527,10 @@ public sealed class RoboMouseService : IDisposable
             return;
         }
 
+        // Newest clipboard change wins; an older offer or one that came round a ring is dropped.
+        if (!_clipboardStamps.TryAccept(offer.OriginId, offer.Sequence))
+            return;
+
         var address = connection.RemoteEndPoint?.Address;
         var port = connection.PeerListenPort;
         if (address == null || port <= 0)
@@ -2362,12 +2547,13 @@ public sealed class RoboMouseService : IDisposable
                 return;
 
             var peerName = connection.PeerName;
+            var peerKey = connection.PeerIdentityKey;
             client = new FileTransferClient(peerName, async ct =>
             {
                 var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
                 return await PeerConnection.ConnectAsync(
-                    address.ToString(), port, GetPairingKey(), _settings.MachineId, _settings.MachineName,
-                    width, height, _settings.LocalPort, ct, ConnectionKind.Transfer);
+                    address.ToString(), port, GetCredentials(), _settings.MachineId, _settings.MachineName,
+                    width, height, _settings.LocalPort, ct, ConnectionKind.Transfer, peerKey);
             });
 
             RetireRemoteOfferLocked(_currentRemoteOfferId);

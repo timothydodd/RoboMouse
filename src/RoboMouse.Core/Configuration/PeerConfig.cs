@@ -64,6 +64,13 @@ public class PeerConfig
     public string MacAddress { get; set; } = string.Empty;
 
     /// <summary>
+    /// The peer's identity public key (base64 SubjectPublicKeyInfo), pinned the first time it paired
+    /// with this machine. Later connections must prove this key, and need no pairing code. Empty until
+    /// then, or after the user chose to pair again (<see cref="RoboMouseService.ForgetPeerIdentity"/>).
+    /// </summary>
+    public string IdentityKey { get; set; } = string.Empty;
+
+    /// <summary>
     /// Unique identifier for this peer (generated or received).
     /// </summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");

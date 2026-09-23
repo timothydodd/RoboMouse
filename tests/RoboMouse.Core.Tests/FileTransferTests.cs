@@ -8,7 +8,7 @@ namespace RoboMouse.Core.Tests;
 
 public class FileTransferTests
 {
-    private static readonly byte[] Key = SecureChannel.DerivePairingKey("K7QM-4XDP-9RLA");
+    private static readonly ChannelCredentials Key = ChannelCredentials.Ephemeral(SecureChannel.DerivePairingKey("K7QM-4XDP-9RLA"));
 
     [Fact]
     public async Task Fetch_IgnoresAChunkThatAnswersAnotherRequest()

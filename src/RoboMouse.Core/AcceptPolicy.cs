@@ -27,7 +27,10 @@ public enum AcceptDecision
     RejectNotPeer,
 
     /// <summary>Our own machine id: this PC connecting to itself.</summary>
-    RejectSelf
+    RejectSelf,
+
+    /// <summary>A configured peer whose pinned identity key is not the one this connection proved.</summary>
+    RejectIdentityMismatch
 }
 
 /// <summary>
@@ -37,9 +40,13 @@ public enum AcceptDecision
 public static class AcceptPolicy
 {
     /// <summary>
-    /// Decides for a connection from <paramref name="machineId"/>. A configured peer whose id has not
-    /// been learned yet (added by address, never connected) is recognised by its address and listen
-    /// port and returned in <paramref name="matched"/>, so the caller can record its id.
+    /// Decides for a connection from <paramref name="machineId"/> that proved
+    /// <paramref name="identityKey"/> (base64). A configured peer whose id has not been learned yet
+    /// (added by address, never connected) is recognised by its address and listen port and returned
+    /// in <paramref name="matched"/>, so the caller can record its id. A configured peer with a pinned
+    /// identity key only matches a connection proving that key: knowing the pairing code is not enough
+    /// to take over its slot. A connection that skipped the pairing code (<paramref name="pairedWithCode"/>
+    /// false, its key was pinned here) must be the peer that pinned it; it never becomes a pending request.
     /// </summary>
     public static AcceptDecision Decide(
         AppSettings settings,
@@ -48,7 +55,9 @@ public static class AcceptPolicy
         IPAddress? address,
         int listenPort,
         bool ignoredThisSession,
-        out PeerConfig? matched)
+        out PeerConfig? matched,
+        string? identityKey = null,
+        bool pairedWithCode = true)
     {
         matched = null;
         if (machineId == settings.MachineId)
@@ -58,7 +67,17 @@ public static class AcceptPolicy
         matched = peers.FirstOrDefault(p => p.Id == machineId)
                   ?? peers.FirstOrDefault(p => MatchesAddress(p, address, listenPort));
         if (matched != null)
+        {
+            var mismatch = string.IsNullOrEmpty(matched.IdentityKey)
+                ? !pairedWithCode // pinned by another entry, claiming this one
+                : identityKey != null && matched.IdentityKey != identityKey;
+            if (mismatch)
+                return AcceptDecision.RejectIdentityMismatch;
             return matched.Enabled ? AcceptDecision.Accept : AcceptDecision.RejectDisabled;
+        }
+
+        if (!pairedWithCode)
+            return AcceptDecision.RejectIdentityMismatch;
 
         if (settings.BlockedMachineIds.Contains(machineId))
             return AcceptDecision.RejectBlocked;
@@ -91,6 +110,8 @@ public static class AcceptPolicy
         AcceptDecision.RejectIgnored => RejectReasons.Format(RejectCode.Blocked, $"{localName} ignored the request from this PC."),
         AcceptDecision.RejectNotPeer => RejectReasons.Format(RejectCode.NotAPeer, $"This PC is not a peer of {localName}."),
         AcceptDecision.RejectSelf => RejectReasons.Format(RejectCode.SameMachine, "That address is this PC."),
+        AcceptDecision.RejectIdentityMismatch => RejectReasons.Format(RejectCode.IdentityMismatch,
+            $"{localName} has a different identity key on record for this PC (was RoboMouse reinstalled here?). On {localName}, choose to pair with this PC again."),
         _ => RejectReasons.Format(RejectCode.Other, "Refused.")
     };
 }

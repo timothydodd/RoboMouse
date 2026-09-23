@@ -8,7 +8,9 @@ using System.Text;
 namespace RoboMouse.Core.Network;
 
 /// <summary>
-/// Handles UDP broadcast-based peer discovery on the local network.
+/// Handles UDP broadcast-based peer discovery on the local network. Broadcasts carry the sender's
+/// identity public key and are signed with it, so a broadcast cannot be forged in the name of a machine
+/// whose key is known (a paired peer), and malformed or unsigned ones (older versions) are ignored.
 /// </summary>
 public sealed class PeerDiscovery : IDisposable
 {
@@ -18,6 +20,7 @@ public sealed class PeerDiscovery : IDisposable
     private readonly string _machineName;
     private readonly int _screenWidth;
     private readonly int _screenHeight;
+    private readonly IdentityKey _identity;
 
     private UdpClient? _listener;
     private CancellationTokenSource? _cts;
@@ -29,7 +32,7 @@ public sealed class PeerDiscovery : IDisposable
     private readonly TimeSpan _broadcastInterval = TimeSpan.FromSeconds(5);
 
     private static readonly byte[] DiscoveryMagic = "MSDISC"u8.ToArray();
-    private const byte DiscoveryVersion = 1;
+    private const byte DiscoveryVersion = 2;
 
     /// <summary>Most machines kept in the discovered list; the longest unseen is dropped for a new one.</summary>
     public const int MaxPeers = 64;
@@ -45,6 +48,12 @@ public sealed class PeerDiscovery : IDisposable
     public event EventHandler<DiscoveredPeer>? PeerLost;
 
     /// <summary>
+    /// Optional check on a correctly signed broadcast before it is listed; false drops it (a broadcast
+    /// using a paired peer's id with a different key, say).
+    /// </summary>
+    public Func<DiscoveredPeer, bool>? AcceptPeer { get; set; }
+
+    /// <summary>
     /// Gets the currently discovered peers.
     /// </summary>
     public IReadOnlyCollection<DiscoveredPeer> Peers => _discoveredPeers.Values.ToList();
@@ -55,7 +64,8 @@ public sealed class PeerDiscovery : IDisposable
         string machineId,
         string machineName,
         int screenWidth,
-        int screenHeight)
+        int screenHeight,
+        IdentityKey identity)
     {
         _discoveryPort = discoveryPort;
         _listenPort = listenPort;
@@ -63,6 +73,7 @@ public sealed class PeerDiscovery : IDisposable
         _machineName = machineName;
         _screenWidth = screenWidth;
         _screenHeight = screenHeight;
+        _identity = identity;
     }
 
     /// <summary>
@@ -217,6 +228,17 @@ public sealed class PeerDiscovery : IDisposable
         BinaryPrimitives.WriteInt32LittleEndian(dimBytes, _screenHeight);
         buffer.AddRange(dimBytes);
 
+        // Identity key, then a signature over everything before it.
+        var shortBytes = new byte[2];
+        BinaryPrimitives.WriteUInt16LittleEndian(shortBytes, (ushort)_identity.PublicKey.Length);
+        buffer.AddRange(shortBytes);
+        buffer.AddRange(_identity.PublicKey);
+
+        var signature = _identity.Sign(buffer.ToArray());
+        BinaryPrimitives.WriteUInt16LittleEndian(shortBytes, (ushort)signature.Length);
+        buffer.AddRange(shortBytes);
+        buffer.AddRange(signature);
+
         return buffer.ToArray();
     }
 
@@ -264,6 +286,18 @@ public sealed class PeerDiscovery : IDisposable
             var screenWidth = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(offset));
             offset += 4;
             var screenHeight = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(offset));
+            offset += 4;
+
+            var keyLength = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset));
+            offset += 2;
+            var identityKey = data.AsSpan(offset, keyLength).ToArray();
+            offset += keyLength;
+            var signed = offset;
+            var signatureLength = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset));
+            offset += 2;
+            if (offset + signatureLength != data.Length
+                || !IdentityKey.Verify(identityKey, data.AsSpan(0, signed), data.AsSpan(offset, signatureLength)))
+                return;
 
             var peer = new DiscoveredPeer
             {
@@ -273,8 +307,12 @@ public sealed class PeerDiscovery : IDisposable
                 Port = port,
                 ScreenWidth = screenWidth,
                 ScreenHeight = screenHeight,
+                IdentityKey = Convert.ToBase64String(identityKey),
                 LastSeen = DateTime.UtcNow
             };
+
+            if (AcceptPeer != null && !AcceptPeer(peer))
+                return;
 
             var isNew = !_discoveredPeers.ContainsKey(machineId);
             if (isNew && _discoveredPeers.Count >= MaxPeers)

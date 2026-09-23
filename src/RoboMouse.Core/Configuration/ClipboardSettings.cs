@@ -1,3 +1,5 @@
+using RoboMouse.Core.Network.Protocol;
+
 namespace RoboMouse.Core.Configuration;
 
 /// <summary>
@@ -31,4 +33,18 @@ public class ClipboardSettings
     /// time; bytes stream from the source machine when the paste happens.
     /// </summary>
     public bool SyncFiles { get; set; } = true;
+
+    /// <summary>
+    /// Whether content of this type and size may be shared, in either direction: sharing is on, the
+    /// type's switch is on (text covers HTML and RTF), and it is no bigger than <see cref="MaxSizeBytes"/>.
+    /// File offers only carry names, so their size is not limited here.
+    /// </summary>
+    public bool Allows(ClipboardContentType type, long length) =>
+        Enabled && type switch
+        {
+            ClipboardContentType.Text or ClipboardContentType.Html or ClipboardContentType.Rtf => SyncText && length <= MaxSizeBytes,
+            ClipboardContentType.Image => SyncImages && length <= MaxSizeBytes,
+            ClipboardContentType.Files => SyncFiles,
+            _ => false
+        };
 }

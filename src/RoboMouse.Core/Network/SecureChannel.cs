@@ -1,25 +1,86 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using RoboMouse.Core.Network.Protocol;
 
 namespace RoboMouse.Core.Network;
 
 /// <summary>
+/// What this machine brings to a secure handshake: the key derived from the pairing code, its own
+/// identity key, and (listening side) a way to tell whether a connecting machine's identity key is
+/// pinned by one of its peers.
+/// </summary>
+public sealed class ChannelCredentials
+{
+    public ChannelCredentials(byte[] pairingKey, IdentityKey identity, Func<byte[], bool>? isPinned = null)
+    {
+        PairingKey = pairingKey;
+        Identity = identity;
+        IsPinned = isPinned;
+    }
+
+    /// <summary>Derived from the pairing code by <see cref="SecureChannel.DerivePairingKey"/>.</summary>
+    public byte[] PairingKey { get; }
+
+    /// <summary>This install's identity.</summary>
+    public IdentityKey Identity { get; }
+
+    /// <summary>
+    /// Listening side: true when the given identity public key is pinned by a configured peer, so that
+    /// machine can connect without the pairing code. Null: every connection pairs with the code.
+    /// </summary>
+    public Func<byte[], bool>? IsPinned { get; }
+
+    /// <summary>Credentials with a throwaway identity, for one-off connections and tests.</summary>
+    public static ChannelCredentials Ephemeral(byte[] pairingKey) => new(pairingKey, IdentityKey.Create());
+}
+
+/// <summary>
 /// Authenticated, encrypted stream over a raw socket stream.
 ///
-/// Both machines share a pairing code. On connect they run an ECDH (P-256) key exchange whose
-/// public values are authenticated with HMACs keyed from the pairing code, so a machine that does
-/// not know the code cannot complete the handshake and cannot sit in the middle. Traffic is then
-/// AES-256-GCM, one frame per Write (split at 1 MB), with separate keys and nonce counters per direction.
+/// Every install has a long-lived identity key (<see cref="IdentityKey"/>). On connect the two machines
+/// run an ECDH (P-256) key exchange and each signs the handshake transcript with its identity key, so
+/// each learns the other's identity public key and knows the other holds it. Then one of two modes:
+/// <list type="bullet">
+/// <item><b>Pinned</b>: both already pinned each other's identity key (the connecting side asks for it,
+/// the listening side agrees when it finds the key pinned). The signatures are the whole
+/// authentication; the pairing code plays no part, so changing it does not disturb paired machines.</item>
+/// <item><b>Pairing</b>: anything else. Both also prove they know the pairing code (HMACs keyed from it,
+/// the connecting side first), and the code is mixed into the session keys. The caller then pins the
+/// identity key it learned, trust-on-first-pair inside a channel the code authenticated.</item>
+/// </list>
+/// The connecting side names the identity it expects when it has one pinned and refuses any other
+/// (<see cref="IdentityMismatchException"/>). The listening side reports the connecting machine's key in
+/// <see cref="PeerIdentityKey"/>; matching it against the machine id the peer then claims is the caller's job.
 ///
-/// Wire format after the handshake: [4-byte length][8-byte counter][ciphertext][16-byte tag].
+/// No PAKE: someone who records a pairing-mode handshake can test pairing-code guesses offline, which is
+/// why only generated codes (60 random bits, see <see cref="PairingCode"/>) are strong enough. The
+/// PBKDF2 salt includes the protocol version, so work done against an older version does not carry over.
+///
+/// Traffic is AES-256-GCM, one frame per Write (split at 1 MB), with separate keys and nonce counters
+/// per direction. Wire format after the handshake: [4-byte length][8-byte counter][ciphertext][16-byte tag].
 /// </summary>
 public sealed class SecureChannel : Stream
 {
-    private const byte HandshakeVersion = 1;
+    /// <summary>Handshake format version: 1 up to protocol 4, 2 since protocol 5.</summary>
+    internal const byte HandshakeVersion = 2;
+
     private const int NonceBytes = 32;
     private const int TagBytes = 16;
+    private const int ProofBytes = 32;
     private const int MaxFrameBytes = 64 * 1024 * 1024;
+    private const int MaxKeyBytes = 256;
+    private const int MaxSignatureBytes = 256;
+
+    private const byte FlagWantsPinned = 0x01;
+    private const byte ModePairing = 0;
+    private const byte ModePinned = 1;
+
+    private const byte StatusOk = 0;
+    private const byte StatusCodeMismatch = 1;
+    private const byte StatusBadIdentity = 2;
+
+    internal const string UpdateBothMachines = "Update RoboMouse on both machines to the same version.";
 
     /// <summary>Largest plaintext sent in one frame; bigger writes are split.</summary>
     internal const int MaxWriteBytes = 1024 * 1024;
@@ -35,22 +96,30 @@ public sealed class SecureChannel : Stream
     private int _plainStart;
     private int _plainEnd;
 
-    private SecureChannel(Stream inner, byte[] sendKey, byte[] receiveKey)
+    private SecureChannel(Stream inner, byte[] sendKey, byte[] receiveKey, byte[] peerIdentityKey, bool pairedWithCode)
     {
         _inner = inner;
         _send = new AesGcm(sendKey, TagBytes);
         _receive = new AesGcm(receiveKey, TagBytes);
+        PeerIdentityKey = peerIdentityKey;
+        PairedWithCode = pairedWithCode;
     }
 
+    /// <summary>The other machine's identity public key (SubjectPublicKeyInfo DER); it proved it holds the private key.</summary>
+    public byte[] PeerIdentityKey { get; }
+
+    /// <summary>True when the handshake used the pairing code (pairing mode); false when both identities were pinned.</summary>
+    public bool PairedWithCode { get; }
+
     /// <summary>
-    /// Derives the long-lived pairing key from the human-entered pairing code.
+    /// Derives the pairing key from the human-entered pairing code. Deliberately slow (PBKDF2, 120 000
+    /// rounds); the salt names the protocol version.
     /// </summary>
     public static byte[] DerivePairingKey(string pairingCode)
     {
-        var normalized = pairingCode.Trim().ToUpperInvariant().Replace("-", string.Empty).Replace(" ", string.Empty);
         return Rfc2898DeriveBytes.Pbkdf2(
-            Encoding.UTF8.GetBytes(normalized),
-            Encoding.UTF8.GetBytes("RoboMouse pairing v1"),
+            Encoding.UTF8.GetBytes(PairingCode.Normalize(pairingCode)),
+            Encoding.UTF8.GetBytes($"RoboMouse pairing, protocol {Message.ProtocolVersion}"),
             120_000,
             HashAlgorithmName.SHA256,
             32);
@@ -59,113 +128,262 @@ public sealed class SecureChannel : Stream
     /// <summary>
     /// Generates a fresh, readable pairing code such as "K7QM-4XDP-9RLA".
     /// </summary>
-    public static string GeneratePairingCode()
-    {
-        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No 0/O or 1/I
-        var chars = new char[12];
-        var bytes = RandomNumberGenerator.GetBytes(chars.Length);
-        for (var i = 0; i < chars.Length; i++)
-            chars[i] = alphabet[bytes[i] % alphabet.Length];
-        return $"{new string(chars, 0, 4)}-{new string(chars, 4, 4)}-{new string(chars, 8, 4)}";
-    }
+    public static string GeneratePairingCode() => PairingCode.Generate();
 
-    /// <summary>Runs the client side of the handshake.</summary>
+    /// <summary>
+    /// Runs the connecting side of the handshake. With <paramref name="expectedPeerKey"/> set (the
+    /// peer's pinned identity), asks for pinned mode and refuses any other identity.
+    /// </summary>
+    public static Task<SecureChannel> ConnectAsync(Stream inner, ChannelCredentials credentials, byte[]? expectedPeerKey, CancellationToken ct)
+        => ClientHandshakeAsync(inner, credentials, expectedPeerKey, ct);
+
+    /// <summary>Runs the listening side of the handshake.</summary>
+    public static Task<SecureChannel> AcceptAsync(Stream inner, ChannelCredentials credentials, CancellationToken ct)
+        => ServerHandshakeAsync(inner, credentials, ct);
+
+    /// <summary>Connecting side with a throwaway identity, pairing with the code.</summary>
     public static Task<SecureChannel> ConnectAsync(Stream inner, byte[] pairingKey, CancellationToken ct)
-        => HandshakeAsync(inner, pairingKey, isClient: true, ct);
+        => ConnectAsync(inner, ChannelCredentials.Ephemeral(pairingKey), null, ct);
 
-    /// <summary>Runs the server side of the handshake.</summary>
+    /// <summary>Listening side with a throwaway identity, pairing with the code.</summary>
     public static Task<SecureChannel> AcceptAsync(Stream inner, byte[] pairingKey, CancellationToken ct)
-        => HandshakeAsync(inner, pairingKey, isClient: false, ct);
+        => AcceptAsync(inner, ChannelCredentials.Ephemeral(pairingKey), ct);
 
-    private static async Task<SecureChannel> HandshakeAsync(Stream inner, byte[] pairingKey, bool isClient, CancellationToken ct)
+    #region Handshake
+
+    // Client hello:  [version][flags][nonce][u16 len][ephemeral key][u16 len][identity key]
+    // Server hello:  [version][mode][nonce][u16 len][ephemeral key][u16 len][identity key] + [u16 len][signature]
+    // Client finish: [u16 len][signature] + ([pairing proof] in pairing mode)
+    // Server finish: [status] + ([pairing proof] in pairing mode when the status is OK)
+    //
+    // Both signatures and both proofs cover the transcript hash of the two hellos (without signatures),
+    // which the session keys are also salted with. The connecting side proves the pairing code first,
+    // so a machine that only listens gives nothing away to a prober.
+
+    private static async Task<SecureChannel> ClientHandshakeAsync(Stream inner, ChannelCredentials credentials, byte[]? expectedPeerKey, CancellationToken ct)
     {
         using var ecdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
-        var myPublic = ecdh.PublicKey.ExportSubjectPublicKeyInfo();
-        var myNonce = RandomNumberGenerator.GetBytes(NonceBytes);
+        var ephemeral = ecdh.PublicKey.ExportSubjectPublicKeyInfo();
+        var nonce = RandomNumberGenerator.GetBytes(NonceBytes);
+        var identity = credentials.Identity;
 
-        // Hello: version, nonce, public key. Client sends first; server replies with its own plus proof.
-        byte[] theirNonce, theirPublic;
-        if (isClient)
+        var clientHello = BuildHello(expectedPeerKey != null ? FlagWantsPinned : (byte)0, nonce, ephemeral, identity.PublicKey);
+        await WriteBlobAsync(inner, clientHello, ct);
+
+        byte[] serverBlob;
+        try
         {
-            await WriteBlobAsync(inner, BuildHello(myNonce, myPublic), ct);
-            var serverHello = await ReadBlobAsync(inner, ct);
-            (theirNonce, theirPublic, var serverProof) = ParseHello(serverHello, expectProof: true);
+            serverBlob = await ReadBlobAsync(inner, ct);
+        }
+        catch (IOException) when (!ct.IsCancellationRequested)
+        {
+            // A protocol 4 build cannot read our hello and hangs up without a word.
+            throw new IncompatibleVersionException(
+                "The other machine closed the connection during the secure handshake; it is probably running an older RoboMouse. " + UpdateBothMachines);
+        }
 
-            var expected = Proof(pairingKey, "server", myNonce, theirNonce, myPublic, theirPublic);
-            if (!CryptographicOperations.FixedTimeEquals(expected, serverProof))
+        CheckVersion(serverBlob);
+        var serverHello = ParseHello(serverBlob, withSignature: true);
+        if (serverHello.Flags is not (ModePairing or ModePinned) || (serverHello.Flags == ModePinned && expectedPeerKey == null))
+            throw new PairingException("Malformed handshake from the other machine.");
+        var pairing = serverHello.Flags == ModePairing;
+
+        if (expectedPeerKey != null && !CryptographicOperations.FixedTimeEquals(expectedPeerKey, serverHello.IdentityKey))
+            throw new IdentityMismatchException("The other machine's identity key is not the one this PC paired with. It may have been reinstalled, or another machine is using its address.");
+
+        var transcript = Transcript(clientHello, serverBlob.AsSpan(0, serverHello.CoreLength));
+        if (!IdentityKey.Verify(serverHello.IdentityKey, Signed("server", transcript), serverHello.Signature))
+            throw new PairingException("The other machine did not prove its identity.");
+
+        var signature = identity.Sign(Signed("client", transcript));
+        var finish = new List<byte>();
+        AppendField(finish, signature);
+        if (pairing)
+            finish.AddRange(Proof(credentials.PairingKey, "client", transcript));
+        await WriteBlobAsync(inner, finish.ToArray(), ct);
+
+        var result = await ReadBlobAsync(inner, ct);
+        switch (result[0])
+        {
+            case StatusOk:
+                break;
+            case StatusCodeMismatch:
                 throw new PairingException("The other machine's pairing code does not match this one.");
-
-            var clientProof = Proof(pairingKey, "client", myNonce, theirNonce, myPublic, theirPublic);
-            await WriteBlobAsync(inner, clientProof, ct);
+            default:
+                throw new PairingException("The other machine did not accept this PC's identity proof.");
         }
-        else
+
+        if (pairing)
         {
-            var clientHello = await ReadBlobAsync(inner, ct);
-            (theirNonce, theirPublic, _) = ParseHello(clientHello, expectProof: false);
-
-            var serverProof = Proof(pairingKey, "server", theirNonce, myNonce, theirPublic, myPublic);
-            await WriteBlobAsync(inner, BuildHello(myNonce, myPublic, serverProof), ct);
-
-            var clientProof = await ReadBlobAsync(inner, ct);
-            var expected = Proof(pairingKey, "client", theirNonce, myNonce, theirPublic, myPublic);
-            if (!CryptographicOperations.FixedTimeEquals(expected, clientProof))
-                throw new PairingException("The connecting machine's pairing code does not match this one.");
+            var expected = Proof(credentials.PairingKey, "server", transcript);
+            if (result.Length != 1 + ProofBytes || !CryptographicOperations.FixedTimeEquals(expected, result.AsSpan(1)))
+                throw new PairingException("The other machine's pairing code does not match this one.");
         }
 
-        using var theirKey = ECDiffieHellman.Create();
-        theirKey.ImportSubjectPublicKeyInfo(theirPublic, out _);
-        var shared = ecdh.DeriveRawSecretAgreement(theirKey.PublicKey);
-
-        var clientNonce = isClient ? myNonce : theirNonce;
-        var serverNonce = isClient ? theirNonce : myNonce;
-        var salt = Concat(clientNonce, serverNonce);
-        var prk = HKDF.Extract(HashAlgorithmName.SHA256, Concat(shared, pairingKey), salt);
-        var clientToServer = HKDF.Expand(HashAlgorithmName.SHA256, prk, 32, Encoding.ASCII.GetBytes("RoboMouse c2s"));
-        var serverToClient = HKDF.Expand(HashAlgorithmName.SHA256, prk, 32, Encoding.ASCII.GetBytes("RoboMouse s2c"));
-        CryptographicOperations.ZeroMemory(shared);
-
-        return isClient
-            ? new SecureChannel(inner, clientToServer, serverToClient)
-            : new SecureChannel(inner, serverToClient, clientToServer);
+        var (c2s, s2c) = DeriveKeys(ecdh, serverHello.EphemeralKey, pairing ? credentials.PairingKey : null, transcript);
+        return new SecureChannel(inner, c2s, s2c, serverHello.IdentityKey, pairing);
     }
 
-    private static byte[] BuildHello(byte[] nonce, byte[] publicKey, byte[]? proof = null)
+    private static async Task<SecureChannel> ServerHandshakeAsync(Stream inner, ChannelCredentials credentials, CancellationToken ct)
     {
-        var buffer = new byte[1 + NonceBytes + 2 + publicKey.Length + (proof?.Length ?? 0)];
+        var clientBlob = await ReadBlobAsync(inner, ct);
+        if (clientBlob[0] != HandshakeVersion)
+        {
+            // Answer with our version so the other side reports a version problem, not a broken
+            // connection: a protocol 4 build says "incompatible RoboMouse version". Nothing is proved to
+            // it, so it learns nothing it could test pairing-code guesses against.
+            await WriteBlobAsync(inner, new[] { HandshakeVersion }, ct);
+            CheckVersion(clientBlob);
+        }
+        var clientHello = ParseHello(clientBlob, withSignature: false);
+
+        using var ecdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
+        var ephemeral = ecdh.PublicKey.ExportSubjectPublicKeyInfo();
+        var nonce = RandomNumberGenerator.GetBytes(NonceBytes);
+        var identity = credentials.Identity;
+
+        var pinned = (clientHello.Flags & FlagWantsPinned) != 0 && credentials.IsPinned?.Invoke(clientHello.IdentityKey) == true;
+        var pairing = !pinned;
+
+        var serverCore = BuildHello(pinned ? ModePinned : ModePairing, nonce, ephemeral, identity.PublicKey);
+        var transcript = Transcript(clientBlob, serverCore);
+        var serverHello = new List<byte>(serverCore);
+        AppendField(serverHello, identity.Sign(Signed("server", transcript)));
+        await WriteBlobAsync(inner, serverHello.ToArray(), ct);
+
+        var finish = await ReadBlobAsync(inner, ct);
         var offset = 0;
-        buffer[offset++] = HandshakeVersion;
-        nonce.CopyTo(buffer, offset); offset += NonceBytes;
-        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(offset), (ushort)publicKey.Length); offset += 2;
-        publicKey.CopyTo(buffer, offset); offset += publicKey.Length;
-        proof?.CopyTo(buffer, offset);
-        return buffer;
+        var signature = ReadField(finish, ref offset, MaxSignatureBytes);
+        if (!IdentityKey.Verify(clientHello.IdentityKey, Signed("client", transcript), signature))
+        {
+            await WriteBlobAsync(inner, new[] { StatusBadIdentity }, ct);
+            throw new PairingException("The connecting machine did not prove its identity.");
+        }
+
+        if (pairing)
+        {
+            var expected = Proof(credentials.PairingKey, "client", transcript);
+            if (finish.Length != offset + ProofBytes || !CryptographicOperations.FixedTimeEquals(expected, finish.AsSpan(offset)))
+            {
+                await WriteBlobAsync(inner, new[] { StatusCodeMismatch }, ct);
+                throw new PairingException("The connecting machine's pairing code does not match this one.");
+            }
+        }
+
+        var reply = new List<byte> { StatusOk };
+        if (pairing)
+            reply.AddRange(Proof(credentials.PairingKey, "server", transcript));
+        await WriteBlobAsync(inner, reply.ToArray(), ct);
+
+        var (c2s, s2c) = DeriveKeys(ecdh, clientHello.EphemeralKey, pairing ? credentials.PairingKey : null, transcript);
+        return new SecureChannel(inner, s2c, c2s, clientHello.IdentityKey, pairing);
     }
 
-    private static (byte[] Nonce, byte[] PublicKey, byte[] Proof) ParseHello(byte[] data, bool expectProof)
+    /// <summary>Throws <see cref="IncompatibleVersionException"/> unless the blob starts with our handshake version.</summary>
+    private static void CheckVersion(byte[] blob)
     {
-        if (data.Length < 1 + NonceBytes + 2 || data[0] != HandshakeVersion)
-            throw new IncompatibleVersionException("The other machine is running an incompatible RoboMouse version.");
+        var version = blob[0];
+        if (version == HandshakeVersion)
+            return;
+        throw new IncompatibleVersionException(version < HandshakeVersion
+            ? "The other machine is running an older RoboMouse. " + UpdateBothMachines
+            : "The other machine is running a newer RoboMouse. " + UpdateBothMachines);
+    }
 
-        var offset = 1;
-        var nonce = data.AsSpan(offset, NonceBytes).ToArray(); offset += NonceBytes;
-        var keyLength = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset)); offset += 2;
-        if (keyLength == 0 || keyLength > 256 || data.Length < offset + keyLength + (expectProof ? 32 : 0))
+    private sealed record Hello(byte Flags, byte[] Nonce, byte[] EphemeralKey, byte[] IdentityKey, byte[] Signature, int CoreLength);
+
+    private static byte[] BuildHello(byte flags, byte[] nonce, byte[] ephemeral, byte[] identity)
+    {
+        var buffer = new List<byte>(2 + NonceBytes + 4 + ephemeral.Length + identity.Length) { HandshakeVersion, flags };
+        buffer.AddRange(nonce);
+        AppendField(buffer, ephemeral);
+        AppendField(buffer, identity);
+        return buffer.ToArray();
+    }
+
+    private static Hello ParseHello(byte[] data, bool withSignature)
+    {
+        if (data.Length < 2 + NonceBytes)
             throw new PairingException("Malformed handshake from the other machine.");
 
-        var publicKey = data.AsSpan(offset, keyLength).ToArray(); offset += keyLength;
-        var proof = expectProof ? data.AsSpan(offset, 32).ToArray() : Array.Empty<byte>();
-        return (nonce, publicKey, proof);
+        var offset = 2;
+        var nonce = data.AsSpan(offset, NonceBytes).ToArray();
+        offset += NonceBytes;
+        var ephemeral = ReadField(data, ref offset, MaxKeyBytes);
+        var identity = ReadField(data, ref offset, MaxKeyBytes);
+        var coreLength = offset;
+        var signature = withSignature ? ReadField(data, ref offset, MaxSignatureBytes) : Array.Empty<byte>();
+        if (offset != data.Length || !IdentityKey.IsValidPublicKey(identity))
+            throw new PairingException("Malformed handshake from the other machine.");
+        return new Hello(data[1], nonce, ephemeral, identity, signature, coreLength);
     }
 
-    private static byte[] Proof(byte[] pairingKey, string role, byte[] clientNonce, byte[] serverNonce, byte[] clientPublic, byte[] serverPublic)
+    private static void AppendField(List<byte> buffer, byte[] field)
     {
-        using var hmac = new HMACSHA256(pairingKey);
-        hmac.TransformBlock(Encoding.ASCII.GetBytes(role), 0, role.Length, null, 0);
-        hmac.TransformBlock(clientNonce, 0, clientNonce.Length, null, 0);
-        hmac.TransformBlock(serverNonce, 0, serverNonce.Length, null, 0);
-        hmac.TransformBlock(clientPublic, 0, clientPublic.Length, null, 0);
-        hmac.TransformFinalBlock(serverPublic, 0, serverPublic.Length);
-        return hmac.Hash!;
+        Span<byte> length = stackalloc byte[2];
+        BinaryPrimitives.WriteUInt16LittleEndian(length, (ushort)field.Length);
+        buffer.AddRange(length.ToArray());
+        buffer.AddRange(field);
+    }
+
+    private static byte[] ReadField(byte[] data, ref int offset, int maxLength)
+    {
+        if (data.Length - offset < 2)
+            throw new PairingException("Malformed handshake from the other machine.");
+        var length = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset));
+        offset += 2;
+        if (length == 0 || length > maxLength || data.Length - offset < length)
+            throw new PairingException("Malformed handshake from the other machine.");
+        var field = data.AsSpan(offset, length).ToArray();
+        offset += length;
+        return field;
+    }
+
+    /// <summary>Hash of both hellos (without the server's signature), prefixed with the protocol version.</summary>
+    private static byte[] Transcript(ReadOnlySpan<byte> clientHello, ReadOnlySpan<byte> serverCore)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData("RoboMouse handshake"u8);
+        hash.AppendData(new[] { Message.ProtocolVersion });
+        Span<byte> length = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(length, clientHello.Length);
+        hash.AppendData(length);
+        hash.AppendData(clientHello);
+        BinaryPrimitives.WriteInt32LittleEndian(length, serverCore.Length);
+        hash.AppendData(length);
+        hash.AppendData(serverCore);
+        return hash.GetHashAndReset();
+    }
+
+    private static byte[] Signed(string role, byte[] transcript) => Concat(Encoding.ASCII.GetBytes($"RoboMouse {role} identity"), transcript);
+
+    private static byte[] Proof(byte[] pairingKey, string role, byte[] transcript) =>
+        HMACSHA256.HashData(pairingKey, Concat(Encoding.ASCII.GetBytes($"RoboMouse {role} code"), transcript));
+
+    private static (byte[] ClientToServer, byte[] ServerToClient) DeriveKeys(ECDiffieHellman ecdh, byte[] theirEphemeral, byte[]? pairingKey, byte[] transcript)
+    {
+        byte[] shared;
+        using (var theirKey = ECDiffieHellman.Create())
+        {
+            try
+            {
+                theirKey.ImportSubjectPublicKeyInfo(theirEphemeral, out _);
+                shared = ecdh.DeriveRawSecretAgreement(theirKey.PublicKey);
+            }
+            catch (CryptographicException)
+            {
+                throw new PairingException("Malformed handshake from the other machine.");
+            }
+        }
+
+        var ikm = pairingKey == null ? shared : Concat(shared, pairingKey);
+        var prk = HKDF.Extract(HashAlgorithmName.SHA256, ikm, transcript);
+        var clientToServer = HKDF.Expand(HashAlgorithmName.SHA256, prk, 32, "RoboMouse c2s"u8.ToArray());
+        var serverToClient = HKDF.Expand(HashAlgorithmName.SHA256, prk, 32, "RoboMouse s2c"u8.ToArray());
+        CryptographicOperations.ZeroMemory(shared);
+        CryptographicOperations.ZeroMemory(ikm);
+        CryptographicOperations.ZeroMemory(prk);
+        return (clientToServer, serverToClient);
     }
 
     private static byte[] Concat(byte[] a, byte[] b)
@@ -207,6 +425,8 @@ public sealed class SecureChannel : Stream
             got += read;
         }
     }
+
+    #endregion
 
     #region Encrypted framing
 
@@ -386,4 +606,14 @@ public class PairingException : Exception
 public class IncompatibleVersionException : Exception
 {
     public IncompatibleVersionException(string message) : base(message) { }
+}
+
+/// <summary>
+/// Thrown when the other machine's identity key is not the one pinned for it: it was reinstalled (new
+/// key), or a different machine answered at its address or under its id. Pairing again means
+/// forgetting the pinned key (<see cref="RoboMouseService.ForgetPeerIdentity"/>).
+/// </summary>
+public class IdentityMismatchException : Exception
+{
+    public IdentityMismatchException(string message) : base(message) { }
 }

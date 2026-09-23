@@ -1,3 +1,5 @@
+using RoboMouse.Core.Network.Protocol;
+
 namespace RoboMouse.Core.Network;
 
 /// <summary>Why a machine refused a connection after the secure handshake succeeded.</summary>
@@ -19,8 +21,18 @@ public enum RejectCode
     SameMachine,
 
     /// <summary>The connection kind needs a configured peer (a file transfer from an unknown machine).</summary>
-    NotAPeer
+    NotAPeer,
+
+    /// <summary>The machine there pinned a different identity key for this PC (it was reinstalled, or is impersonated).</summary>
+    IdentityMismatch
 }
+
+/// <summary>A connecting machine as the accept policy sees it, after the secure handshake.</summary>
+/// <param name="Handshake">What it says about itself.</param>
+/// <param name="Remote">Where it connects from.</param>
+/// <param name="IdentityKey">The identity public key it proved it holds.</param>
+/// <param name="PairedWithCode">True when the handshake used the pairing code; false when its key was already pinned here.</param>
+public sealed record IncomingPeer(HandshakeMessage Handshake, System.Net.IPEndPoint? Remote, byte[] IdentityKey, bool PairedWithCode);
 
 /// <summary>Thrown by <see cref="PeerConnection.ConnectAsync"/> when the other machine refused the connection.</summary>
 public sealed class ConnectionRejectedException : Exception
@@ -46,7 +58,8 @@ public static class RejectReasons
         (RejectCode.Blocked, "blocked"),
         (RejectCode.Disabled, "disabled"),
         (RejectCode.SameMachine, "self"),
-        (RejectCode.NotAPeer, "not-peer")
+        (RejectCode.NotAPeer, "not-peer"),
+        (RejectCode.IdentityMismatch, "identity")
     };
 
     public static string Format(RejectCode code, string text)

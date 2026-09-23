@@ -9,9 +9,10 @@ namespace RoboMouse.Core.Network.Protocol;
 public abstract class Message
 {
     /// <summary>
-    /// Protocol version number.
+    /// Protocol version number. Both machines must run the same one. Version 5 added pinned identity
+    /// keys to the secure handshake, chunked clipboard transfers and clipboard origin/sequence stamps.
     /// </summary>
-    public const byte ProtocolVersion = 4;
+    public const byte ProtocolVersion = 5;
 
     /// <summary>
     /// Magic bytes to identify RoboMouse protocol.
@@ -64,7 +65,9 @@ public abstract class Message
     }
 
     /// <summary>
-    /// Deserializes a message from bytes.
+    /// Deserializes a message from bytes. Returns null for anything it cannot read: a different
+    /// version, an unknown type, or a malformed payload. Never throws, so one bad message from a peer
+    /// is skipped instead of taking the connection down.
     /// </summary>
     public static Message? Deserialize(ReadOnlySpan<byte> data)
     {
@@ -94,12 +97,34 @@ public abstract class Message
         offset += 8;
 
         // Verify we have enough data
-        if (data.Length < offset + payloadLength)
+        if (payloadLength < 0 || data.Length - offset < payloadLength)
             return null;
 
         var payload = data.Slice(offset, payloadLength);
 
-        Message? message = type switch
+        Message? message;
+        try
+        {
+            message = DeserializePayload(type, payload);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IndexOutOfRangeException or InvalidDataException
+                                       or OverflowException or FormatException or DecoderFallbackException)
+        {
+            // Payload shorter than its fields claim, a negative length, an out-of-range date: skip it.
+            return null;
+        }
+
+        if (message != null)
+        {
+            message.Timestamp = timestamp;
+        }
+
+        return message;
+    }
+
+    private static Message? DeserializePayload(MessageType type, ReadOnlySpan<byte> payload)
+    {
+        return type switch
         {
             MessageType.Handshake => HandshakeMessage.DeserializePayload(payload),
             MessageType.HandshakeAck => HandshakeAckMessage.DeserializePayload(payload),
@@ -114,18 +139,12 @@ public abstract class Message
             MessageType.FileOfferRevoked => FileOfferRevokedMessage.DeserializePayload(payload),
             MessageType.FileRequest => FileRequestMessage.DeserializePayload(payload),
             MessageType.FileChunk => FileChunkMessage.DeserializePayload(payload),
+            MessageType.ClipboardChunk => ClipboardChunkMessage.DeserializePayload(payload),
             MessageType.Ping => new PingMessage(),
             MessageType.Pong => new PongMessage(),
             MessageType.Disconnect => new DisconnectMessage(),
             _ => null
         };
-
-        if (message != null)
-        {
-            message.Timestamp = timestamp;
-        }
-
-        return message;
     }
 
     /// <summary>
@@ -141,6 +160,8 @@ public abstract class Message
             return -1;
 
         var payloadLength = BinaryPrimitives.ReadInt32LittleEndian(headerData.Slice(4));
+        if (payloadLength < 0 || payloadLength > int.MaxValue - 16)
+            return -1;
         return 16 + payloadLength; // Header(16) + Payload
     }
 
@@ -164,10 +185,13 @@ internal static class MessageHelpers
         buffer.AddRange(bytes);
     }
 
+    /// <summary>Reads a length-prefixed UTF-8 string. Throws <see cref="InvalidDataException"/> when the length is out of range.</summary>
     public static string ReadString(ReadOnlySpan<byte> data, ref int offset)
     {
         var length = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(offset));
         offset += 4;
+        if (length < 0 || length > data.Length - offset)
+            throw new InvalidDataException("String length out of range.");
         var value = Encoding.UTF8.GetString(data.Slice(offset, length));
         offset += length;
         return value;

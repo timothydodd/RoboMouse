@@ -28,7 +28,7 @@ public sealed unsafe class ClipboardManager : IDisposable
     private bool _monitoring;
     private bool _disposed;
     private string? _lastTextHash;
-    private readonly long _maxDataSize;
+    private long _maxDataSize;
     private VirtualFileDataObject? _virtualFiles;
     private int _fileScanVersion;
 
@@ -53,6 +53,19 @@ public sealed unsafe class ClipboardManager : IDisposable
 
     /// <summary>Whether local file copies are turned into offers.</summary>
     public bool ShareFiles { get; set; } = true;
+
+    /// <summary>Whether copied text is announced.</summary>
+    public bool ShareText { get; set; } = true;
+
+    /// <summary>Whether copied images are announced.</summary>
+    public bool ShareImages { get; set; } = true;
+
+    /// <summary>Largest text or image announced, in bytes. Can change while running.</summary>
+    public long MaxDataSize
+    {
+        get => Interlocked.Read(ref _maxDataSize);
+        set => Interlocked.Exchange(ref _maxDataSize, value);
+    }
 
     /// <summary>Optional PNG/DIB converter so images can be read from and written to the clipboard in both forms.</summary>
     public IClipboardImageCodec? ImageCodec { get; set; }
@@ -344,9 +357,10 @@ public sealed unsafe class ClipboardManager : IDisposable
 
     private ClipboardMessage? GetClipboardContent()
     {
-        var hasText = NativeMethods.IsClipboardFormatAvailable(NativeMethods.CF_UNICODETEXT);
-        var hasImage = NativeMethods.IsClipboardFormatAvailable(CfPng)
-                       || NativeMethods.IsClipboardFormatAvailable(NativeMethods.CF_DIB);
+        var maxDataSize = MaxDataSize;
+        var hasText = ShareText && NativeMethods.IsClipboardFormatAvailable(NativeMethods.CF_UNICODETEXT);
+        var hasImage = ShareImages && (NativeMethods.IsClipboardFormatAvailable(CfPng)
+                                       || NativeMethods.IsClipboardFormatAvailable(NativeMethods.CF_DIB));
         if (!hasText && !hasImage)
             return null;
 
@@ -362,7 +376,7 @@ public sealed unsafe class ClipboardManager : IDisposable
             if (!string.IsNullOrEmpty(text))
             {
                 var data = Encoding.UTF8.GetBytes(text);
-                if (data.Length <= _maxDataSize)
+                if (data.Length <= maxDataSize)
                 {
                     return new ClipboardMessage
                     {
@@ -388,7 +402,7 @@ public sealed unsafe class ClipboardManager : IDisposable
                     {
                         // No codec: ship the DIB wrapped as a .bmp so the other side can at least paste it.
                         var bmp = DibToBmp(dib);
-                        if (bmp.Length <= _maxDataSize)
+                        if (bmp.Length <= maxDataSize)
                         {
                             return new ClipboardMessage
                             {
@@ -402,7 +416,7 @@ public sealed unsafe class ClipboardManager : IDisposable
                 }
             }
 
-            if (png != null && png.Length <= _maxDataSize)
+            if (png != null && png.Length <= maxDataSize)
             {
                 return new ClipboardMessage
                 {

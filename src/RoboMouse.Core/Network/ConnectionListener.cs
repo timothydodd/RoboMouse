@@ -15,7 +15,7 @@ public sealed class ConnectionListener : IDisposable
     private readonly string _machineName;
     private readonly int _screenWidth;
     private readonly int _screenHeight;
-    private readonly Func<byte[]> _pairingKey;
+    private readonly Func<ChannelCredentials> _credentials;
     private readonly HandshakeGate _gate = new();
     private readonly LogThrottle _rejectLog = new(TimeSpan.FromMinutes(1));
     private CancellationTokenSource? _cts;
@@ -33,11 +33,11 @@ public sealed class ConnectionListener : IDisposable
     public bool IsListening { get; private set; }
 
     /// <summary>
-    /// Decides, from a peer's handshake and address, whether to take the connection: null accepts it,
-    /// anything else is the reject reason sent back (see <see cref="RejectReasons"/>). Runs on the
-    /// accept path, after the pairing code has been verified. Without a policy everything is accepted.
+    /// Decides, from a peer's handshake, address and identity key, whether to take the connection:
+    /// null accepts it, anything else is the reject reason sent back (see <see cref="RejectReasons"/>).
+    /// Runs on the accept path, after the secure handshake. Without a policy everything is accepted.
     /// </summary>
-    public Func<HandshakeMessage, IPEndPoint?, string?>? AcceptPolicy { get; set; }
+    public Func<IncomingPeer, string?>? AcceptPolicy { get; set; }
 
     /// <summary>
     /// Event raised when a new peer connects.
@@ -51,14 +51,14 @@ public sealed class ConnectionListener : IDisposable
 
     public ConnectionListener(
         int port,
-        Func<byte[]> pairingKey,
+        Func<ChannelCredentials> credentials,
         string machineId,
         string machineName,
         int screenWidth,
         int screenHeight)
     {
         Port = port;
-        _pairingKey = pairingKey;
+        _credentials = credentials;
         _machineId = machineId;
         _machineName = machineName;
         _screenWidth = screenWidth;
@@ -145,7 +145,7 @@ public sealed class ConnectionListener : IDisposable
         {
             var connection = await PeerConnection.AcceptAsync(
                 client,
-                _pairingKey(),
+                _credentials(),
                 _machineId,
                 _machineName,
                 _screenWidth,

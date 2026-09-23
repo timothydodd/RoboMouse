@@ -26,6 +26,12 @@ public sealed class PeerConnection : IPeerLink, IDisposable
     /// <summary>Messages are coalesced into writes of up to this size; bigger ones are written alone.</summary>
     private const int MaxBatchBytes = 256 * 1024;
 
+    /// <summary>Receive buffer size; it grows for a bigger message and shrinks back afterwards.</summary>
+    internal const int DefaultReceiveBuffer = 64 * 1024;
+
+    /// <summary>A receive buffer grown past this is replaced by a default one once it is empty again.</summary>
+    private const int MaxIdleReceiveBuffer = 1024 * 1024;
+
     private readonly TcpClient _client;
     private Stream _stream;
     private readonly CancellationTokenSource _cts = new();
@@ -73,6 +79,12 @@ public sealed class PeerConnection : IPeerLink, IDisposable
     /// <summary>True when this machine initiated the connection.</summary>
     public bool IsOutbound { get; private set; }
 
+    /// <summary>The peer's identity public key, proved in the secure handshake (see <see cref="SecureChannel"/>).</summary>
+    public byte[] PeerIdentityKey { get; private set; } = Array.Empty<byte>();
+
+    /// <summary>True when the handshake used the pairing code; false when both sides had pinned each other.</summary>
+    public bool PairedWithCode { get; private set; }
+
     // Last time anything arrived from the peer. Any data proves it is alive, not just a pong: a pong
     // can be stuck behind a big clipboard message that is still streaming in.
     private long _lastHeardTicks;
@@ -111,11 +123,14 @@ public sealed class PeerConnection : IPeerLink, IDisposable
     /// Replaces the raw socket stream with an authenticated, encrypted channel. Must run before any
     /// protocol message is exchanged.
     /// </summary>
-    private async Task SecureAsync(byte[] pairingKey, bool isClient, CancellationToken ct)
+    private async Task SecureAsync(ChannelCredentials credentials, byte[]? expectedPeerKey, bool isClient, CancellationToken ct)
     {
-        _stream = isClient
-            ? await SecureChannel.ConnectAsync(_stream, pairingKey, ct)
-            : await SecureChannel.AcceptAsync(_stream, pairingKey, ct);
+        var channel = isClient
+            ? await SecureChannel.ConnectAsync(_stream, credentials, expectedPeerKey, ct)
+            : await SecureChannel.AcceptAsync(_stream, credentials, ct);
+        _stream = channel;
+        PeerIdentityKey = channel.PeerIdentityKey;
+        PairedWithCode = channel.PairedWithCode;
     }
 
     /// <summary>
@@ -166,22 +181,26 @@ public sealed class PeerConnection : IPeerLink, IDisposable
         : $"The other machine did not complete the handshake within {HandshakeTimeout.TotalSeconds:0} seconds.";
 
     /// <summary>
-    /// Creates a connection by connecting to a remote peer. Throws <see cref="PairingException"/> when the
-    /// pairing codes differ, <see cref="ConnectionRejectedException"/> when the peer refuses us,
+    /// Creates a connection by connecting to a remote peer. <paramref name="expectedPeerKey"/> is the
+    /// peer's pinned identity key, when there is one: the handshake then skips the pairing code and
+    /// refuses any other identity. Throws <see cref="PairingException"/> when the pairing codes differ,
+    /// <see cref="IdentityMismatchException"/> when the peer's identity is not the pinned one,
+    /// <see cref="ConnectionRejectedException"/> when the peer refuses us,
     /// <see cref="IncompatibleVersionException"/> for a different protocol version, and
     /// <see cref="OperationCanceledException"/> on timeout.
     /// </summary>
     public static async Task<PeerConnection> ConnectAsync(
         string host,
         int port,
-        byte[] pairingKey,
+        ChannelCredentials credentials,
         string localMachineId,
         string localMachineName,
         int localScreenWidth,
         int localScreenHeight,
         int localListenPort,
         CancellationToken ct = default,
-        ConnectionKind kind = ConnectionKind.Control)
+        ConnectionKind kind = ConnectionKind.Control,
+        byte[]? expectedPeerKey = null)
     {
         SimpleLogger.Log("Connect", $"Connecting to {host}:{port} ({kind})...");
 
@@ -193,7 +212,7 @@ public sealed class PeerConnection : IPeerLink, IDisposable
             var connection = new PeerConnection(client);
             try
             {
-                await connection.SecureAsync(pairingKey, isClient: true, token);
+                await connection.SecureAsync(credentials, expectedPeerKey, isClient: true, token);
 
                 var handshake = new HandshakeMessage
                 {
@@ -222,7 +241,9 @@ public sealed class PeerConnection : IPeerLink, IDisposable
                 if (!ack.Accepted)
                 {
                     var (code, text) = RejectReasons.Parse(ack.RejectReason);
-                    throw new ConnectionRejectedException(code, text);
+                    throw code == RejectCode.IdentityMismatch
+                        ? new IdentityMismatchException(text)
+                        : new ConnectionRejectedException(code, text);
                 }
 
                 if (ack.MachineId == localMachineId)
@@ -249,20 +270,20 @@ public sealed class PeerConnection : IPeerLink, IDisposable
 
     /// <summary>
     /// Creates a connection from an accepted TCP client. <paramref name="decide"/> sees the peer's
-    /// handshake and returns null to accept it, or a reject reason (see <see cref="RejectReasons"/>),
-    /// which is sent back before the connection is closed and <see cref="ConnectionRejectedException"/>
-    /// is thrown. The TCP client is disposed on any failure.
+    /// handshake and proved identity key and returns null to accept it, or a reject reason (see
+    /// <see cref="RejectReasons"/>), which is sent back before the connection is closed and
+    /// <see cref="ConnectionRejectedException"/> is thrown. The TCP client is disposed on any failure.
     /// </summary>
     public static Task<PeerConnection> AcceptAsync(
         TcpClient client,
-        byte[] pairingKey,
+        ChannelCredentials credentials,
         string localMachineId,
         string localMachineName,
         int localScreenWidth,
         int localScreenHeight,
         int localListenPort,
         CancellationToken ct = default,
-        Func<HandshakeMessage, IPEndPoint?, string?>? decide = null)
+        Func<IncomingPeer, string?>? decide = null)
     {
         var remote = client.Client.RemoteEndPoint as IPEndPoint;
         return WithHandshakeTimeoutAsync(client, ct, async token =>
@@ -270,7 +291,7 @@ public sealed class PeerConnection : IPeerLink, IDisposable
             var connection = new PeerConnection(client);
             try
             {
-                await connection.SecureAsync(pairingKey, isClient: false, token);
+                await connection.SecureAsync(credentials, null, isClient: false, token);
 
                 var message = await connection.ReadOneAsync(token);
                 if (message is not HandshakeMessage handshake)
@@ -286,7 +307,7 @@ public sealed class PeerConnection : IPeerLink, IDisposable
 
                 var reject = handshake.MachineId == localMachineId
                     ? RejectReasons.Format(RejectCode.SameMachine, "That address is this PC.")
-                    : decide?.Invoke(handshake, remote);
+                    : decide?.Invoke(new IncomingPeer(handshake, remote, connection.PeerIdentityKey, connection.PairedWithCode));
 
                 var ack = new HandshakeAckMessage
                 {
@@ -421,8 +442,11 @@ public sealed class PeerConnection : IPeerLink, IDisposable
                 if (buffer.Capacity > 4 * MaxBatchBytes)
                     buffer = new MemoryStream(4096);
 
+                // The bulk lane hands out one chunk per round, so input posted meanwhile goes first.
                 if (_outbound.Count == 0)
                     _outboundDrained.Set();
+                else
+                    _outboundSignal.Set();
             }
         }
         catch (Exception ex) when (!_disposed)
@@ -437,7 +461,7 @@ public sealed class PeerConnection : IPeerLink, IDisposable
 
     private void ReceiveLoop()
     {
-        var buffer = new byte[64 * 1024];
+        var buffer = new byte[DefaultReceiveBuffer];
         var filled = 0;
         Exception? reason = null;
 
@@ -474,8 +498,18 @@ public sealed class PeerConnection : IPeerLink, IDisposable
                 if (consumed > 0)
                 {
                     var remaining = filled - consumed;
-                    if (remaining > 0)
+                    if (buffer.Length > MaxIdleReceiveBuffer && remaining <= DefaultReceiveBuffer / 2)
+                    {
+                        // A big message has been handled: give its buffer back instead of keeping
+                        // megabytes per connection for the rest of the session.
+                        var smaller = new byte[DefaultReceiveBuffer];
+                        Buffer.BlockCopy(buffer, consumed, smaller, 0, remaining);
+                        buffer = smaller;
+                    }
+                    else if (remaining > 0)
+                    {
                         Buffer.BlockCopy(buffer, consumed, buffer, 0, remaining);
+                    }
                     filled = remaining;
                 }
             }

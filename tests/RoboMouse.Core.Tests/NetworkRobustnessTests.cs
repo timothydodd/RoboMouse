@@ -11,6 +11,7 @@ namespace RoboMouse.Core.Tests;
 public class NetworkRobustnessTests
 {
     private static readonly byte[] Key = SecureChannel.DerivePairingKey("K7QM-4XDP-9RLA");
+    private static readonly ChannelCredentials Credentials = ChannelCredentials.Ephemeral(Key);
 
     /// <summary>A listener on a free loopback port.</summary>
     private static (TcpListener Listener, int Port) Listen()
@@ -53,7 +54,7 @@ public class NetworkRobustnessTests
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(800));
         var sw = Stopwatch.StartNew();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => PeerConnection.ConnectAsync(
-            "127.0.0.1", port, Key, "client", "CLIENT", 1920, 1080, 0, cts.Token));
+            "127.0.0.1", port, Credentials, "client", "CLIENT", 1920, 1080, 0, cts.Token));
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(4), $"took {sw.Elapsed}");
 
         var (tcp, channel) = await serverTask;
@@ -61,7 +62,7 @@ public class NetworkRobustnessTests
         tcp.Dispose();
     }
 
-    private static async Task<Exception?> ConnectThroughPolicyAsync(string clientId, string serverId, Func<HandshakeMessage, IPEndPoint?, string?>? decide)
+    private static async Task<Exception?> ConnectThroughPolicyAsync(string clientId, string serverId, Func<IncomingPeer, string?>? decide)
     {
         var (listener, port) = Listen();
         using var _ = listener;
@@ -71,7 +72,7 @@ public class NetworkRobustnessTests
             var tcp = await listener.AcceptTcpClientAsync();
             try
             {
-                using var accepted = await PeerConnection.AcceptAsync(tcp, Key, serverId, "SERVER", 1920, 1080, port, CancellationToken.None, decide);
+                using var accepted = await PeerConnection.AcceptAsync(tcp, Credentials, serverId, "SERVER", 1920, 1080, port, CancellationToken.None, decide);
             }
             catch (ConnectionRejectedException)
             {
@@ -82,7 +83,7 @@ public class NetworkRobustnessTests
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            using var connection = await PeerConnection.ConnectAsync("127.0.0.1", port, Key, clientId, "CLIENT", 1920, 1080, 0, cts.Token);
+            using var connection = await PeerConnection.ConnectAsync("127.0.0.1", port, Credentials, clientId, "CLIENT", 1920, 1080, 0, cts.Token);
         }
         catch (Exception ex)
         {
@@ -96,7 +97,7 @@ public class NetworkRobustnessTests
     public async Task AcceptPolicy_Rejection_ReachesTheConnectingSideWithItsCode()
     {
         var failure = await ConnectThroughPolicyAsync("client", "server",
-            (hs, ep) => hs.MachineId == "client" ? RejectReasons.Format(RejectCode.AwaitingApproval, "Waiting for approval on SERVER.") : null);
+            p => p.Handshake.MachineId == "client" ? RejectReasons.Format(RejectCode.AwaitingApproval, "Waiting for approval on SERVER.") : null);
 
         var rejected = Assert.IsType<ConnectionRejectedException>(failure);
         Assert.Equal(RejectCode.AwaitingApproval, rejected.Code);
@@ -106,7 +107,7 @@ public class NetworkRobustnessTests
     [Fact]
     public async Task AcceptPolicy_Accepts_WhenItReturnsNull()
     {
-        Assert.Null(await ConnectThroughPolicyAsync("client", "server", (hs, ep) => null));
+        Assert.Null(await ConnectThroughPolicyAsync("client", "server", p => null));
     }
 
     [Fact]
@@ -204,10 +205,10 @@ public class NetworkRobustnessTests
     [Fact]
     public void Discovery_KeepsAtMostMaxPeers()
     {
-        using var discovery = new PeerDiscovery(0, 24800, "me", "ME", 1920, 1080);
+        using var discovery = new PeerDiscovery(0, 24800, "me", "ME", 1920, 1080, IdentityKey.Create());
         for (var i = 0; i < PeerDiscovery.MaxPeers + 20; i++)
         {
-            using var other = new PeerDiscovery(0, 24800, $"id-{i}", $"PC-{i}", 1920, 1080);
+            using var other = new PeerDiscovery(0, 24800, $"id-{i}", $"PC-{i}", 1920, 1080, IdentityKey.Create());
             discovery.ProcessDiscoveryMessage(other.CreateDiscoveryMessage(), new IPEndPoint(IPAddress.Loopback, 24801));
         }
 

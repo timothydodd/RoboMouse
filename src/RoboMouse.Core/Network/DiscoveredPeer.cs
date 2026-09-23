@@ -41,4 +41,10 @@ public class DiscoveredPeer
     /// Peer's screen height.
     /// </summary>
     public int ScreenHeight { get; set; }
+
+    /// <summary>
+    /// The identity public key (base64) the broadcast was signed with. Matches
+    /// <see cref="Configuration.PeerConfig.IdentityKey"/> when this is a paired machine.
+    /// </summary>
+    public string IdentityKey { get; set; } = string.Empty;
 }

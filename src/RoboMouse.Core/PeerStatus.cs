@@ -33,6 +33,13 @@ public enum PeerFailureKind
     /// <summary>The address is this PC.</summary>
     SameMachine,
 
+    /// <summary>
+    /// The identity key does not match the one pinned when the machines paired: the other machine was
+    /// reinstalled, or something else is using its address or id. Pair again to trust the new key
+    /// (<see cref="RoboMouseService.ForgetPeerIdentity"/>, on whichever side reports it).
+    /// </summary>
+    IdentityMismatch,
+
     /// <summary>Anything else; see the message.</summary>
     Other
 }
@@ -58,8 +65,10 @@ public sealed record PeerConnectFailure(PeerFailureKind Kind, string Message, Da
                 RejectCode.Blocked => (PeerFailureKind.Blocked, r.Message),
                 RejectCode.Disabled => (PeerFailureKind.DisabledThere, r.Message),
                 RejectCode.SameMachine => (PeerFailureKind.SameMachine, r.Message),
+                RejectCode.IdentityMismatch => (PeerFailureKind.IdentityMismatch, r.Message),
                 _ => (PeerFailureKind.Other, r.Message)
             },
+            IdentityMismatchException m => (PeerFailureKind.IdentityMismatch, m.Message),
             IncompatibleVersionException v => (PeerFailureKind.VersionMismatch, v.Message),
             PairingException => (PeerFailureKind.PairingCodeMismatch, "The pairing code doesn't match. Enter the same code on both machines (Settings > Network)."),
             OperationCanceledException => (PeerFailureKind.TimedOut, "No answer in time. Is RoboMouse running there, and is the port open in its firewall?"),
@@ -109,4 +118,8 @@ public sealed record PendingPeer(
     int ScreenWidth,
     int ScreenHeight,
     string MacAddress,
-    DateTime RequestedAt);
+    DateTime RequestedAt)
+{
+    /// <summary>The identity public key it proved (base64); pinned when the user allows it.</summary>
+    public string IdentityKey { get; init; } = string.Empty;
+}
