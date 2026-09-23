@@ -211,7 +211,8 @@ public sealed partial class PairingWizardViewModel : ObservableObject
                     await _dialogs.WarnAsync($"{address} is already set up. Close this window and see Settings > Peers.");
                     return;
                 }
-                config = new PeerConfig { Name = address, Address = address, Port = (int)port, Position = position };
+                // Added by address: recognised by that address until it has connected once and its id is known.
+                config = new PeerConfig { Name = address, Address = address, Port = (int)port, Position = position, HasConnected = false };
             }
 
             var error = await PeerActions.AddAndConnectAsync(_settings, _backend, config);

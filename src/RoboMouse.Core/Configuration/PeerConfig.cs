@@ -71,6 +71,15 @@ public class PeerConfig
     public string IdentityKey { get; set; } = string.Empty;
 
     /// <summary>
+    /// Whether this peer has connected (either way) at least once, so its <see cref="Id"/> is the one
+    /// the machine really uses. Only an entry that has never connected is recognised by its address
+    /// when a connection comes in (<see cref="AcceptPolicy.Decide"/>); afterwards it matches by id only.
+    /// Defaults to true, so entries saved by older versions (whose ids were learned by connecting) and
+    /// entries made from a connection count as connected; adding a peer by address sets it to false.
+    /// </summary>
+    public bool HasConnected { get; set; } = true;
+
+    /// <summary>
     /// Whether clipboard content and copied files are shared with this peer, both ways: with it off,
     /// nothing copied here (or relayed through here) is sent to it, and nothing it sends is applied
     /// or passed on. The General page's clipboard switches still apply on top.

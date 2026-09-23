@@ -217,7 +217,8 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
                 return;
         }
 
-        var config = _existing ?? new PeerConfig();
+        // A new entry is added by address: recognised by that address until it has connected once.
+        var config = _existing ?? new PeerConfig { HasConnected = false };
         config.Name = Name.Trim();
         config.Address = address;
         config.Port = (int)port;

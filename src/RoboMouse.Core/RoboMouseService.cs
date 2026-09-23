@@ -60,6 +60,9 @@ public sealed class RoboMouseService : IDisposable
     private readonly Dictionary<string, PendingPeer> _pendingPeers = new();
     private readonly HashSet<string> _ignoredPeers = new();
 
+    // Makes checking and pinning a peer's identity key one step (AcceptPolicy.PinOrMatch).
+    private readonly object _pinLock = new();
+
     // Controller state (this machine's mouse drives a remote screen). The connection itself is the
     // registry's active connection, so it changes under the registry's lock.
     private PeerConfig? _activePeer;
@@ -682,10 +685,22 @@ public sealed class RoboMouseService : IDisposable
             throw new IdentityMismatchException($"The machine at {peerConfig.Address} claims to be {clash.Name} but does not have its identity key.");
         }
 
+        // An incoming connection may have pinned a different key on this entry meanwhile.
+        if (!PinIdentity(peerConfig, connection))
+        {
+            connection.Dispose();
+            throw new IdentityMismatchException($"The machine at {peerConfig.Address} does not have the identity key just paired for {peerConfig.Name}.");
+        }
+
         peerConfig.ScreenWidth = connection.PeerScreenWidth;
         peerConfig.ScreenHeight = connection.PeerScreenHeight;
         peerConfig.Id = connection.PeerId;
-        PinIdentity(peerConfig, connection);
+        if (!peerConfig.HasConnected)
+        {
+            peerConfig.HasConnected = true;
+            if (_settings.Peers.Contains(peerConfig))
+                SaveSettings("peer connected");
+        }
 
         OnConfigConnected(peerConfig, configId);
         AddConnection(connection);
@@ -895,16 +910,21 @@ public sealed class RoboMouseService : IDisposable
 
     /// <summary>
     /// Pins the identity key a connection proved on a peer that has none yet: trust on first pairing,
-    /// inside a channel the pairing code authenticated. Saves when the peer is configured.
+    /// inside a channel the pairing code authenticated. Saves when the peer is configured. Returns
+    /// false when the peer's key is not the connection's (another connection pinned a different key
+    /// first); the caller must then refuse the connection.
     /// </summary>
-    private void PinIdentity(PeerConfig peer, PeerConnection connection)
+    private bool PinIdentity(PeerConfig peer, PeerConnection connection)
     {
-        if (!string.IsNullOrEmpty(peer.IdentityKey) || connection.PeerIdentityKey.Length == 0)
-            return;
-        peer.IdentityKey = Convert.ToBase64String(connection.PeerIdentityKey);
+        var key = Convert.ToBase64String(connection.PeerIdentityKey);
+        if (!AcceptPolicy.PinOrMatch(peer, key, _pinLock, out var pinned))
+            return false;
+        if (!pinned)
+            return true;
         SimpleLogger.Log("Connect", $"Paired with {connection.PeerName}; identity {IdentityKey.FingerprintOf(connection.PeerIdentityKey)}");
         if (_settings.Peers.Contains(peer))
             SaveSettings("peer identity");
+        return true;
     }
 
     /// <summary>
@@ -1110,8 +1130,18 @@ public sealed class RoboMouseService : IDisposable
         }
 
         // Pin before a first-time id could merge this entry into another one (which then takes the key).
-        PinIdentity(config, connection);
+        // Atomic: of two connections racing for one unpinned entry, the second must prove the same key.
+        if (!PinIdentity(config, connection))
+        {
+            SimpleLogger.Log("Accept", $"Refusing connection from {connection.PeerName}: {config.Name} was just paired with a different identity key");
+            connection.Disconnected += (s, e) => connection.Dispose();
+            connection.Start();
+            _ = connection.DisconnectAsync();
+            return;
+        }
 
+        var firstConnection = !config.HasConnected;
+        config.HasConnected = true;
         if (config.Id != connection.PeerId)
         {
             var previousId = config.Id;
@@ -1122,6 +1152,8 @@ public sealed class RoboMouseService : IDisposable
         }
         else
         {
+            if (firstConnection)
+                SaveSettings("peer connected");
             SetConnectFailure(config.Id, null);
         }
 
@@ -1155,17 +1187,22 @@ public sealed class RoboMouseService : IDisposable
             IdentityKey = identityKey
         };
 
-        bool isNew;
+        PendingUpdate update;
         lock (_connectionLock)
         {
-            isNew = !_pendingPeers.ContainsKey(pending.MachineId);
-            // Keep the first request time; refresh the address in case it moved.
-            if (!isNew)
-                pending = pending with { RequestedAt = _pendingPeers[pending.MachineId].RequestedAt };
-            _pendingPeers[pending.MachineId] = pending;
+            update = PendingRequests.Register(_pendingPeers, pending);
         }
 
-        if (!isNew)
+        if (update == PendingUpdate.Conflict)
+        {
+            // Never let a later request swap the key Allow would pin: two machines claim this id, so
+            // refuse both until one asks afresh.
+            SimpleLogger.Log("Accept", $"Two machines claim to be {pending.MachineName} ({pending.MachineId}) with different identity keys " +
+                $"(the latest from {pending.Address}, {IdentityKey.FingerprintOf(identityKey)}); dropped the request");
+            PendingPeersChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+        if (update != PendingUpdate.Added)
             return;
         SimpleLogger.Log("Accept", $"{pending.MachineName} ({pending.Address}) wants to connect; waiting for the user to allow it");
         PendingPeersChanged?.Invoke(this, EventArgs.Empty);
@@ -1208,8 +1245,7 @@ public sealed class RoboMouseService : IDisposable
         else
         {
             config.Enabled = true;
-            if (string.IsNullOrEmpty(config.IdentityKey))
-                config.IdentityKey = pending.IdentityKey;
+            AcceptPolicy.PinOrMatch(config, pending.IdentityKey, _pinLock, out _);
         }
         _settings.BlockedMachineIds.Remove(machineId);
         SaveSettings("allowed peer");
