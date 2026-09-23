@@ -171,8 +171,8 @@ public class DesktopServiceInjectorTests
         await WaitForAsync(() => injector.State == DesktopServiceState.Active);
 
         await service.SendAsync(new PipeMessage(PipeOpcode.HelperLost), Ct);
-        await WaitForAsync(() => !injector.ReachesSecureDesktop);
-        Assert.Equal(DesktopServiceState.Connecting, injector.State);
+        await WaitForAsync(() => injector.State == DesktopServiceState.Connecting);
+        Assert.False(injector.ReachesSecureDesktop);
 
         injector.SimulateMouseEvent(MouseEventType.LeftDown);
         Assert.Equal(new[] { "mouse LeftDown" }, local.Calls);

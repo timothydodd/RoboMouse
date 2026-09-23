@@ -5,7 +5,7 @@ namespace RoboMouse.Contracts;
 /// (so a replacement helper can let go of what a dead one left down) and the helper (so it lets go when
 /// its pipe closes) track what they relay or apply through this. Not thread-safe.
 /// </summary>
-public sealed class HeldInput
+public sealed class HeldPipeInput
 {
     private readonly Dictionary<int, (uint Scan, bool Extended)> _keys = new();
     private readonly HashSet<int> _buttons = new();

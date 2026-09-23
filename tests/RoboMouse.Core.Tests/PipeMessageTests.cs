@@ -189,9 +189,9 @@ public class PipeMessageTests
     // --- held input ------------------------------------------------------------------------------
 
     [Fact]
-    public void HeldInput_ReleasesWhatIsStillDown()
+    public void HeldPipeInput_ReleasesWhatIsStillDown()
     {
-        var held = new HeldInput();
+        var held = new HeldPipeInput();
         held.Track(PipeMessage.Key(0x10, 0x2A, PipeInput.KeyDown, false));
         held.Track(PipeMessage.Key(0x41, 0x1E, PipeInput.KeyDown, false));
         held.Track(PipeMessage.Key(0x41, 0x1E, PipeInput.KeyUp, false));

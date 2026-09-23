@@ -316,7 +316,7 @@ internal sealed class ServiceWorker : IDisposable
         public CancellationToken Token { get; }
 
         /// <summary>What the app has pressed through the service; guarded by <see cref="Gate"/>.</summary>
-        public HeldInput Held { get; } = new();
+        public HeldPipeInput Held { get; } = new();
 
         /// <summary>Serializes relaying with the release burst sent to a new helper, so order holds.</summary>
         public SemaphoreSlim Gate { get; } = new(1, 1);

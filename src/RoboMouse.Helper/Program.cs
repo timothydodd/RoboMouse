@@ -41,7 +41,7 @@ internal static class Program
     private static void Run(PipeConnection pipe)
     {
         using var desktop = new InputDesktop();
-        var held = new HeldInput();
+        var held = new HeldPipeInput();
         long lastCheck = 0;
 
         try
