@@ -1,0 +1,50 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RoboMouse.App.ViewModels"
+             xmlns:views="using:RoboMouse.App.Views"
+             x:Class="RoboMouse.App.Views.AboutPageView"
+             x:DataType="vm:AboutPageViewModel">
+
+  <ScrollViewer>
+    <StackPanel Margin="{StaticResource AppPagePadding}" MaxWidth="860" HorizontalAlignment="Stretch">
+      <TextBlock Classes="title" Text="About" />
+
+      <Border Classes="card">
+        <StackPanel Orientation="Horizontal" Spacing="16">
+          <Image Source="/Assets/logo.png" Width="48" Height="48" AutomationProperties.Name="RoboMouse logo" />
+          <StackPanel VerticalAlignment="Center">
+            <TextBlock Classes="subtitle" Text="RoboMouse" />
+            <SelectableTextBlock Classes="muted" Text="{Binding Version, StringFormat='Version {0}'}" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
+      <TextBlock Classes="section" Text="Updates" />
+      <views:SettingCard Header="Check for updates" Description="Looks for a new release on GitHub once a day and tells you about it. Nothing is downloaded or installed by itself."
+                         IsVisible="{Binding CanCheckForUpdates}">
+        <ToggleSwitch IsChecked="{Binding CheckForUpdates}" />
+      </views:SettingCard>
+      <views:SettingCard Header="{Binding UpdateStatus}" IsVisible="{Binding CanCheckForUpdates}">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <ProgressBar IsIndeterminate="True" Width="60" IsVisible="{Binding IsChecking}" VerticalAlignment="Center" />
+          <Button Classes="accent" Content="Download…" Command="{Binding OpenReleasePageCommand}" IsVisible="{Binding HasUpdate}"
+                  AutomationProperties.Name="Open the download page in the browser" />
+          <Button Content="Check now" Command="{Binding CheckNowCommand}" IsEnabled="{Binding !IsChecking}" />
+        </StackPanel>
+      </views:SettingCard>
+      <Border Classes="card" IsVisible="{Binding !CanCheckForUpdates}">
+        <TextBlock Classes="caption" Text="This copy came from the Microsoft Store, which keeps it up to date." />
+      </Border>
+
+      <TextBlock Classes="section" Text="Troubleshooting" />
+      <views:SettingCard Header="Log files" Description="What RoboMouse did this run and the two before it, plus crash.txt after an unexpected error.">
+        <Button Content="Open log folder" Command="{Binding OpenLogFolderCommand}" />
+      </views:SettingCard>
+      <views:SettingCard Header="Export diagnostics"
+                         Description="Saves a zip to attach to a bug report: the logs, the settings with the pairing code removed, the RoboMouse and Windows versions, and the monitor layout.">
+        <Button Content="Export…" Command="{Binding ExportDiagnosticsCommand}" AutomationProperties.Name="Export diagnostics" />
+      </views:SettingCard>
+    </StackPanel>
+  </ScrollViewer>
+
+</UserControl>

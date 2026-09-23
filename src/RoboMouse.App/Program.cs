@@ -43,6 +43,7 @@ internal static class Program
         {
             InputSimulator.RestoreSystemCursor();
             SimpleLogger.Log("Fatal", e.ExceptionObject?.ToString() ?? "Unknown unhandled exception");
+            Services.Diagnostics.WriteCrash("Fatal", e.ExceptionObject);
         };
 
         return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);

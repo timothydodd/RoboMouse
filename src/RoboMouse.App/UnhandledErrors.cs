@@ -31,6 +31,7 @@ internal static class UnhandledErrors
     private static void Report(string source, Exception ex)
     {
         SimpleLogger.Log("Unhandled", $"{source}: {ex}");
+        Diagnostics.WriteCrash(source, ex);
 
         // One dialog at a time: a handler that throws on every timer tick must not stack up windows.
         if (Interlocked.Exchange(ref _dialogShowing, 1) != 0)
@@ -41,7 +42,7 @@ internal static class UnhandledErrors
             try
             {
                 await new WindowDialogService(null, null).ErrorAsync(
-                    $"{message}\n\nRoboMouse is still running. The details were written to its log (%AppData%\\RoboMouse\\debug.log).");
+                    $"{message}\n\nRoboMouse is still running. The details were written to %AppData%\\RoboMouse\\crash.txt; Settings > About > Export diagnostics collects them for a bug report.");
             }
             catch (Exception dialogError)
             {
