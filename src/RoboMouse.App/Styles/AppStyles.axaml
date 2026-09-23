@@ -1,6 +1,7 @@
 <Styles xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:views="using:RoboMouse.App.Views">
+        xmlns:views="using:RoboMouse.App.Views"
+        xmlns:ic="using:FluentIcons.Avalonia">
   <!--
     App-wide styles layered on the Fluent theme. Everything uses the theme's own brushes so the
     windows follow the OS light/dark setting and accent colour.
@@ -15,6 +16,7 @@
           <SolidColorBrush x:Key="AppNavBackgroundBrush" Color="#FFF3F3F3" />
           <SolidColorBrush x:Key="AppWindowBackgroundBrush" Color="#FFF9F9F9" />
           <SolidColorBrush x:Key="AppCanvasBrush" Color="#FF1B2030" />
+          <SolidColorBrush x:Key="AppToastBorderBrush" Color="#33000000" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
           <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#0DFFFFFF" />
@@ -22,6 +24,7 @@
           <SolidColorBrush x:Key="AppNavBackgroundBrush" Color="#FF202020" />
           <SolidColorBrush x:Key="AppWindowBackgroundBrush" Color="#FF272727" />
           <SolidColorBrush x:Key="AppCanvasBrush" Color="#FF141821" />
+          <SolidColorBrush x:Key="AppToastBorderBrush" Color="#33FFFFFF" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
 
@@ -30,6 +33,11 @@
       <SolidColorBrush x:Key="AppStatusWarnBrush" Color="#FFEB821E" />
       <SolidColorBrush x:Key="AppStatusErrorBrush" Color="#FFD63C3C" />
       <SolidColorBrush x:Key="AppStatusIdleBrush" Color="#FF969EAA" />
+
+      <!-- Message bar tints: the status colours at low opacity, readable on both variants -->
+      <SolidColorBrush x:Key="AppInfoBackgroundBrush" Color="#1A0078D4" />
+      <SolidColorBrush x:Key="AppWarnBackgroundBrush" Color="#26EB821E" />
+      <SolidColorBrush x:Key="AppErrorBackgroundBrush" Color="#26D63C3C" />
 
       <x:Double x:Key="AppNavWidth">220</x:Double>
       <Thickness x:Key="AppPagePadding">36,28,36,28</Thickness>
@@ -165,6 +173,62 @@
     <Setter Property="Width" Value="9" />
     <Setter Property="Height" Value="9" />
     <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+
+  <!-- A setting that depends on the card above it: indented -->
+  <Style Selector="views|SettingCard.nested">
+    <Setter Property="Margin" Value="32,0,0,4" />
+  </Style>
+
+  <!-- A card that needs an answer (a machine asking to connect) -->
+  <Style Selector="Border.card.attention">
+    <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+  </Style>
+
+  <!-- Inline message bar (WinUI InfoBar): an icon, a message, optionally a button -->
+  <Style Selector="Border.infobar">
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="6" />
+    <Setter Property="Padding" Value="14,10" />
+    <Setter Property="Margin" Value="0,0,0,8" />
+    <Setter Property="Background" Value="{StaticResource AppInfoBackgroundBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource AppCardBorderBrush}" />
+  </Style>
+  <Style Selector="Border.infobar.warning">
+    <Setter Property="Background" Value="{StaticResource AppWarnBackgroundBrush}" />
+    <Setter Property="BorderBrush" Value="{StaticResource AppStatusWarnBrush}" />
+  </Style>
+  <Style Selector="Border.infobar.error">
+    <Setter Property="Background" Value="{StaticResource AppErrorBackgroundBrush}" />
+    <Setter Property="BorderBrush" Value="{StaticResource AppStatusErrorBrush}" />
+  </Style>
+  <Style Selector="Border.infobar.warning ic|SymbolIcon.status">
+    <Setter Property="Foreground" Value="{StaticResource AppStatusWarnBrush}" />
+  </Style>
+  <Style Selector="Border.infobar.error ic|SymbolIcon.status">
+    <Setter Property="Foreground" Value="{StaticResource AppStatusErrorBrush}" />
+  </Style>
+
+  <!-- Monospace for pairing codes and addresses -->
+  <Style Selector="TextBlock.code, SelectableTextBlock.code">
+    <Setter Property="FontFamily" Value="Cascadia Mono, Consolas, monospace" />
+  </Style>
+
+  <!-- Toast notifications near the tray -->
+  <Style Selector="Border.toast">
+    <Setter Property="Background" Value="{DynamicResource AppWindowBackgroundBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource AppToastBorderBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="8" />
+    <Setter Property="Padding" Value="16,14,12,14" />
+  </Style>
+
+  <Style Selector="Button.toast-close">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="Padding" Value="6" />
+    <Setter Property="VerticalAlignment" Value="Top" />
+    <Setter Property="Margin" Value="0,-4,-4,0" />
   </Style>
 
   <Style Selector="ToggleSwitch.compact">

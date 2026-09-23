@@ -13,15 +13,23 @@ using RoboMouse.Core.Network;
 namespace RoboMouse.App;
 
 /// <summary>
-/// Owns the tray icon and the service. The tray icon's colour reflects state; everything else lives
-/// in the Settings window.
+/// Owns the tray icon and the service. The tray icon's colour reflects state; notifications (a machine
+/// asking to connect, errors, updates) appear as toasts next to it; everything else lives in the
+/// Settings window.
 /// </summary>
 public sealed class TrayController : IDisposable
 {
     private enum TrayState { Disabled, Disconnected, Connected, Controlling, Controlled }
 
     private readonly AppSettings _settings;
+    private readonly AppState _appState;
     private readonly RoboMouseService _service;
+    private readonly ToastPresenter _toasts = new();
+    private readonly NotificationThrottle _errorThrottle = new(TimeSpan.FromMinutes(1));
+    private readonly Dictionary<NetworkErrorKind, NetworkStartError> _shownNetworkErrors = new();
+    private readonly HashSet<string> _pendingToasts = new();
+    private readonly UpdateChecker? _updates;
+    private readonly DispatcherTimer? _updateTimer;
     private readonly ServiceBackend _backend;
     private readonly IClassicDesktopStyleApplicationLifetime _lifetime;
     private readonly TrayIcon _trayIcon;
@@ -33,6 +41,7 @@ public sealed class TrayController : IDisposable
     private readonly NativeMenuItem _peersItem;
 
     private SettingsWindow? _settingsWindow;
+    private PairingWizardWindow? _wizard;
 #if DEBUG
     private DebugPanelWindow? _debugPanel;
     private readonly DebugPanelViewModel _debugViewModel = new();
@@ -43,16 +52,19 @@ public sealed class TrayController : IDisposable
     private ScreenPosition _lastControlledEdge = ScreenPosition.Right;
     private bool _disposed;
 
-    public TrayController(AppSettings settings, IClassicDesktopStyleApplicationLifetime lifetime)
+    public TrayController(AppSettings settings, IClassicDesktopStyleApplicationLifetime lifetime, AppState appState)
     {
         _settings = settings;
+        _appState = appState;
         _lifetime = lifetime;
+        // The Store updates its own copy; only the direct-download build looks on GitHub.
+        _updates = StartupRegistration.IsPackaged ? null : new UpdateChecker();
 
         _service = new RoboMouseService(settings)
         {
             ClipboardImageCodec = new AvaloniaImageCodec()
         };
-        _backend = new ServiceBackend(_service);
+        _backend = new ServiceBackend(_service, settings);
 
         foreach (var state in Enum.GetValues<TrayState>())
             _icons[state] = CreateIcon(state);
@@ -61,6 +73,8 @@ public sealed class TrayController : IDisposable
         _enableItem = new NativeMenuItem("Enabled") { ToggleType = MenuItemToggleType.CheckBox, IsChecked = _settings.Enabled };
         _enableItem.Click += OnEnableToggled;
         _peersItem = new NativeMenuItem("Peers") { Menu = new NativeMenu() };
+        var pairItem = new NativeMenuItem("Pair with another PC...");
+        pairItem.Click += (s, e) => ShowPairingWizard();
         var settingsItem = new NativeMenuItem("Settings...");
         settingsItem.Click += (s, e) => ShowSettings();
         var exitItem = new NativeMenuItem("Exit");
@@ -71,6 +85,7 @@ public sealed class TrayController : IDisposable
         _menu.Items.Add(new NativeMenuItemSeparator());
         _menu.Items.Add(_enableItem);
         _menu.Items.Add(_peersItem);
+        _menu.Items.Add(pairItem);
         _menu.Items.Add(settingsItem);
         _menu.Items.Add(new NativeMenuItemSeparator());
         _menu.Items.Add(exitItem);
@@ -99,13 +114,32 @@ public sealed class TrayController : IDisposable
             _settings.Save();
             UpdateStatus();
         });
-        _service.Error += OnServiceError;
+        _service.Error += (s, e) => OnUi(() => OnServiceError(e));
+        _service.PendingPeerRequested += (s, e) => OnUi(() => OnPendingPeerRequested(e));
+        _service.PendingPeersChanged += (s, e) => OnUi(OnPendingPeersChanged);
+        _service.PeerWakeSent += (s, e) => OnUi(() => _toasts.Show(Notifications.WakeSent(e)));
+        _service.NetworkStatusChanged += (s, e) => OnUi(ShowNetworkErrors);
+        _service.PeersChanged += (s, e) => OnUi(UpdateStatus);
 #if DEBUG
         _service.MouseDebugUpdate += OnMouseDebugUpdate;
 #endif
 
         _service.Start();
         UpdateStatus();
+        ShowNetworkErrors();
+        ShowSettingsLoadNotice();
+
+        if (_updates != null)
+        {
+            // First look a minute after start (not competing with connecting), then hourly to see if a day has passed.
+            _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+            _updateTimer.Tick += (s, e) =>
+            {
+                _updateTimer.Interval = TimeSpan.FromHours(1);
+                _ = CheckForUpdatesAsync();
+            };
+            _updateTimer.Start();
+        }
 
         // A second launch of the app asks us to bring up Settings instead of running itself.
         if (Program.Instance is { } instance)
@@ -221,21 +255,97 @@ public sealed class TrayController : IDisposable
     /// </summary>
     private async Task AddDiscoveredPeerAsync(DiscoveredPeer found, ScreenPosition position)
     {
-        var config = _settings.Peers.FirstOrDefault(p => p.Id == found.MachineId);
-        if (config == null)
-        {
-            config = PeerActions.FromDiscovered(found, position);
-            _settings.Peers.Add(config);
-            _settings.Save();
-        }
-
-        var error = await PeerActions.ConnectNewPeerAsync(_backend, config);
-        if (error == null)
-            _settings.Save(); // the connect learned its machine id and screen size
-        else
+        var config = _settings.Peers.FirstOrDefault(p => p.Id == found.MachineId) ?? PeerActions.FromDiscovered(found, position);
+        var error = await PeerActions.AddAndConnectAsync(_settings, _backend, config);
+        if (error != null)
             await Dialogs().WarnAsync($"Added {config.Name}, but could not connect yet: {error}\n\nRoboMouse keeps trying in the background.");
         UpdateStatus();
     }
+
+    #region Notifications
+
+    /// <summary>An unknown machine with the code asks to connect: Allow adds it and opens the Layout page.</summary>
+    private void OnPendingPeerRequested(PendingPeer peer)
+    {
+        _pendingToasts.Add(peer.MachineId);
+        _toasts.Show(Notifications.PendingPeer(peer,
+            allow: () =>
+            {
+                if (_service.AllowPendingPeer(peer.MachineId) != null)
+                    ShowSettings(SettingsPage.Layout);
+            },
+            ignore: () => _service.IgnorePendingPeer(peer.MachineId)));
+    }
+
+    /// <summary>A request answered elsewhere (the Peers page, the wizard) takes its toast down too.</summary>
+    private void OnPendingPeersChanged()
+    {
+        var pending = _service.PendingPeers.Select(p => p.MachineId).ToHashSet();
+        foreach (var id in _pendingToasts.Where(id => !pending.Contains(id)).ToList())
+        {
+            _pendingToasts.Remove(id);
+            _toasts.Dismiss(Notifications.PendingKey(id));
+        }
+    }
+
+    private void OnServiceError(Exception e)
+    {
+        SimpleLogger.Log("Error", e.ToString());
+        if (_errorThrottle.ShouldShow(e.GetType().FullName ?? "error", DateTime.UtcNow))
+            _toasts.Show(Notifications.ServiceError(e, () => Dialogs().Open(Diagnostics.DataFolder)));
+    }
+
+    /// <summary>A port that could not be opened (once per distinct error); a fixed one takes its toast down.</summary>
+    private void ShowNetworkErrors()
+    {
+        foreach (var (kind, error) in new[] { (NetworkErrorKind.ListenPort, _service.ListenerError), (NetworkErrorKind.DiscoveryPort, _service.DiscoveryError) })
+        {
+            if (error == null)
+            {
+                if (_shownNetworkErrors.Remove(kind))
+                    _toasts.Dismiss("network:" + kind);
+                continue;
+            }
+            if (_shownNetworkErrors.TryGetValue(kind, out var shown) && shown == error)
+                continue;
+            _shownNetworkErrors[kind] = error;
+            _toasts.Show(Notifications.NetworkError(error, () => ShowSettings(SettingsPage.Network)));
+        }
+    }
+
+    /// <summary>Once at startup: the settings file had to be restored or reset.</summary>
+    private void ShowSettingsLoadNotice()
+    {
+        var notice = Notifications.SettingsLoad(_settings.LoadNotice, _settings.CorruptFilePath, () => Dialogs().Open(Diagnostics.DataFolder));
+        if (notice != null)
+            _toasts.Show(notice);
+    }
+
+    /// <summary>At most once a day, when turned on: a newer release gets one notification per version.</summary>
+    private async Task CheckForUpdatesAsync()
+    {
+        if (_updates == null || !_appState.CheckForUpdates || !UpdateChecker.IsDue(_appState.LastUpdateCheckUtc, DateTime.UtcNow))
+            return;
+        var current = UpdateChecker.CurrentVersion;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var update = await _updates.CheckAsync(current, cts.Token);
+            if (update != null && _appState.LastNotifiedVersion != update.Version.ToString(3))
+            {
+                _appState.LastNotifiedVersion = update.Version.ToString(3);
+                _toasts.Show(Notifications.UpdateAvailable(update, current, () => Dialogs().Open(update.PageUrl)));
+            }
+        }
+        catch (Exception ex)
+        {
+            SimpleLogger.Log("Update", $"Check failed: {ex.Message}");
+        }
+        _appState.LastUpdateCheckUtc = DateTime.UtcNow;
+        _appState.Save();
+    }
+
+    #endregion
 
     /// <summary>Dialogs from the tray: modal to the Settings window when it is open.</summary>
     private WindowDialogService Dialogs() => new(_settingsWindow, _backend);
@@ -277,21 +387,54 @@ public sealed class TrayController : IDisposable
         _trayIcon.ToolTipText = tip.Length > 63 ? tip[..63] : tip;
     }
 
-    public void ShowSettings()
+    /// <summary>Opens Settings (or brings it to the front), optionally on a given page.</summary>
+    public void ShowSettings() => ShowSettings(null);
+
+    public void ShowSettings(SettingsPage? page)
     {
         if (_settingsWindow == null)
         {
-            _settingsWindow = new SettingsWindow(_settings, _backend);
+            _settingsWindow = new SettingsWindow(_settings, _backend, _appState, _updates);
             _settingsWindow.Closed += (s, e) => _settingsWindow = null;
+            if (page is { } first)
+                _settingsWindow.ViewModel.ShowPage(first);
             _settingsWindow.Show();
         }
         else
         {
+            if (page is { } target)
+            {
+                _settingsWindow.ViewModel.Refresh();
+                _settingsWindow.ViewModel.ShowPage(target);
+            }
             if (_settingsWindow.WindowState == WindowState.Minimized)
                 _settingsWindow.WindowState = WindowState.Normal;
             _settingsWindow.Show();
             _settingsWindow.Activate();
         }
+    }
+
+    /// <summary>The pairing wizard: shown at the first start (no peers yet) and from the tray menu.</summary>
+    public void ShowPairingWizard()
+    {
+        if (_wizard != null)
+        {
+            _wizard.Activate();
+            return;
+        }
+        var dialogs = new WindowDialogService(null, _backend);
+        _wizard = new PairingWizardWindow(new PairingWizardViewModel(_settings, _backend, dialogs));
+        dialogs.Owner = _wizard;
+        _wizard.Closed += (s, e) =>
+        {
+            var added = _wizard?.ViewModel.Result;
+            _wizard = null;
+            UpdateStatus();
+            // Show where the new peer landed; the edge can be adjusted there.
+            if (added != null)
+                ShowSettings(SettingsPage.Layout);
+        };
+        _wizard.Show();
     }
 
     private void OnEnableToggled(object? sender, EventArgs e)
@@ -321,11 +464,6 @@ public sealed class TrayController : IDisposable
         }
 
         _wasControllingRemote = _service.IsControllingRemote;
-    }
-
-    private void OnServiceError(object? sender, Exception e)
-    {
-        SimpleLogger.Log("Error", e.ToString());
     }
 
 #if DEBUG
@@ -366,6 +504,8 @@ public sealed class TrayController : IDisposable
 
     private void OnExit(object? sender, EventArgs e)
     {
+        _updateTimer?.Stop();
+        _toasts.CloseAll();
         _trayIcon.IsVisible = false;
         _service.Dispose();
         _lifetime.Shutdown();
@@ -409,10 +549,13 @@ public sealed class TrayController : IDisposable
             return;
         _disposed = true;
 
+        _updateTimer?.Stop();
+        _toasts.CloseAll();
         _trayIcon.IsVisible = false;
         _trayIcon.Dispose();
         _service.Dispose();
         _settingsWindow?.Close();
+        _wizard?.Close();
 #if DEBUG
         _debugPanel?.Close();
 #endif

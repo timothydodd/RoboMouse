@@ -29,10 +29,11 @@ public partial class App : Application
             UnhandledErrors.Install();
 
             _settings = AppSettings.Load();
+            var appState = Services.AppState.Load();
             StartupRegistration.SyncOnLaunch(_settings.StartWithWindows);
             try
             {
-                _tray = new TrayController(_settings, desktop);
+                _tray = new TrayController(_settings, desktop, appState);
             }
             catch (Exception ex)
             {
@@ -46,19 +47,31 @@ public partial class App : Application
                 _settings?.Save();
             };
 
-            if (ShouldShowSettingsAtLaunch(_settings))
-                Avalonia.Threading.Dispatcher.UIThread.Post(() => _tray?.ShowSettings());
+            switch (WindowAtLaunch(_settings))
+            {
+                case LaunchWindow.PairingWizard:
+                    Avalonia.Threading.Dispatcher.UIThread.Post(() => _tray?.ShowPairingWizard());
+                    break;
+                case LaunchWindow.Settings:
+                    Avalonia.Threading.Dispatcher.UIThread.Post(() => _tray?.ShowSettings());
+                    break;
+            }
         }
 
         base.OnFrameworkInitializationCompleted();
     }
 
+    /// <summary>What opens at launch.</summary>
+    internal enum LaunchWindow { None, Settings, PairingWizard }
+
     /// <summary>
-    /// Settings opens at launch when there is nothing to connect to yet (first run, or every peer
-    /// removed), since a tray icon alone gives no hint what to do next; otherwise only when the user
-    /// turned "Start minimized" off.
+    /// With nothing to connect to yet (first run, or every peer removed) the pairing wizard opens,
+    /// since a tray icon alone gives no hint what to do next; otherwise Settings opens only when the
+    /// user turned "Start minimized" off.
     /// </summary>
-    internal static bool ShouldShowSettingsAtLaunch(AppSettings settings) =>
-        settings.Peers.Count == 0 || !settings.StartMinimized;
+    internal static LaunchWindow WindowAtLaunch(AppSettings settings) =>
+        settings.Peers.Count == 0 ? LaunchWindow.PairingWizard
+        : !settings.StartMinimized ? LaunchWindow.Settings
+        : LaunchWindow.None;
 
 }

@@ -25,14 +25,15 @@
       <Border Background="{DynamicResource AppNavBackgroundBrush}" Width="{StaticResource AppNavWidth}" Padding="12,16,12,16">
         <DockPanel>
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="12" Margin="8,4,8,24">
-            <Image Source="/Assets/logo.png" Width="36" Height="36" />
+            <Image Source="/Assets/logo.png" Width="36" Height="36" AutomationProperties.AccessibilityView="Raw" />
             <StackPanel VerticalAlignment="Center">
               <TextBlock Text="RoboMouse" FontSize="16" FontWeight="SemiBold" />
               <TextBlock Classes="caption" Text="{Binding Version, StringFormat='Version {0}'}" />
             </StackPanel>
           </StackPanel>
 
-          <Border DockPanel.Dock="Bottom" Classes="card" Margin="0" Padding="12,10">
+          <Border DockPanel.Dock="Bottom" Classes="card" Margin="0" Padding="12,10"
+                  AutomationProperties.Name="{Binding StatusText}" AutomationProperties.LiveSetting="Polite">
             <StackPanel Orientation="Horizontal" Spacing="10">
               <Ellipse Classes="dot" Fill="{Binding StatusTone, Converter={x:Static views:StatusToneToBrushConverter.Instance}}" />
               <StackPanel>
@@ -42,10 +43,11 @@
             </StackPanel>
           </Border>
 
-          <ListBox Classes="nav" ItemsSource="{Binding Pages}" SelectedItem="{Binding SelectedPage}">
+          <ListBox Classes="nav" ItemsSource="{Binding Pages}" SelectedItem="{Binding SelectedPage}"
+                   AutomationProperties.Name="Settings pages">
             <ListBox.ItemTemplate>
               <DataTemplate x:DataType="vm:NavigationItem">
-                <Grid ColumnDefinitions="Auto,Auto,*">
+                <Grid ColumnDefinitions="Auto,Auto,*" AutomationProperties.Name="{Binding Title}">
                   <!-- WinUI-style selection indicator -->
                   <Border Width="3" Height="16" CornerRadius="2" Margin="-8,0,13,0"
                           Background="{DynamicResource SystemControlHighlightAccentBrush}"
@@ -65,6 +67,7 @@
         <views:NetworkPageView DataContext="{Binding Network}" IsVisible="{Binding IsActive}" />
         <views:PeersPageView DataContext="{Binding Peers}" IsVisible="{Binding IsActive}" />
         <views:LayoutPageView DataContext="{Binding Layout}" IsVisible="{Binding IsActive}" />
+        <views:AboutPageView DataContext="{Binding About}" IsVisible="{Binding IsActive}" />
       </Panel>
     </Grid>
   </DockPanel>

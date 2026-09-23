@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RoboMouse.App.ViewModels"
              xmlns:views="using:RoboMouse.App.Views"
+             xmlns:ic="using:FluentIcons.Avalonia"
              x:Class="RoboMouse.App.Views.NetworkPageView"
              x:DataType="vm:NetworkPageViewModel">
 
@@ -9,17 +10,67 @@
     <StackPanel Margin="{StaticResource AppPagePadding}" MaxWidth="860" HorizontalAlignment="Stretch">
       <TextBlock Classes="title" Text="Network" />
 
+      <!-- A port another program holds: nothing can connect in, or nothing is found -->
+      <Border Classes="infobar error" IsVisible="{Binding NetworkError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+              Margin="0,0,0,16">
+        <Grid ColumnDefinitions="Auto,*">
+          <ic:SymbolIcon Classes="status" Symbol="ErrorCircle" FontSize="18" Margin="0,0,12,0" VerticalAlignment="Top" />
+          <TextBlock Grid.Column="1" Text="{Binding NetworkError}" TextWrapping="Wrap"
+                     AutomationProperties.LiveSetting="Polite" />
+        </Grid>
+      </Border>
+
       <TextBlock Classes="section first" Text="Pairing code" />
       <Border Classes="card">
         <StackPanel Spacing="10">
           <Grid ColumnDefinitions="*,8,Auto,8,Auto">
-            <TextBox Text="{Binding PairingCode}" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="15" />
-            <Button Grid.Column="2" Content="Copy" Command="{Binding CopyPairingCodeCommand}" />
-            <Button Grid.Column="4" Content="Generate new" Command="{Binding GeneratePairingCodeCommand}" />
+            <SelectableTextBlock Classes="code" Text="{Binding PairingCode}" FontSize="20" VerticalAlignment="Center"
+                                 AutomationProperties.Name="Pairing code" />
+            <Button Grid.Column="2" Command="{Binding CopyPairingCodeCommand}"
+                    AutomationProperties.Name="Copy the pairing code">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <ic:SymbolIcon Symbol="Copy" FontSize="16" />
+                <TextBlock Text="Copy" />
+              </StackPanel>
+            </Button>
+            <Button Grid.Column="4" Content="Generate new…" Command="{Binding GeneratePairingCodeCommand}"
+                    AutomationProperties.Name="Generate a new pairing code" />
           </Grid>
           <TextBlock Classes="caption"
-                     Text="Enter the same code on every machine. It authenticates peers and encrypts all traffic; a machine with a different code cannot connect. Existing connections keep their session until they reconnect." />
+                     Text="Every machine uses the same code. It authenticates peers and encrypts all traffic; a machine with a different code cannot connect. To pair with another PC, either enter this code there, or enter its code here." />
+
+          <!-- Taking the code another PC shows -->
+          <Button Content="Enter the code from another PC…" Command="{Binding BeginEnterCodeCommand}"
+                  IsVisible="{Binding !IsEnteringCode}" />
+          <StackPanel Spacing="6" IsVisible="{Binding IsEnteringCode}">
+            <Grid ColumnDefinitions="*,8,Auto,8,Auto">
+              <TextBox Text="{Binding EnteredCode}" Classes="code" PlaceholderText="XXXX-XXXX-XXXX" MaxLength="20"
+                       FontFamily="Cascadia Mono, Consolas, monospace"
+                       AutomationProperties.Name="Code from the other PC"
+                       AutomationProperties.HelpText="12 letters and digits, as shown in Settings, Network on the other PC" />
+              <Button Grid.Column="2" Classes="accent" Content="Use this code" Command="{Binding UseEnteredCodeCommand}" />
+              <Button Grid.Column="4" Content="Cancel" Command="{Binding CancelEnterCodeCommand}" />
+            </Grid>
+            <TextBlock Classes="caption" Foreground="{StaticResource AppStatusErrorBrush}" Text="{Binding EnteredCodeError}"
+                       IsVisible="{Binding EnteredCodeError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                       AutomationProperties.LiveSetting="Assertive" />
+          </StackPanel>
         </StackPanel>
+      </Border>
+
+      <Border Classes="infobar warning" IsVisible="{Binding IsPairingCodeWeak}">
+        <Grid ColumnDefinitions="Auto,*">
+          <ic:SymbolIcon Classes="status" Symbol="Warning" FontSize="18" Margin="0,0,12,0" VerticalAlignment="Top" />
+          <TextBlock Grid.Column="1" TextWrapping="Wrap"
+                     Text="This code was typed by hand and is easy to guess. Generate a new one, then use it on every machine." />
+        </Grid>
+      </Border>
+      <Border Classes="infobar" IsVisible="{Binding PairingCodeChanged}">
+        <Grid ColumnDefinitions="Auto,*">
+          <ic:SymbolIcon Symbol="Info" FontSize="18" Margin="0,0,12,0" VerticalAlignment="Top" />
+          <TextBlock Grid.Column="1" TextWrapping="Wrap"
+                     Text="Saving disconnects every peer. Each one reconnects as soon as it uses the new code too." />
+        </Grid>
       </Border>
 
       <TextBlock Classes="section" Text="This computer" />
@@ -30,7 +81,7 @@
           <ItemsControl ItemsSource="{Binding Addresses}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="x:String">
-                <TextBlock Text="{Binding}" FontFamily="Cascadia Mono, Consolas, monospace" Margin="0,2" />
+                <SelectableTextBlock Classes="code" Text="{Binding}" Margin="0,2" />
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
@@ -39,19 +90,19 @@
       </Border>
 
       <TextBlock Classes="section" Text="Ports" />
-      <views:SettingCard Header="Listen port" Description="TCP port other machines connect to.">
+      <views:SettingCard Header="Listen port" Description="TCP port other machines connect to. Other machines must use the same number for this PC.">
         <NumericUpDown Value="{Binding LocalPort}" Minimum="1024" Maximum="65535" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="140" />
       </views:SettingCard>
-      <views:SettingCard Header="Discovery port" Description="UDP port used to find machines on this subnet.">
+      <views:SettingCard Header="Discovery port" Description="UDP port used to find machines on this subnet. Use the same number on every machine.">
         <NumericUpDown Value="{Binding DiscoveryPort}" Minimum="1024" Maximum="65535" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="140" />
       </views:SettingCard>
-      <views:SettingCard Header="Machine ID" Description="Port changes take effect after RoboMouse is restarted.">
+      <views:SettingCard Header="Machine ID" Description="Identifies this PC to its peers.">
         <TextBox Text="{Binding MachineId}" IsReadOnly="True" Width="300" Classes="muted" />
       </views:SettingCard>
 
       <TextBlock Classes="section" Text="Firewall" />
       <views:SettingCard Header="Allow RoboMouse through Windows Firewall"
-                         Description="Adds inbound rules that let RoboMouse, and only RoboMouse, receive on the ports above from machines on this subnet, on private and domain networks (not public Wi-Fi). Requires administrator approval.">
+                         Description="Adds inbound rules that let RoboMouse, and only RoboMouse, receive on the ports above on private and domain networks (not public Wi-Fi), from any address, so peers on another subnet can connect too. The pairing code still decides who may connect. Requires administrator approval.">
         <Button Content="Add rules…" Command="{Binding AllowThroughFirewallCommand}" />
       </views:SettingCard>
       <TextBlock Classes="caption" Margin="4,8,0,0"

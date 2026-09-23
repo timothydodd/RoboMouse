@@ -35,6 +35,22 @@ internal sealed class FakeBackend : IAppBackend
     public void ApplyClipboardSetting() { }
     public void ApplyHotkeySetting() { }
     public void ApplyPowerSetting() { }
+    public void SaveSettings() { }
+    public void ApplyNetworkSettings() { }
+    public bool ApplyPairingCode() => false;
+
+    /// <summary>Mac mini is switched on for the error-state previews; this is why it did not connect.</summary>
+    public PeerConnectFailure? GetLastConnectFailure(string peerId) => peerId == "mac"
+        ? new PeerConnectFailure(PeerFailureKind.PairingCodeMismatch, "The pairing code doesn't match. Enter the same code on both machines (Settings > Network).", DateTime.Now)
+        : null;
+    public NetworkStartError? ListenerError { get; set; }
+    public NetworkStartError? DiscoveryError { get; set; }
+    public List<PendingPeer> Pending { get; } = new();
+    public IReadOnlyList<PendingPeer> PendingPeers => Pending;
+    public PeerConfig? AllowPendingPeer(string machineId, ScreenPosition? position = null) { Pending.RemoveAll(p => p.MachineId == machineId); return null; }
+    public void IgnorePendingPeer(string machineId) => Pending.RemoveAll(p => p.MachineId == machineId);
+    public Task RemovePeerAsync(PeerConfig peer) => Task.CompletedTask;
+    public void UnblockMachine(string machineId) { }
     public bool DesktopServiceInstalled => true;
     public RoboMouse.Core.Input.DesktopServiceState DesktopServiceState => RoboMouse.Core.Input.DesktopServiceState.Active;
     public Task<bool> ApplyDesktopServiceSettingAsync(bool enabled) => Task.FromResult(true);

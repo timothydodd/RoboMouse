@@ -9,8 +9,8 @@ public enum DialogButtons { OK, YesNo, YesNoCancel }
 public enum DialogIcon { None, Information, Question, Warning, Error }
 
 /// <summary>
-/// UI interactions a view model needs but must not perform itself: message boxes, the peer dialog and
-/// the clipboard. Implemented by the window that hosts the view model.
+/// UI interactions a view model needs but must not perform itself: message boxes, the peer dialog, the
+/// clipboard, file pickers and opening folders or links. Implemented by the window that hosts the view model.
 /// </summary>
 public interface IDialogService
 {
@@ -21,6 +21,12 @@ public interface IDialogService
     Task<PeerConfig?> ShowPeerSetupAsync(PeerConfig? peer, AppSettings settings);
 
     Task CopyTextAsync(string text);
+
+    /// <summary>Asks where to save a file. Returns the chosen path, or null if cancelled.</summary>
+    Task<string?> PickSaveFileAsync(string title, string suggestedName, string extension);
+
+    /// <summary>Opens a folder in Explorer or a web page in the browser.</summary>
+    void Open(string pathOrUrl);
 }
 
 public static class DialogServiceExtensions

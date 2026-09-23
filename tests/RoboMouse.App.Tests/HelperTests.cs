@@ -38,11 +38,26 @@ public class HotkeyBoxTests
 public class PeerActionsTests
 {
     [Fact]
-    public async Task AlreadyConnecting_IsNotAFailure()
+    public async Task Rejection_IsReportedInPlainWords()
     {
-        var backend = new FakeBackend { ConnectError = new InvalidOperationException("Already connecting to 192.168.1.20:24800.") };
+        var backend = new FakeBackend { ConnectError = new Core.Network.ConnectionRejectedException(Core.Network.RejectCode.AwaitingApproval, "Waiting for DESK to allow this PC") };
 
-        Assert.Null(await PeerActions.ConnectNewPeerAsync(backend, Samples.Settings().Peers[0]));
+        Assert.Equal("Waiting for DESK to allow this PC", await PeerActions.ConnectNewPeerAsync(backend, Samples.Settings().Peers[0]));
+    }
+
+    [Fact]
+    public async Task AddAndConnect_SavesUnblocksAndConnects()
+    {
+        var settings = Samples.Settings();
+        var backend = new FakeBackend();
+        var peer = new PeerConfig { Id = "studio", Name = "STUDIO-PC", Address = "192.168.1.42", Position = ScreenPosition.Top };
+
+        Assert.Null(await PeerActions.AddAndConnectAsync(settings, backend, peer));
+
+        Assert.Contains(peer, settings.Peers);
+        Assert.Contains("studio", backend.Unblocked);
+        Assert.Contains(peer, backend.Connected);
+        Assert.Equal(2, backend.Saves);
     }
 
     [Fact]

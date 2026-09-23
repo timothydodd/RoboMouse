@@ -4,9 +4,12 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using RoboMouse.App.Services;
 using RoboMouse.App.ViewModels;
 using RoboMouse.App.Views;
+using RoboMouse.Core;
+using RoboMouse.Core.Configuration;
 
 namespace RoboMouse.UiPreview;
 
@@ -63,7 +66,7 @@ internal static class Program
             var backend = new FakeBackend();
             var settings = FakeBackend.SampleSettings();
 
-            var window = new SettingsWindow(settings, backend);
+            var window = new SettingsWindow(settings, backend, new AppState(), new UpdateChecker());
             window.Show();
             foreach (var page in window.ViewModel.Pages)
             {
@@ -85,10 +88,71 @@ internal static class Program
             window.ViewModel.Network.LocalPort = null;
             window.ViewModel.SelectedPage = window.ViewModel.Pages.First(p => p.Title == "Network");
             Capture(window, Path.Combine(outDir, $"settings-network-invalid{suffix}.png"));
+            // The General page scrolled down to the clipboard controls.
+            window.ViewModel.ShowPage(SettingsPage.General);
+            Dispatcher.UIThread.RunJobs();
+            var generalScroll = window.GetVisualDescendants().OfType<GeneralPageView>().Single()
+                .GetVisualDescendants().OfType<ScrollViewer>().First();
+            generalScroll.Offset = new Vector(0, 330);
+            Capture(window, Path.Combine(outDir, $"settings-general-clipboard{suffix}.png"));
+            generalScroll.Offset = default;
+
             window.ViewModel.General.ShowStartupState(RoboMouse.App.StartupState.DisabledByUser);
             window.ViewModel.SelectedPage = window.ViewModel.Pages.First(p => p.Title == "General");
             Capture(window, Path.Combine(outDir, $"settings-general-startup-off{suffix}.png"));
             window.Close();
+
+            // Problems: a hand-typed code, a port another program holds, a machine asking to connect,
+            // and a peer whose code does not match.
+            var troubled = FakeBackend.SampleSettings();
+            troubled.PairingCode = "letmein";
+            troubled.Peers[1].Enabled = true;
+            var troubledBackend = new FakeBackend
+            {
+                ListenerError = new NetworkStartError(NetworkErrorKind.ListenPort, 24800, true, "Port 24800 is in use by another program. Change it in Settings > Network.")
+            };
+            troubledBackend.Pending.Add(Pending);
+            var problems = new SettingsWindow(troubled, troubledBackend);
+            problems.Show();
+            problems.ViewModel.ShowPage(SettingsPage.Network);
+            problems.ViewModel.Network.BeginEnterCodeCommand.Execute(null);
+            problems.ViewModel.Network.EnteredCode = "hunter2";
+            problems.ViewModel.Network.UseEnteredCodeCommand.Execute(null);
+            Capture(problems, Path.Combine(outDir, $"settings-network-problems{suffix}.png"));
+            problems.ViewModel.ShowPage(SettingsPage.Peers);
+            Capture(problems, Path.Combine(outDir, $"settings-peers-problems{suffix}.png"));
+            problems.Close();
+
+            // First-run pairing wizard, one capture per step.
+            var fresh = new AppSettings { MachineName = "DESKTOP-TIM", PairingCode = "K7PQ-M2XW-9DHR" };
+            var wizardBackend = new FakeBackend();
+            wizardBackend.Pending.Add(Pending);
+            var wizard = new PairingWizardWindow(new PairingWizardViewModel(fresh, wizardBackend, new WindowDialogService(null, wizardBackend)));
+            wizard.Show();
+            for (var step = 0; step < PairingWizardViewModel.StepCount; step++)
+            {
+                wizard.ViewModel.Step = step;
+                if (step == 1)
+                    wizard.ViewModel.SelectedMachine = wizard.ViewModel.Machines.First();
+                Capture(wizard, Path.Combine(outDir, $"wizard-{step + 1}{suffix}.png"));
+            }
+            wizard.Close();
+
+            // Toasts.
+            var toasts = new[]
+            {
+                ("toast-request", Notifications.PendingPeer(Pending, () => { }, () => { })),
+                ("toast-port", Notifications.NetworkError(troubledBackend.ListenerError!, () => { })),
+                ("toast-update", Notifications.UpdateAvailable(new UpdateInfo(new Version(1, 2, 0), UpdateChecker.ReleasesPage), new Version(1, 1, 4), () => { })),
+                ("toast-wake", Notifications.WakeSent(settings.Peers[0]))
+            };
+            foreach (var (name, notification) in toasts)
+            {
+                var toast = new ToastWindow(new ToastViewModel(notification));
+                toast.Show();
+                Capture(toast, Path.Combine(outDir, $"{name}{suffix}.png"));
+                toast.Close();
+            }
 
             var setup = new PeerSetupWindow(new PeerSetupViewModel(settings.Peers[0], settings, backend, new WindowDialogService(null, backend)));
             setup.Show();
@@ -122,6 +186,8 @@ internal static class Program
         Console.WriteLine($"Screenshots written to {Path.GetFullPath(outDir)}");
         return 0;
     }
+
+    private static readonly PendingPeer Pending = new("studio", "STUDIO-PC", "192.168.1.42", 24800, 3840, 2160, "", new DateTime(2026, 9, 23, 9, 41, 0));
 
     private static MonitorRect Monitor(int x, int y, int w, int h, bool primary)
     {

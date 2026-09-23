@@ -2,31 +2,66 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RoboMouse.App.ViewModels"
              xmlns:views="using:RoboMouse.App.Views"
+             xmlns:ic="using:FluentIcons.Avalonia"
              x:Class="RoboMouse.App.Views.PeersPageView"
              x:DataType="vm:PeersPageViewModel">
 
-  <Grid Margin="{StaticResource AppPagePadding}" RowDefinitions="Auto,Auto,62*,Auto,Auto,38*,Auto" MaxWidth="860">
+  <Grid Margin="{StaticResource AppPagePadding}" RowDefinitions="Auto,Auto,Auto,62*,Auto,Auto,38*,Auto" MaxWidth="860">
     <TextBlock Classes="title" Text="Peers" />
 
-    <TextBlock Grid.Row="1" Classes="section first" Text="Configured peers" />
-    <Border Grid.Row="2" Classes="card panel">
+    <!-- Machines with the pairing code that asked to connect -->
+    <StackPanel Grid.Row="1" IsVisible="{Binding HasPending}" Margin="0,0,0,16">
+      <TextBlock Classes="section first" Text="Asking to connect" />
+      <ItemsControl ItemsSource="{Binding Pending}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:PendingPeerViewModel">
+            <Border Classes="card attention">
+              <Grid ColumnDefinitions="Auto,*,Auto">
+                <ic:SymbolIcon Symbol="PersonQuestionMark" FontSize="20" Margin="0,0,14,0" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                  <TextBlock Classes="body-strong" Text="{Binding Name, StringFormat='{}{0} wants to connect'}" />
+                  <TextBlock Classes="caption" Text="{Binding Detail}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                  <Button Classes="accent" Content="Allow" Command="{Binding AllowCommand}"
+                          AutomationProperties.Name="{Binding Name, StringFormat='Allow {0}'}"
+                          ToolTip.Tip="Add it as a peer on a free edge, then place it on the Layout page" />
+                  <Button Content="Ignore" Command="{Binding IgnoreCommand}"
+                          AutomationProperties.Name="{Binding Name, StringFormat='Ignore {0}'}"
+                          ToolTip.Tip="Refuse it until RoboMouse restarts" />
+                </StackPanel>
+              </Grid>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <TextBlock Classes="caption" Margin="4,4,0,0"
+                 Text="Only machines that already have this PC's pairing code can ask. Nothing can control this PC until you allow it." />
+    </StackPanel>
+
+    <TextBlock Grid.Row="2" Classes="section first" Text="Configured peers" />
+    <Border Grid.Row="3" Classes="card panel">
       <Panel>
         <ListBox Classes="rows" ItemsSource="{Binding Peers}" SelectedItem="{Binding SelectedPeer}"
+                 AutomationProperties.Name="Configured peers"
                  DoubleTapped="OnPeerDoubleTapped">
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="vm:PeerItemViewModel">
-              <Grid ColumnDefinitions="Auto,*,110,180">
+              <Grid ColumnDefinitions="Auto,*,90,230">
                 <ToggleSwitch IsChecked="{Binding IsEnabled}" OnContent="{x:Null}" OffContent="{x:Null}"
                               MinWidth="0" Margin="0,0,12,0" VerticalAlignment="Center"
+                              AutomationProperties.Name="{Binding Name, StringFormat='{}{0} enabled'}"
                               ToolTip.Tip="Switch this peer off to keep its settings without connecting to it" />
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                   <TextBlock Text="{Binding Name}" Classes="body-strong" />
                   <TextBlock Text="{Binding Address}" Classes="caption" />
                 </StackPanel>
                 <TextBlock Grid.Column="2" Text="{Binding PositionText}" VerticalAlignment="Center" Classes="muted" />
-                <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center"
+                            ToolTip.Tip="{Binding StatusDetail}">
                   <Ellipse Classes="dot" Fill="{Binding StatusTone, Converter={x:Static views:StatusToneToBrushConverter.Instance}}" />
-                  <TextBlock Text="{Binding StatusText}" />
+                  <TextBlock Text="{Binding StatusText}" TextTrimming="CharacterEllipsis" MaxWidth="210"
+                             AutomationProperties.HelpText="{Binding StatusDetail}" />
                 </StackPanel>
               </Grid>
             </DataTemplate>
@@ -36,7 +71,7 @@
                    IsVisible="{Binding !HasPeers}" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="24" />
       </Panel>
     </Border>
-    <StackPanel Grid.Row="3" Classes="toolbar">
+    <StackPanel Grid.Row="4" Classes="toolbar">
       <Button Content="Add…" Command="{Binding AddPeerCommand}" />
       <Button Content="Edit…" Command="{Binding EditPeerCommand}" />
       <Button Content="{Binding ToggleEnabledText}" Command="{Binding ToggleEnabledCommand}" />
@@ -45,10 +80,11 @@
                  Text="Change which edge a peer sits on under Layout, or by editing it." />
     </StackPanel>
 
-    <TextBlock Grid.Row="4" Classes="section" Text="Found on this network" />
-    <Border Grid.Row="5" Classes="card panel">
+    <TextBlock Grid.Row="5" Classes="section" Text="Found on this network" />
+    <Border Grid.Row="6" Classes="card panel">
       <Panel>
         <ListBox Classes="rows" ItemsSource="{Binding Discovered}" SelectedItem="{Binding SelectedDiscovered}"
+                 AutomationProperties.Name="Machines found on this network"
                  DoubleTapped="OnDiscoveredDoubleTapped">
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="vm:DiscoveredPeerViewModel">
@@ -66,7 +102,7 @@
                    IsVisible="{Binding !HasDiscovered}" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="24" />
       </Panel>
     </Border>
-    <StackPanel Grid.Row="6" Classes="toolbar">
+    <StackPanel Grid.Row="7" Classes="toolbar">
       <Button Content="Add selected…" Command="{Binding AddDiscoveredCommand}" />
     </StackPanel>
   </Grid>

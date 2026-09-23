@@ -16,10 +16,10 @@ public partial class SettingsWindow : Window
 
     public SettingsViewModel ViewModel { get; }
 
-    public SettingsWindow(AppSettings settings, IAppBackend backend)
+    public SettingsWindow(AppSettings settings, IAppBackend backend, AppState? appState = null, UpdateChecker? updates = null)
     {
-        var version = typeof(SettingsWindow).Assembly.GetName().Version?.ToString(3) ?? "?";
-        ViewModel = new SettingsViewModel(settings, backend, new WindowDialogService(this, backend), version);
+        var version = UpdateChecker.CurrentVersion.ToString(3);
+        ViewModel = new SettingsViewModel(settings, backend, new WindowDialogService(this, backend), version, appState, updates);
         DataContext = ViewModel;
         InitializeComponent();
 

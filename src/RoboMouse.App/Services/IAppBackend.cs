@@ -33,9 +33,42 @@ public interface IAppBackend
     Task DisconnectFromPeerAsync(string peerId);
     Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct);
 
+    /// <summary>Writes the settings file. View models save through here so tests never touch the real file.</summary>
+    void SaveSettings();
+
     void ApplyClipboardSetting();
     void ApplyHotkeySetting();
     void ApplyPowerSetting();
+
+    /// <summary>Restarts the listener and discovery if the saved port numbers or machine name changed.</summary>
+    void ApplyNetworkSettings();
+
+    /// <summary>Call after saving a new pairing code: drops connections made with the old one. True when any were dropped.</summary>
+    bool ApplyPairingCode();
+
+    /// <summary>Why the last connect to this peer failed, or null when it connected or was not tried.</summary>
+    PeerConnectFailure? GetLastConnectFailure(string peerId);
+
+    /// <summary>Set when the listen port could not be opened.</summary>
+    NetworkStartError? ListenerError { get; }
+
+    /// <summary>Set when the discovery port could not be opened.</summary>
+    NetworkStartError? DiscoveryError { get; }
+
+    /// <summary>Unknown machines with the pairing code that asked to connect, oldest first.</summary>
+    IReadOnlyList<PendingPeer> PendingPeers { get; }
+
+    /// <summary>Adds a pending machine as a peer (on the first free edge unless given) and connects. Null when it is no longer pending.</summary>
+    PeerConfig? AllowPendingPeer(string machineId, ScreenPosition? position = null);
+
+    /// <summary>Refuses a pending machine for the rest of this session.</summary>
+    void IgnorePendingPeer(string machineId);
+
+    /// <summary>Disconnects, removes and blocks a configured peer, and saves.</summary>
+    Task RemovePeerAsync(PeerConfig peer);
+
+    /// <summary>Takes a machine off the blocked list (it was added again by hand). Saves.</summary>
+    void UnblockMachine(string machineId);
 
     /// <summary>True when the separately installed desktop service (UAC / lock screen) is on this machine.</summary>
     bool DesktopServiceInstalled { get; }
@@ -58,8 +91,15 @@ public interface IAppBackend
 public sealed class ServiceBackend : IAppBackend
 {
     private readonly RoboMouseService _service;
+    private readonly AppSettings _settings;
 
-    public ServiceBackend(RoboMouseService service) => _service = service;
+    public ServiceBackend(RoboMouseService service, AppSettings settings)
+    {
+        _service = service;
+        _settings = settings;
+    }
+
+    public void SaveSettings() => _settings.Save();
 
     public bool Enabled => _service.Enabled;
     public bool IsControllingRemote => _service.IsControllingRemote;
@@ -86,6 +126,16 @@ public sealed class ServiceBackend : IAppBackend
     public void ApplyClipboardSetting() => _service.ApplyClipboardSetting();
     public void ApplyHotkeySetting() => _service.ApplyHotkeySetting();
     public void ApplyPowerSetting() => _service.UpdatePowerFollowing();
+    public void ApplyNetworkSettings() => _service.ApplyNetworkSettings();
+    public bool ApplyPairingCode() => _service.ApplyPairingCode();
+    public PeerConnectFailure? GetLastConnectFailure(string peerId) => _service.GetLastConnectFailure(peerId);
+    public NetworkStartError? ListenerError => _service.ListenerError;
+    public NetworkStartError? DiscoveryError => _service.DiscoveryError;
+    public IReadOnlyList<PendingPeer> PendingPeers => _service.PendingPeers;
+    public PeerConfig? AllowPendingPeer(string machineId, ScreenPosition? position = null) => _service.AllowPendingPeer(machineId, position);
+    public void IgnorePendingPeer(string machineId) => _service.IgnorePendingPeer(machineId);
+    public Task RemovePeerAsync(PeerConfig peer) => _service.RemovePeerAsync(peer);
+    public void UnblockMachine(string machineId) => _service.UnblockMachine(machineId);
 
     public bool DesktopServiceInstalled => DesktopServiceControl.IsInstalled;
     public DesktopServiceState DesktopServiceState => _service.DesktopServiceState;
@@ -100,5 +150,4 @@ public sealed class ServiceBackend : IAppBackend
 
     public Task<StartupState> GetStartupStateAsync() => StartupRegistration.GetStateAsync();
     public Task<StartupState> ApplyStartupAsync(bool enabled) => StartupRegistration.ApplyAsync(enabled);
-
 }

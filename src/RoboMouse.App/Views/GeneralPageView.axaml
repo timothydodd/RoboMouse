@@ -29,13 +29,29 @@
       </views:SettingCard>
 
       <TextBlock Classes="section" Text="Clipboard" />
-      <views:SettingCard Header="Share text and images" Description="What you copy on one machine can be pasted on the others.">
+      <views:SettingCard Header="Share the clipboard" Description="What you copy on one machine can be pasted on the others. Choose what is shared below.">
         <ToggleSwitch IsChecked="{Binding ShareClipboard}" />
       </views:SettingCard>
-      <views:SettingCard Header="Share copied files"
-                         Description="Paste them in Explorer on the other machine. Files transfer only when you paste, straight from the machine you copied them on.">
-        <ToggleSwitch IsChecked="{Binding ShareFiles}" />
-      </views:SettingCard>
+      <StackPanel IsEnabled="{Binding ShareClipboard}">
+        <views:SettingCard Classes="nested" Header="Text">
+          <ToggleSwitch IsChecked="{Binding SyncText}" />
+        </views:SettingCard>
+        <views:SettingCard Classes="nested" Header="Images" Description="Screenshots and pictures copied from apps.">
+          <ToggleSwitch IsChecked="{Binding SyncImages}" />
+        </views:SettingCard>
+        <views:SettingCard Classes="nested" Header="Files"
+                           Description="Paste them in Explorer on the other machine. Files transfer only when you paste, straight from the machine you copied them on.">
+          <ToggleSwitch IsChecked="{Binding ShareFiles}" />
+        </views:SettingCard>
+        <views:SettingCard Classes="nested" Header="Largest text or image to share"
+                           Description="Anything bigger stays on this machine. Files are not limited by this.">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <NumericUpDown Value="{Binding ClipboardMaxMegabytes}" Minimum="1" Maximum="100" Increment="1" FormatString="0.#"
+                           ShowButtonSpinner="False" Width="100" />
+            <TextBlock Text="MB" VerticalAlignment="Center" Classes="muted" />
+          </StackPanel>
+        </views:SettingCard>
+      </StackPanel>
 
       <TextBlock Classes="section" Text="Edges" />
       <views:SettingCard Header="Wrap around"

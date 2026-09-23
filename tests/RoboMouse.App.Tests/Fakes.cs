@@ -21,7 +21,8 @@ internal sealed class FakeBackend : IAppBackend
     public string? ActivePeerName => null;
     public InputBlockReason RemoteInputBlockReason => InputBlockReason.None;
     public IReadOnlyList<ConnectedPeerInfo> ConnectedPeers => Array.Empty<ConnectedPeerInfo>();
-    public IReadOnlyList<DiscoveredPeer> DiscoveredPeers => Array.Empty<DiscoveredPeer>();
+    public List<DiscoveredPeer> Discovered { get; } = new();
+    public IReadOnlyList<DiscoveredPeer> DiscoveredPeers => Discovered.ToList();
     public ConnectedPeerInfo? GetConnection(string peerId) => null;
     public bool IsPeerConnected(string peerId) => Connected.Any(p => p.Id == peerId);
     public Task SetPeerEnabledAsync(PeerConfig peer, bool enabled) { peer.Enabled = enabled; return Task.CompletedTask; }
@@ -37,9 +38,63 @@ internal sealed class FakeBackend : IAppBackend
     public Task DisconnectFromPeerAsync(string peerId) => Task.CompletedTask;
     public Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct) =>
         Task.FromResult(new ConnectionTestResult { Success = false, Error = "fake" });
-    public void ApplyClipboardSetting() { }
+    public int Saves { get; private set; }
+    public void SaveSettings() => Saves++;
+
+    public int ClipboardApplied { get; private set; }
+    public int NetworkApplied { get; private set; }
+    public int PairingApplied { get; private set; }
+    public List<PeerConfig> Removed { get; } = new();
+    public List<string> Unblocked { get; } = new();
+    public List<string> Ignored { get; } = new();
+    public List<PendingPeer> Pending { get; } = new();
+    public Dictionary<string, PeerConnectFailure> Failures { get; } = new();
+    public AppSettings? Settings { get; set; }
+
+    public void ApplyClipboardSetting() => ClipboardApplied++;
     public void ApplyHotkeySetting() { }
     public void ApplyPowerSetting() { }
+    public void ApplyNetworkSettings() => NetworkApplied++;
+    public bool ApplyPairingCode() { PairingApplied++; return true; }
+    public PeerConnectFailure? GetLastConnectFailure(string peerId) => Failures.GetValueOrDefault(peerId);
+    public NetworkStartError? ListenerError { get; set; }
+    public NetworkStartError? DiscoveryError { get; set; }
+    public IReadOnlyList<PendingPeer> PendingPeers => Pending.ToList();
+
+    /// <summary>Like the service: the pending machine becomes a peer on <paramref name="position"/> or the first free edge.</summary>
+    public PeerConfig? AllowPendingPeer(string machineId, ScreenPosition? position = null)
+    {
+        var pending = Pending.FirstOrDefault(p => p.MachineId == machineId);
+        if (pending == null)
+            return null;
+        Pending.Remove(pending);
+        var config = new PeerConfig
+        {
+            Id = pending.MachineId,
+            Name = pending.MachineName,
+            Address = pending.Address,
+            Port = pending.Port,
+            Position = position ?? (Settings != null ? PeerActions.FirstFreeEdge(Settings) ?? ScreenPosition.Right : ScreenPosition.Right)
+        };
+        Settings?.Peers.Add(config);
+        return config;
+    }
+
+    public void IgnorePendingPeer(string machineId)
+    {
+        Ignored.Add(machineId);
+        Pending.RemoveAll(p => p.MachineId == machineId);
+    }
+
+    public Task RemovePeerAsync(PeerConfig peer)
+    {
+        Removed.Add(peer);
+        Settings?.Peers.Remove(peer);
+        Settings?.BlockedMachineIds.Add(peer.Id);
+        return Task.CompletedTask;
+    }
+
+    public void UnblockMachine(string machineId) => Unblocked.Add(machineId);
     public bool DesktopServiceInstalled => false;
     public DesktopServiceState DesktopServiceState => DesktopServiceState.Off;
     public Task<bool> ApplyDesktopServiceSettingAsync(bool enabled) => Task.FromResult(true);
@@ -67,6 +122,13 @@ internal sealed class FakeDialogs : IDialogService
 
     public Task<PeerConfig?> ShowPeerSetupAsync(PeerConfig? peer, AppSettings settings) => Task.FromResult<PeerConfig?>(null);
     public Task CopyTextAsync(string text) => Task.CompletedTask;
+
+    /// <summary>What <see cref="PickSaveFileAsync"/> answers; null acts as Cancel.</summary>
+    public string? SavePath { get; set; }
+    public List<string> Opened { get; } = new();
+
+    public Task<string?> PickSaveFileAsync(string title, string suggestedName, string extension) => Task.FromResult(SavePath);
+    public void Open(string pathOrUrl) => Opened.Add(pathOrUrl);
 }
 
 internal static class Samples

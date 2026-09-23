@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Input.Platform;
+using Avalonia.Platform.Storage;
 using RoboMouse.App.Services;
 using RoboMouse.App.ViewModels;
 using RoboMouse.Core.Configuration;
@@ -45,6 +46,34 @@ public sealed class WindowDialogService : IDialogService
         var clipboard = Owner?.Clipboard;
         if (clipboard != null)
             await clipboard.SetTextAsync(text);
+    }
+
+    public async Task<string?> PickSaveFileAsync(string title, string suggestedName, string extension)
+    {
+        var storage = Owner?.StorageProvider;
+        if (storage == null || !storage.CanSave)
+            return null;
+        var file = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = title,
+            SuggestedFileName = suggestedName,
+            DefaultExtension = extension,
+            ShowOverwritePrompt = true,
+            FileTypeChoices = new[] { new FilePickerFileType(extension.ToUpperInvariant() + " file") { Patterns = new[] { "*." + extension } } }
+        });
+        return file?.TryGetLocalPath();
+    }
+
+    public void Open(string pathOrUrl)
+    {
+        try
+        {
+            using var _ = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(pathOrUrl) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            RoboMouse.Core.Logging.SimpleLogger.Log("Shell", $"Could not open {pathOrUrl}: {ex.Message}");
+        }
     }
 
     private async Task<T> ShowAsync<T>(Window dialog, Func<T> result)
