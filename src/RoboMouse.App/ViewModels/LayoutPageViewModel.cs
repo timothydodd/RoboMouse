@@ -125,6 +125,42 @@ public sealed class LayoutPageViewModel : PageViewModel
         return occupant;
     }
 
+    /// <summary>
+    /// Shifts a peer along the edge it sits on (the keyboard's arrow keys): positive moves it right on
+    /// a top or bottom edge, down on a left or right edge.
+    /// </summary>
+    public void Nudge(PeerPlacement placement, int pixels)
+    {
+        if (placement.Position is ScreenPosition.Left or ScreenPosition.Right)
+            placement.OffsetY += pixels;
+        else
+            placement.OffsetX += pixels;
+    }
+
+    /// <summary>
+    /// Moves a peer to another edge from the keyboard, lined up with the start of that edge. Swaps with
+    /// a peer already there, like a drop. Returns the peer that moved out of the way, or null.
+    /// </summary>
+    public PeerPlacement? MoveToEdge(PeerPlacement placement, ScreenPosition position) =>
+        placement.Position == position ? null : MoveToEdge(placement, position, 0, 0);
+
+    /// <summary>Where a peer sits, in words (for screen readers).</summary>
+    public static string Describe(PeerPlacement placement)
+    {
+        var side = placement.Position switch
+        {
+            ScreenPosition.Left => "left of this screen",
+            ScreenPosition.Right => "right of this screen",
+            ScreenPosition.Top => "above this screen",
+            _ => "below this screen"
+        };
+        var along = placement.Position is ScreenPosition.Left or ScreenPosition.Right ? placement.OffsetY : placement.OffsetX;
+        var (more, less) = placement.Position is ScreenPosition.Left or ScreenPosition.Right ? ("down", "up") : ("right", "left");
+        var shift = along == 0 ? "lined up with its start" : $"shifted {Math.Abs(along)} pixels {(along > 0 ? more : less)}";
+        var state = placement.Peer.Enabled ? string.Empty : ", disabled";
+        return $"{placement.Peer.Name}: {side}, {shift}{state}";
+    }
+
     /// <summary>Writes every placement into its peer config. The caller saves the settings file.</summary>
     public void Save()
     {

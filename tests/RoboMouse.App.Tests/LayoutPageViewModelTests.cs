@@ -86,4 +86,44 @@ public class LayoutPageViewModelTests
         Assert.Equal(ScreenPosition.Left, layout.Placements[1].Position);
         Assert.Equal(ScreenPosition.Right, layout.Placements[2].Position);
     }
+
+    [Fact]
+    public void Nudge_ShiftsAlongTheEdge()
+    {
+        var layout = new LayoutPageViewModel(Samples.Settings());
+        var left = layout.Placements[0];   // Left, OffsetY 120
+
+        layout.Nudge(left, -100);
+        Assert.Equal(20, left.OffsetY);
+        Assert.Equal(0, left.OffsetX);
+
+        layout.MoveToEdge(left, ScreenPosition.Top);
+        layout.Nudge(left, 10);
+        Assert.Equal(10, left.OffsetX);
+    }
+
+    [Fact]
+    public void KeyboardMove_ToAnOccupiedEdge_Swaps()
+    {
+        var layout = new LayoutPageViewModel(Samples.Settings());
+        var laptop = layout.Placements[0];
+        var mac = layout.Placements[1];
+
+        var swapped = layout.MoveToEdge(laptop, ScreenPosition.Right);
+
+        Assert.Same(mac, swapped);
+        Assert.Equal(ScreenPosition.Right, laptop.Position);
+        Assert.Equal(0, laptop.OffsetY);
+        Assert.Equal(ScreenPosition.Left, mac.Position);
+        Assert.Null(layout.MoveToEdge(laptop, ScreenPosition.Right));
+    }
+
+    [Fact]
+    public void Describe_ReadsWellAloud()
+    {
+        var layout = new LayoutPageViewModel(Samples.Settings());
+
+        Assert.Equal("Laptop: left of this screen, shifted 120 pixels down", LayoutPageViewModel.Describe(layout.Placements[0]));
+        Assert.Equal("Mac mini: right of this screen, lined up with its start", LayoutPageViewModel.Describe(layout.Placements[1]));
+    }
 }

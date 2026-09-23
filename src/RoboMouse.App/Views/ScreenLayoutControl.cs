@@ -1,5 +1,6 @@
 using System.Globalization;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Media;
@@ -12,6 +13,9 @@ namespace RoboMouse.App.Views;
 /// <summary>
 /// Custom-drawn canvas for visual screen layout editing: drag a peer screen to the edge of this
 /// screen it sits on. It edits the page's <see cref="PeerPlacement"/>s, never the peer configs.
+/// Keyboard: Tab / Shift+Tab select peer screens, arrow keys along the edge shift the selected one,
+/// an arrow across it (or Ctrl+arrow) moves it to that edge, Escape clears the selection. Each change
+/// is announced to screen readers through the control's automation name.
 /// </summary>
 public sealed class ScreenLayoutControl : Control
 {
@@ -41,9 +45,20 @@ public sealed class ScreenLayoutControl : Control
     private static readonly Typeface TitleTypeface = new(FontFamily.Default, FontStyle.Normal, FontWeight.SemiBold);
     private static readonly Typeface SubTypeface = new(FontFamily.Default);
 
+    /// <summary>Keyboard nudge along an edge, in real pixels; Shift gives <see cref="FineNudge"/>.</summary>
+    public const int Nudge = 100;
+    public const int FineNudge = 10;
+
+    private const string HelpText =
+        "Tab selects a peer screen. Arrow keys along its edge shift it; an arrow across the edge, or Control plus an arrow, moves it to that side of this screen. Changes apply when you save.";
+
     public ScreenLayoutControl()
     {
         ClipToBounds = true;
+        Focusable = true;
+        AutomationProperties.SetName(this, "Screen layout");
+        AutomationProperties.SetHelpText(this, HelpText);
+        AutomationProperties.SetLiveSetting(this, AutomationLiveSetting.Polite);
         InitializeScreens();
     }
 
@@ -57,10 +72,9 @@ public sealed class ScreenLayoutControl : Control
     /// <summary>Rebuilds the canvas from the placements (after peers are added, edited or removed).</summary>
     public void Reload()
     {
-        _selectedScreen = null;
         _draggingScreen = null;
         InitializeScreens();
-        InvalidateVisual();
+        Select(null);
     }
 
     /// <summary>The monitor arrangement, or a stand-in where the monitor API is unavailable (headless previews).</summary>
@@ -210,6 +224,112 @@ public sealed class ScreenLayoutControl : Control
 
         foreach (var screen in _screens)
             DrawScreen(context, screen);
+
+        // Keyboard focus: a dashed ring round the selected screen, or round the canvas when none is.
+        if (IsFocused)
+        {
+            var ring = new Pen(Brushes.White, 2, new DashStyle(new double[] { 3, 2 }, 0));
+            var target = _selectedScreen?.DisplayBounds.Inflate(4) ?? bounds.Deflate(3);
+            context.DrawRectangle(null, ring, target, 10, 10);
+        }
+    }
+
+    protected override void OnGotFocus(FocusChangedEventArgs e)
+    {
+        base.OnGotFocus(e);
+        InvalidateVisual();
+    }
+
+    protected override void OnLostFocus(FocusChangedEventArgs e)
+    {
+        base.OnLostFocus(e);
+        InvalidateVisual();
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.Handled)
+            return;
+
+        switch (e.Key)
+        {
+            case Key.Tab:
+                e.Handled = SelectNext(backwards: e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                break;
+            case Key.Escape when _selectedScreen != null:
+                Select(null);
+                e.Handled = true;
+                break;
+            case Key.Left or Key.Right or Key.Up or Key.Down:
+                e.Handled = MoveSelected(e.Key, e.KeyModifiers);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Selects the next (or previous) peer screen. Past the last one the selection clears and false
+    /// lets Tab carry on to the next control, so focus is never trapped here.
+    /// </summary>
+    private bool SelectNext(bool backwards)
+    {
+        var peers = _screens.Where(s => !s.IsLocal).ToList();
+        if (peers.Count == 0)
+            return false;
+        var index = _selectedScreen == null ? (backwards ? peers.Count : -1) : peers.IndexOf(_selectedScreen);
+        index += backwards ? -1 : 1;
+        if (index < 0 || index >= peers.Count)
+        {
+            Select(null);
+            return false;
+        }
+        Select(peers[index]);
+        return true;
+    }
+
+    /// <summary>An arrow key on the selected screen: shift it along its edge, or move it to another edge.</summary>
+    private bool MoveSelected(Key key, KeyModifiers modifiers)
+    {
+        if (_selectedScreen?.Placement is not { } placement || Layout == null)
+            return false;
+
+        var direction = key switch
+        {
+            Key.Left => ScreenPosition.Left,
+            Key.Right => ScreenPosition.Right,
+            Key.Up => ScreenPosition.Top,
+            _ => ScreenPosition.Bottom
+        };
+        var vertical = placement.Position is ScreenPosition.Left or ScreenPosition.Right;
+        var alongEdge = vertical == (key is Key.Up or Key.Down);
+
+        if (alongEdge && !modifiers.HasFlag(KeyModifiers.Control))
+        {
+            var step = modifiers.HasFlag(KeyModifiers.Shift) ? FineNudge : Nudge;
+            Layout.Nudge(placement, key is Key.Up or Key.Left ? -step : step);
+        }
+        else if (direction != placement.Position)
+        {
+            Layout.MoveToEdge(placement, direction);
+        }
+        else
+        {
+            return true; // already on that edge; swallow the key so the page does not scroll
+        }
+
+        // Rebuild so the scale still fits everything, then keep the same screen selected.
+        InitializeScreens();
+        Select(_screens.FirstOrDefault(s => s.Placement == placement));
+        return true;
+    }
+
+    private void Select(ScreenRect? screen)
+    {
+        _selectedScreen = screen;
+        AutomationProperties.SetName(this, screen?.Placement is { } placement
+            ? "Screen layout. Selected " + LayoutPageViewModel.Describe(placement)
+            : "Screen layout");
+        InvalidateVisual();
     }
 
     private void DrawScreen(DrawingContext context, ScreenRect screen)
@@ -315,7 +435,8 @@ public sealed class ScreenLayoutControl : Control
         {
             if (screen.DisplayBounds.Contains(position) && !screen.IsLocal)
             {
-                _selectedScreen = screen;
+                Focus();
+                Select(screen);
                 _draggingScreen = screen;
                 _dragOffset = position - screen.DisplayBounds.Position;
                 e.Pointer.Capture(this);
@@ -324,8 +445,8 @@ public sealed class ScreenLayoutControl : Control
             }
         }
 
-        _selectedScreen = null;
-        InvalidateVisual();
+        Focus();
+        Select(null);
     }
 
     protected override void OnPointerMoved(PointerEventArgs e)
@@ -365,7 +486,7 @@ public sealed class ScreenLayoutControl : Control
         var screen = _draggingScreen;
         _draggingScreen = null;
         SnapToEdge(screen);
-        InvalidateVisual();
+        Select(screen);
     }
 
     private void SnapToEdge(ScreenRect peer)
