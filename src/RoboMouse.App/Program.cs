@@ -21,6 +21,11 @@ internal static class Program
 
         // One instance per session: a second launch just asks the running copy to show Settings.
         using var instance = new SingleInstance();
+        if (instance.OtherCopyIsElevated)
+        {
+            SingleInstance.ShowElevatedCopyMessage();
+            return 0;
+        }
         if (!instance.IsFirstInstance)
         {
             instance.SignalExistingInstance();
