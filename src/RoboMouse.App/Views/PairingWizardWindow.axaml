@@ -1,0 +1,146 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:RoboMouse.App.ViewModels"
+        xmlns:ic="using:FluentIcons.Avalonia"
+        x:Class="RoboMouse.App.Views.PairingWizardWindow"
+        x:DataType="vm:PairingWizardViewModel"
+        Title="Set up RoboMouse"
+        Width="560" Height="580" CanResize="False"
+        WindowStartupLocation="CenterScreen"
+        Icon="/Assets/app.ico"
+        Background="{DynamicResource AppWindowBackgroundBrush}">
+
+  <DockPanel>
+    <Border DockPanel.Dock="Bottom" Classes="footer">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Classes="caption" Text="{Binding StepText}" VerticalAlignment="Center" />
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+          <Button Content="Set up later" Command="{Binding CloseCommand}" IsCancel="True" />
+          <Button Content="Back" Command="{Binding BackCommand}" IsVisible="{Binding CanGoBack}" />
+          <Button Classes="accent" Content="{Binding NextText}" Command="{Binding NextCommand}" IsDefault="True" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Panel Margin="28,24,28,20">
+      <!-- 1. This PC -->
+      <StackPanel Spacing="12" IsVisible="{Binding IsFirstStep}">
+        <StackPanel Orientation="Horizontal" Spacing="12">
+          <Image Source="/Assets/logo.png" Width="40" Height="40" AutomationProperties.AccessibilityView="Raw" />
+          <TextBlock Classes="subtitle" Text="Pair this PC with another" VerticalAlignment="Center" />
+        </StackPanel>
+        <TextBlock TextWrapping="Wrap"
+                   Text="Install RoboMouse on the other PC too. The two PCs share one pairing code: it proves they belong together and encrypts everything between them." />
+
+        <Border Classes="card">
+          <StackPanel Spacing="8">
+            <Grid ColumnDefinitions="110,*">
+              <TextBlock Classes="muted" Text="This PC" />
+              <TextBlock Grid.Column="1" Classes="body-strong" Text="{Binding MachineName}" />
+            </Grid>
+            <Grid ColumnDefinitions="110,*">
+              <TextBlock Classes="muted" Text="IP address" />
+              <StackPanel Grid.Column="1">
+                <ItemsControl ItemsSource="{Binding Addresses}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="x:String">
+                      <SelectableTextBlock Classes="code" Text="{Binding}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock Classes="caption" Text="No network connection." IsVisible="{Binding !HasAddresses}" />
+              </StackPanel>
+            </Grid>
+            <Grid ColumnDefinitions="110,*,Auto">
+              <TextBlock Classes="muted" Text="Pairing code" VerticalAlignment="Center" />
+              <SelectableTextBlock Grid.Column="1" Classes="code" Text="{Binding PairingCode}" FontSize="18" VerticalAlignment="Center"
+                                   AutomationProperties.Name="Pairing code" />
+              <Button Grid.Column="2" Command="{Binding CopyPairingCodeCommand}" AutomationProperties.Name="Copy the pairing code">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <ic:SymbolIcon Symbol="Copy" FontSize="16" />
+                  <TextBlock Text="Copy" />
+                </StackPanel>
+              </Button>
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <TextBlock TextWrapping="Wrap"
+                   Text="Type this code on the other PC (Settings > Network > Enter the code from another PC). Or, if the other PC is already set up, enter its code here instead:" />
+        <Grid ColumnDefinitions="*,8,Auto">
+          <TextBox Text="{Binding EnteredCode}" PlaceholderText="Code from the other PC, like K7PQ-M2XW-9DHR" MaxLength="20"
+                   FontFamily="Cascadia Mono, Consolas, monospace"
+                   AutomationProperties.Name="Code from the other PC" />
+          <Button Grid.Column="2" Content="Use this code" Command="{Binding UseEnteredCodeCommand}" />
+        </Grid>
+        <TextBlock Classes="caption" Foreground="{StaticResource AppStatusErrorBrush}" Text="{Binding EnteredCodeError}"
+                   IsVisible="{Binding EnteredCodeError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                   AutomationProperties.LiveSetting="Assertive" />
+      </StackPanel>
+
+      <!-- 2. The other PC -->
+      <DockPanel IsVisible="{Binding IsFindStep}">
+        <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="0,0,0,12">
+          <TextBlock Classes="subtitle" Text="Find the other PC" />
+          <TextBlock TextWrapping="Wrap"
+                     Text="PCs running RoboMouse on this network appear below. One that already tried to connect here is listed as asking to connect." />
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom" Spacing="6" Margin="0,12,0,0">
+          <TextBlock Text="Not listed? Enter its IP address (shown on its Settings > Network page):" TextWrapping="Wrap" />
+          <Grid ColumnDefinitions="*,8,Auto">
+            <TextBox Text="{Binding ManualAddress}" PlaceholderText="192.168.1.20 or a host name"
+                     AutomationProperties.Name="Other PC's address" />
+            <NumericUpDown Grid.Column="2" Value="{Binding ManualPort}" Minimum="1024" Maximum="65535" Increment="1" FormatString="0"
+                           ShowButtonSpinner="False" Width="110" AutomationProperties.Name="Other PC's port" />
+          </Grid>
+        </StackPanel>
+        <Border Classes="card panel">
+          <Panel>
+            <ListBox Classes="rows" ItemsSource="{Binding Machines}" SelectedItem="{Binding SelectedMachine}"
+                     AutomationProperties.Name="PCs found on this network">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:WizardMachineViewModel">
+                  <Grid ColumnDefinitions="Auto,*" AutomationProperties.Name="{Binding Name}" AutomationProperties.HelpText="{Binding Detail}">
+                    <ic:SymbolIcon Symbol="PersonQuestionMark" FontSize="18" Margin="0,0,10,0" IsVisible="{Binding IsRequest}" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="1">
+                      <TextBlock Classes="body-strong" Text="{Binding Name}" />
+                      <TextBlock Classes="caption" Text="{Binding Detail}" />
+                    </StackPanel>
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <StackPanel IsVisible="{Binding !HasMachines}" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="10" Margin="24">
+              <ProgressBar IsIndeterminate="True" Width="120" />
+              <TextBlock Classes="muted" TextWrapping="Wrap" TextAlignment="Center"
+                         Text="Looking for PCs running RoboMouse… Make sure it is running on the other PC." />
+            </StackPanel>
+          </Panel>
+        </Border>
+      </DockPanel>
+
+      <!-- 3. Where it sits -->
+      <StackPanel Spacing="12" IsVisible="{Binding IsPlaceStep}">
+        <TextBlock Classes="subtitle" Text="{Binding OtherName, StringFormat='Where is {0}?'}" />
+        <TextBlock TextWrapping="Wrap"
+                   Text="Pick the side of this screen the other PC's screen is on. Moving the mouse off that edge takes it across. You can fine-tune this later under Settings > Layout." />
+        <ListBox ItemsSource="{Binding Positions}" SelectedItem="{Binding SelectedPosition}" Classes="rows"
+                 AutomationProperties.Name="Side of this screen">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:PeerSetupViewModel+PositionChoice">
+              <TextBlock Text="{Binding Text}" />
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <Border Classes="infobar">
+          <Grid ColumnDefinitions="Auto,*">
+            <ic:SymbolIcon Symbol="Info" FontSize="18" Margin="0,0,12,0" VerticalAlignment="Top" />
+            <TextBlock Grid.Column="1" TextWrapping="Wrap"
+                       Text="When you click Finish, the other PC may show that this PC wants to connect: click Allow there. Nothing can take control of either PC until it has been allowed or added on that PC." />
+          </Grid>
+        </Border>
+      </StackPanel>
+    </Panel>
+  </DockPanel>
+
+</Window>
