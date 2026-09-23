@@ -401,6 +401,108 @@ public class IdentityKeyTests
         }
     }
 
+    private static string TempKeyPath(out string dir)
+    {
+        dir = Path.Combine(Path.GetTempPath(), "robomouse-identity-" + Guid.NewGuid().ToString("N"));
+        return Path.Combine(dir, "identity.key");
+    }
+
+    [Fact]
+    public void LoadOrCreate_RetriesASharingViolation_AndKeepsTheKey()
+    {
+        var path = TempKeyPath(out var dir);
+        try
+        {
+            using var first = IdentityKey.LoadOrCreate(path, new XorProtector());
+            var failures = 2;
+            var waits = new List<TimeSpan>();
+            using var again = IdentityKey.LoadOrCreate(path, new XorProtector(),
+                p => failures-- > 0 ? throw new IOException("The process cannot access the file because it is being used by another process.") : File.ReadAllBytes(p),
+                waits.Add);
+
+            Assert.Equal(first.PublicKey, again.PublicKey);
+            Assert.Equal(2, waits.Count);
+            Assert.Empty(Directory.GetFiles(dir, "identity.key.unreadable-*"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LoadOrCreate_FileThatStaysLocked_UsesATemporaryKey_AndLeavesTheFileAlone(bool accessDenied)
+    {
+        var path = TempKeyPath(out var dir);
+        try
+        {
+            using var saved = IdentityKey.LoadOrCreate(path, new XorProtector());
+            var before = File.ReadAllBytes(path);
+            var reads = 0;
+            using var temporary = IdentityKey.LoadOrCreate(path, new XorProtector(), _ =>
+            {
+                reads++;
+                throw accessDenied ? new UnauthorizedAccessException("denied") : new IOException("locked");
+            }, _ => { });
+
+            Assert.Equal(IdentityKey.ReadAttempts, reads);
+            Assert.NotEqual(saved.PublicKey, temporary.PublicKey);
+            Assert.Equal(before, File.ReadAllBytes(path));
+            Assert.Single(Directory.GetFiles(dir));
+
+            // Next start, with the file readable again: the saved identity is back.
+            using var next = IdentityKey.LoadOrCreate(path, new XorProtector());
+            Assert.Equal(saved.PublicKey, next.PublicKey);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void LoadOrCreate_ReplacesAKeyOnAnotherCurve()
+    {
+        var path = TempKeyPath(out var dir);
+        try
+        {
+            Directory.CreateDirectory(dir);
+            using var p384 = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+            File.WriteAllBytes(path, new XorProtector().Protect(p384.ExportPkcs8PrivateKey()));
+
+            using var identity = IdentityKey.LoadOrCreate(path, new XorProtector());
+
+            Assert.True(IdentityKey.IsValidPublicKey(identity.PublicKey));
+            Assert.Single(Directory.GetFiles(dir, "identity.key.unreadable-*"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void OnlyP256PublicKeys_AreValid()
+    {
+        using var identity = IdentityKey.Create();
+        Assert.True(IdentityKey.IsValidPublicKey(identity.PublicKey));
+
+        foreach (var curve in new[] { ECCurve.NamedCurves.nistP384, ECCurve.NamedCurves.nistP521 })
+        {
+            using var other = ECDsa.Create(curve);
+            var spki = other.ExportSubjectPublicKeyInfo();
+            var data = "transcript"u8.ToArray();
+            Assert.False(IdentityKey.IsValidPublicKey(spki));
+            Assert.False(IdentityKey.Verify(spki, data, other.SignData(data, HashAlgorithmName.SHA256)));
+        }
+
+        // The right prefix with trailing junk, or a truncated key, is not a key either.
+        Assert.False(IdentityKey.IsValidPublicKey([.. identity.PublicKey, 0]));
+        Assert.False(IdentityKey.IsValidPublicKey(identity.PublicKey.AsSpan(0, 90)));
+    }
+
     private static AppSettings Settings() => new()
     {
         MachineId = "me",

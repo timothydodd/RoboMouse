@@ -54,6 +54,8 @@ public sealed class IdentityKey : IDisposable
     /// </summary>
     public static bool Verify(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature)
     {
+        if (!IsP256(publicKey))
+            return false;
         try
         {
             using var key = ECDsa.Create();
@@ -71,6 +73,8 @@ public sealed class IdentityKey : IDisposable
     /// <summary>Whether <paramref name="publicKey"/> is a well-formed P-256 public key.</summary>
     public static bool IsValidPublicKey(ReadOnlySpan<byte> publicKey)
     {
+        if (!IsP256(publicKey))
+            return false;
         try
         {
             using var key = ECDsa.Create();
@@ -82,6 +86,19 @@ public sealed class IdentityKey : IDisposable
             return false;
         }
     }
+
+    // SubjectPublicKeyInfo of a P-256 key: SEQUENCE { SEQUENCE { id-ecPublicKey, prime256v1
+    // (1.2.840.10045.3.1.7) }, BIT STRING { uncompressed point } }. Anything else, including the
+    // same curve spelled out as explicit parameters, is refused before it reaches the parser.
+    private static ReadOnlySpan<byte> P256SpkiPrefix =>
+    [
+        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01,
+        0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04
+    ];
+
+    /// <summary>Whether a SubjectPublicKeyInfo names the P-256 curve (nistP256) with an uncompressed point.</summary>
+    internal static bool IsP256(ReadOnlySpan<byte> spki) =>
+        spki.Length == P256SpkiPrefix.Length + 64 && spki.StartsWith(P256SpkiPrefix);
 
     /// <summary>Fingerprint of a public key: the first 10 bytes of its SHA-256, as five groups of four hex digits.</summary>
     public static string FingerprintOf(ReadOnlySpan<byte> publicKey)
@@ -114,41 +131,61 @@ public sealed class IdentityKey : IDisposable
 
     /// <summary>
     /// Loads the identity from <paramref name="path"/>, or creates and saves a new one when there is
-    /// none. A file that cannot be read or decrypted (copied from another user or machine, corrupt) is
-    /// moved aside and replaced; peers that pinned the old key then refuse this machine until they
-    /// forget it and pair again, which is the point.
+    /// none. Only a file whose content is unusable (DPAPI cannot decrypt it because it was copied from
+    /// another user or machine, it is corrupt, or it is not a P-256 key) is moved aside and replaced;
+    /// peers that pinned the old key then refuse this machine until they forget it and pair again,
+    /// which is the point. A file that cannot be opened (a sharing violation from a backup or
+    /// antivirus scan, say) is retried a few times and then left untouched: this session uses a
+    /// temporary key, and the saved identity is back on the next start.
     /// </summary>
-    public static IdentityKey LoadOrCreate(string path, IKeyProtector protector)
+    public static IdentityKey LoadOrCreate(string path, IKeyProtector protector) =>
+        LoadOrCreate(path, protector, File.ReadAllBytes, Thread.Sleep);
+
+    /// <summary>How often a key file that cannot be opened is tried before this session gives up on it.</summary>
+    internal const int ReadAttempts = 4;
+
+    /// <summary><see cref="LoadOrCreate(string, IKeyProtector)"/> with the file read and the wait between attempts injected, for tests.</summary>
+    internal static IdentityKey LoadOrCreate(string path, IKeyProtector protector, Func<string, byte[]> readFile, Action<TimeSpan> wait)
     {
         if (File.Exists(path))
         {
-            try
+            byte[]? blob = null;
+            for (var attempt = 1; blob == null; attempt++)
             {
-                var pkcs8 = protector.Unprotect(File.ReadAllBytes(path));
                 try
                 {
-                    var key = ECDsa.Create();
-                    key.ImportPkcs8PrivateKey(pkcs8, out _);
-                    if (key.KeySize == 256)
-                        return new IdentityKey(key);
-                    key.Dispose();
+                    blob = readFile(path);
                 }
-                finally
+                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
                 {
-                    CryptographicOperations.ZeroMemory(pkcs8);
+                    break; // deleted since the check: make a new one
                 }
-            }
-            catch (Exception ex) when (ex is CryptographicException or IOException or UnauthorizedAccessException or Win32Exception)
-            {
-                SimpleLogger.Log("Identity", $"Identity key could not be read ({ex.Message}); creating a new one. Peers will need to pair again.");
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    if (attempt >= ReadAttempts)
+                    {
+                        var temporary = Create();
+                        SimpleLogger.Log("Identity", $"Identity key file could not be opened ({ex.Message}); using a temporary identity " +
+                            $"{temporary.Fingerprint} for this session and leaving the file alone. Paired peers refuse this PC until it restarts.");
+                        return temporary;
+                    }
+                    wait(TimeSpan.FromMilliseconds(100 * attempt));
+                }
             }
 
-            try
+            if (blob != null)
             {
-                File.Move(path, $"{path}.unreadable-{DateTime.Now:yyyyMMdd-HHmmss}", overwrite: true);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
+                if (TryDecode(blob, protector, out var problem) is { } loaded)
+                    return loaded;
+
+                SimpleLogger.Log("Identity", $"Identity key is unusable ({problem}); creating a new one. Peers will need to pair again.");
+                try
+                {
+                    File.Move(path, $"{path}.unreadable-{DateTime.Now:yyyyMMdd-HHmmss}", overwrite: true);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                }
             }
         }
 
@@ -156,6 +193,43 @@ public sealed class IdentityKey : IDisposable
         identity.Save(path, protector);
         SimpleLogger.Log("Identity", $"Created identity key {identity.Fingerprint}");
         return identity;
+    }
+
+    /// <summary>Decrypts and imports a saved key; null with the reason when the content is unusable.</summary>
+    private static IdentityKey? TryDecode(byte[] blob, IKeyProtector protector, out string problem)
+    {
+        byte[] pkcs8;
+        try
+        {
+            pkcs8 = protector.Unprotect(blob);
+        }
+        catch (CryptographicException ex)
+        {
+            problem = ex.Message;
+            return null;
+        }
+
+        var key = ECDsa.Create();
+        try
+        {
+            key.ImportPkcs8PrivateKey(pkcs8, out _);
+            if (IsP256(key.ExportSubjectPublicKeyInfo()))
+            {
+                problem = string.Empty;
+                return new IdentityKey(key);
+            }
+            problem = "not a P-256 key";
+        }
+        catch (CryptographicException ex)
+        {
+            problem = ex.Message;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(pkcs8);
+        }
+        key.Dispose();
+        return null;
     }
 
     /// <summary>Writes the private key, protected by <paramref name="protector"/>.</summary>
