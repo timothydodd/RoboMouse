@@ -99,7 +99,8 @@ public sealed class FileTransferClient : IDisposable
             _pending?.TrySetResult(chunk);
     }
 
-    private void DropConnection()
+    /// <summary>Closes the transfer connection; the next read opens a new one.</summary>
+    public void DropConnection()
     {
         var connection = _connection;
         _connection = null;

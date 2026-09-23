@@ -16,7 +16,7 @@ namespace RoboMouse.Core.Network;
 ///  - a receiver thread that reads into a large buffer and parses as many frames as
 ///    arrived in one read.
 /// </summary>
-public sealed class PeerConnection : IDisposable
+public sealed class PeerConnection : IPeerLink, IDisposable
 {
     private const int HeaderSize = MessageFramer.HeaderSize;
     private const int MaxMessageSize = MessageFramer.MaxMessageSize;

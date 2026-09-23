@@ -67,6 +67,9 @@ public unsafe class ScreenInfo
     /// </summary>
     public EdgeInfo? GetEdgeAt(int x, int y, int threshold = 0) => Layout.GetEdgeAt(x, y, threshold);
 
+    /// <summary>Every outer edge the point is on (two in a corner).</summary>
+    public List<EdgeInfo> GetEdgesAt(int x, int y, int threshold = 0) => Layout.GetEdgesAt(x, y, threshold);
+
     private readonly record struct Monitor(Rectangle Bounds, Rectangle WorkingArea, bool Primary);
 
     [ThreadStatic]

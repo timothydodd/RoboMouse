@@ -69,6 +69,21 @@ public sealed class MonitorLayout
     }
 
     /// <summary>
+    /// Every outer edge the point is on: one along an edge, two in a corner. The caller picks the one
+    /// that leads somewhere, so pushing into the corner next to a peer's edge still crosses.
+    /// </summary>
+    public List<EdgeInfo> GetEdgesAt(int x, int y, int threshold = 0)
+    {
+        var edges = new List<EdgeInfo>(2);
+        foreach (var edge in Edges)
+        {
+            if (IsAtOuterEdge(edge, x, y, threshold))
+                edges.Add(new EdgeInfo(edge, x, y, GetNormalizedPositionOnEdge(edge, x, y)));
+        }
+        return edges;
+    }
+
+    /// <summary>
     /// True when the point is within <paramref name="threshold"/> pixels of the given edge of its
     /// monitor and no other monitor continues beyond that edge there.
     /// </summary>

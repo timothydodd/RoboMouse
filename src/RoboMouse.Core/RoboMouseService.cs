@@ -1,3 +1,4 @@
+using System.Net;
 using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Input;
 using RoboMouse.Core.Logging;
@@ -36,21 +37,41 @@ public sealed class RoboMouseService : IDisposable
     private readonly IInputInjector _injector;
     private readonly DesktopServiceInjector? _serviceInjector;
     private readonly ClipboardManager _clipboardManager;
-    private readonly PeerDiscovery _discovery;
-    private readonly ConnectionListener _listener;
+    private readonly SessionMonitor _sessionMonitor;
+    private PeerDiscovery _discovery;
+    private ConnectionListener _listener;
 
-    private readonly Dictionary<string, PeerConnection> _connections = new();
+    // Work the input hooks must not do themselves (logging, swapping the system cursors, registering
+    // raw input): the hook callback has a system timeout, so it posts the work here and returns. The
+    // window belongs to the thread that created the service, the same one the hooks run on, and runs
+    // the work in order right after the callback returns.
+    private readonly MessageWindow _uiQueue;
+
+    private readonly ConnectionRegistry<PeerConnection> _registry = new();
     private readonly object _connectionLock = new();
-    private readonly HashSet<string> _connectsInFlight = new();
+    private readonly Dictionary<string, Task<PeerConnection>> _connectsInFlight = new();
     private readonly HashSet<string> _reportedReconnectFailures = new();
+    private readonly Dictionary<string, PeerConnectFailure> _connectFailures = new();
     private System.Threading.Timer? _reconnectTimer;
     private const int ReconnectIntervalMs = 5000;
 
-    // Controller state (this machine's mouse drives a remote screen)
+    // Machines with the pairing code that are not configured peers, waiting for the user; and the ones
+    // the user chose to ignore for this session.
+    private readonly Dictionary<string, PendingPeer> _pendingPeers = new();
+    private readonly HashSet<string> _ignoredPeers = new();
+
+    // Controller state (this machine's mouse drives a remote screen). The connection itself is the
+    // registry's active connection, so it changes under the registry's lock.
     private PeerConfig? _activePeer;
-    private PeerConnection? _activeConnection;
     private volatile bool _isControllingRemote;
     private long _returnCooldownUntil;
+
+    // Where the cursor left this screen, so it can be put back there if the peer drops mid-session.
+    private ScreenPosition _exitEdge;
+    private float _exitPosition;
+
+    // Whether the system cursors are currently swapped for blank ones (only touched on the UI queue).
+    private bool _cursorHidden;
 
     // Raw input stops arriving when an elevated window is in the foreground (UIPI does not deliver it to
     // a normal-user process), but the low-level hook still sees every move. While controlling, the
@@ -64,17 +85,17 @@ public sealed class RoboMouseService : IDisposable
     private int _hookMovesWithoutRaw;
     private bool _hookMotionFallback;
 
+    // Physical keys and buttons held on this machine (from the hooks), and what was forwarded to the
+    // peer as held while controlling it.
+    private readonly HeldInput _physical = new();
+    private readonly HeldInput _forwarded = new();
+
     // Controlled state (a remote machine drives this screen)
-    private volatile bool _isControlledByRemote;
-    private PeerConnection? _controllerConnection;
-    private ScreenPosition _entryEdge;
-    private bool _controllerWrapsAround;
+    private readonly ControlledSession _controlled;
     private int _edgeOvershoot;
     private InputBlockReason _localBlockReason;
     private System.Threading.Timer? _desktopPollTimer;
     private volatile InputBlockReason _remoteBlockReason;
-    private readonly HashSet<MouseEventType> _heldButtons = new();
-    private readonly Dictionary<Keys, (uint ScanCode, bool Extended)> _heldKeys = new();
 
     // Power. Every machine announces its display/sleep state; with FollowHostPower on, this one mirrors
     // the peer that last controlled it. Controlling that peer back ends it, so two machines never hold
@@ -90,6 +111,9 @@ public sealed class RoboMouseService : IDisposable
 
     private string? _pairingKeySource;
     private byte[]? _pairingKey;
+
+    // The pairing code the live connections were authenticated with.
+    private string _connectedPairingCode;
 
     // File sharing. Offers are kept by id on both sides: what we offer (serving side) and what we hold
     // from peers (paste side). A superseded or revoked offer stays servable for a grace period after its
@@ -107,10 +131,17 @@ public sealed class RoboMouseService : IDisposable
     /// <summary>How long a retired offer stays readable after its last request.</summary>
     private static readonly TimeSpan OfferGrace = TimeSpan.FromSeconds(60);
 
+    /// <summary>Longest a retired offer stays readable however busy it is, so a stuck paste cannot pin it for ever.</summary>
+    private static readonly TimeSpan OfferMaxRetiredLifetime = TimeSpan.FromMinutes(30);
+
+    /// <summary>How often retired offers are checked.</summary>
+    private static readonly TimeSpan OfferSweepInterval = TimeSpan.FromSeconds(15);
+
     private sealed class LocalOffer
     {
         public required FileOfferSource Source { get; init; }
         public bool Retired { get; set; }
+        public long RetiredTicks { get; set; }
         public long LastUsedTicks { get; set; } = Environment.TickCount64;
     }
 
@@ -119,6 +150,7 @@ public sealed class RoboMouseService : IDisposable
         public required string PeerId { get; init; }
         public required FileTransferClient Client { get; init; }
         public bool Retired { get; set; }
+        public long RetiredTicks { get; set; }
         public long LastUsedTicks { get; set; } = Environment.TickCount64;
     }
 
@@ -164,10 +196,10 @@ public sealed class RoboMouseService : IDisposable
     public bool IsControllingRemote => _isControllingRemote;
 
     /// <summary>Whether we are currently being controlled by a remote machine.</summary>
-    public bool IsControlledByRemote => _isControlledByRemote;
+    public bool IsControlledByRemote => _controlled.IsActive;
 
     /// <summary>The local edge the remote cursor came in on while <see cref="IsControlledByRemote"/>.</summary>
-    public ScreenPosition EntryEdge => _entryEdge;
+    public ScreenPosition EntryEdge => _controlled.EntryEdge;
 
     /// <summary>
     /// While controlling a remote: why that machine cannot apply our input right now (a UAC prompt, an
@@ -179,19 +211,20 @@ public sealed class RoboMouseService : IDisposable
     public PeerConfig? ActivePeer => _activePeer;
 
     /// <summary>Connected peers.</summary>
-    public IReadOnlyCollection<PeerConnection> ConnectedPeers
-    {
-        get
-        {
-            lock (_connectionLock)
-            {
-                return _connections.Values.ToList();
-            }
-        }
-    }
+    public IReadOnlyCollection<PeerConnection> ConnectedPeers => _registry.Snapshot();
 
     /// <summary>Discovered peers on the network.</summary>
     public IReadOnlyCollection<DiscoveredPeer> DiscoveredPeers => _discovery.Peers;
+
+    /// <summary>
+    /// Set when the TCP port peers connect to could not be opened (another program uses it): nothing
+    /// can connect to this machine, though it can still connect out. Null when listening normally.
+    /// Changes raise <see cref="NetworkStatusChanged"/>.
+    /// </summary>
+    public NetworkStartError? ListenerError { get; private set; }
+
+    /// <summary>Set when the discovery port could not be opened: other machines are not found automatically.</summary>
+    public NetworkStartError? DiscoveryError { get; private set; }
 
     public event EventHandler<PeerConnection>? PeerConnected;
     public event EventHandler<string>? PeerDisconnected;
@@ -199,6 +232,31 @@ public sealed class RoboMouseService : IDisposable
     public event EventHandler? ControlStateChanged;
     public event EventHandler? EnabledChanged;
     public event EventHandler<Exception>? Error;
+
+    /// <summary>Raised (on a background thread) when <see cref="ListenerError"/> or <see cref="DiscoveryError"/> changes.</summary>
+    public event EventHandler? NetworkStatusChanged;
+
+    /// <summary>
+    /// Raised (on a background thread) with a peer config id when its last connect failure is set or
+    /// cleared; read it with <see cref="GetLastConnectFailure"/>.
+    /// </summary>
+    public event EventHandler<string>? PeerStatusChanged;
+
+    /// <summary>
+    /// Raised (on a background thread) the first time in a session that an unknown machine with the
+    /// pairing code asks to connect. Answer with <see cref="AllowPendingPeer"/> or <see cref="IgnorePendingPeer"/>.
+    /// </summary>
+    public event EventHandler<PendingPeer>? PendingPeerRequested;
+
+    /// <summary>Raised when <see cref="PendingPeers"/> changes (a request arrives, or is allowed or ignored).</summary>
+    public event EventHandler? PendingPeersChanged;
+
+    /// <summary>
+    /// Raised when the service itself changed <see cref="AppSettings.Peers"/>: a pending peer was
+    /// allowed, a peer was removed, or two entries for the same machine were merged. Settings are
+    /// already saved.
+    /// </summary>
+    public event EventHandler? PeersChanged;
 
     /// <summary>Raised for each forwarded motion sample while controlling (for the debug panel).</summary>
     public event EventHandler<MouseDebugEventArgs>? MouseDebugUpdate;
@@ -208,8 +266,11 @@ public sealed class RoboMouseService : IDisposable
         _settings = settings;
         // Inert (plain in-process injection) until the desktop-service setting turns it on.
         _injector = injector ?? (_serviceInjector = new DesktopServiceInjector());
+        _controlled = new ControlledSession(_injector);
         _screenInfo = new ScreenInfo();
         _cursorManager = new CursorManager(_screenInfo);
+        _uiQueue = new MessageWindow();
+        _connectedPairingCode = settings.PairingCode;
 
         _mouseHook = new MouseHook();
         _mouseHook.MouseEvent += OnMouseEvent;
@@ -219,6 +280,9 @@ public sealed class RoboMouseService : IDisposable
 
         _rawMouse = new RawMouseInput();
         _rawMouse.Motion += OnRawMouseMotion;
+
+        _sessionMonitor = new SessionMonitor();
+        _sessionMonitor.LockChanged += OnSessionLockChanged;
 
         _powerMonitor = new PowerMonitor();
         _powerMonitor.Changed += OnLocalPowerStateChanged;
@@ -232,36 +296,52 @@ public sealed class RoboMouseService : IDisposable
         _clipboardManager.FilesCopied += OnLocalFilesCopied;
         _clipboardManager.FilesCleared += OnLocalFilesCleared;
 
-        var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
+        _discovery = CreateDiscovery();
+        _discoveryPort = settings.DiscoveryPort;
+        _listener = CreateListener();
+        _listenerName = settings.MachineName;
 
-        _discovery = new PeerDiscovery(
+        ApplyHotkeySetting();
+    }
+
+    private PeerDiscovery CreateDiscovery()
+    {
+        var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
+        var discovery = new PeerDiscovery(
             _settings.DiscoveryPort,
             _settings.LocalPort,
             _settings.MachineId,
             _settings.MachineName,
             width,
             height);
-        _discovery.PeerDiscovered += OnPeerDiscovered;
-        _discovery.PeerLost += OnPeerLost;
+        discovery.PeerDiscovered += OnPeerDiscovered;
+        discovery.PeerLost += OnPeerLost;
+        return discovery;
+    }
 
-        _listener = new ConnectionListener(
+    private ConnectionListener CreateListener()
+    {
+        var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
+        var listener = new ConnectionListener(
             _settings.LocalPort,
             GetPairingKey,
             _settings.MachineId,
             _settings.MachineName,
             width,
-            height);
-        _listener.PeerConnected += OnIncomingConnection;
-
-        ApplyHotkeySetting();
+            height)
+        {
+            AcceptPolicy = DecideIncoming
+        };
+        listener.PeerConnected += OnIncomingConnection;
+        return listener;
     }
 
     /// <summary>Starts the service.</summary>
     public void Start()
     {
         ApplyDesktopServiceSetting();
-        _listener.Start();
-        _discovery.Start();
+        StartListener();
+        StartDiscovery();
 
         if (_settings.Clipboard.Enabled)
         {
@@ -275,8 +355,136 @@ public sealed class RoboMouseService : IDisposable
         _enabled = _settings.Enabled;
 
         _reconnectTimer = new System.Threading.Timer(_ => _ = ReconnectConfiguredPeersAsync(), null, ReconnectIntervalMs, ReconnectIntervalMs);
-        _offerSweepTimer = new System.Threading.Timer(_ => SweepRetiredOffers(), null, OfferGrace, OfferGrace);
+        _offerSweepTimer = new System.Threading.Timer(_ => SweepRetiredOffers(), null, OfferSweepInterval, OfferSweepInterval);
     }
+
+    /// <summary>
+    /// Opens the listening port. A port another program already uses (24800 is also Synergy's, Barrier's
+    /// and Input Leap's default) must not take the app down: the error is kept in <see cref="ListenerError"/>
+    /// and this machine can still connect out.
+    /// </summary>
+    private void StartListener()
+    {
+        NetworkStartError? error = null;
+        try
+        {
+            _listener.Start();
+        }
+        catch (Exception ex)
+        {
+            error = NetworkStartError.From(NetworkErrorKind.ListenPort, _listener.Port, ex);
+            SimpleLogger.Log("Listener", error.Message);
+        }
+        if (error != ListenerError)
+        {
+            ListenerError = error;
+            NetworkStatusChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private void StartDiscovery()
+    {
+        NetworkStartError? error = null;
+        try
+        {
+            _discovery.Start();
+        }
+        catch (Exception ex)
+        {
+            error = NetworkStartError.From(NetworkErrorKind.DiscoveryPort, _settings.DiscoveryPort, ex);
+            SimpleLogger.Log("Discovery", error.Message);
+        }
+        if (error != DiscoveryError)
+        {
+            DiscoveryError = error;
+            NetworkStatusChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    /// <summary>
+    /// Applies changed <see cref="AppSettings.LocalPort"/>, <see cref="AppSettings.DiscoveryPort"/> and
+    /// <see cref="AppSettings.MachineName"/> without a restart: the listener and discovery are
+    /// recreated with the new values (a failure lands in <see cref="ListenerError"/> /
+    /// <see cref="DiscoveryError"/>). Live connections are kept; peers see a new name when they next
+    /// connect. Call after saving the settings.
+    /// </summary>
+    public void ApplyNetworkSettings()
+    {
+        if (_disposed)
+            return;
+
+        var restartListener = _listener.Port != _settings.LocalPort || _listenerName != _settings.MachineName || ListenerError != null;
+        if (restartListener)
+        {
+            SimpleLogger.Log("Listener", $"Network settings changed; listening on port {_settings.LocalPort} as {_settings.MachineName}");
+            var old = _listener;
+            old.PeerConnected -= OnIncomingConnection;
+            old.Dispose();
+            _listener = CreateListener();
+            _listenerName = _settings.MachineName;
+            StartListener();
+        }
+
+        var restartDiscovery = restartListener || _discoveryPort != _settings.DiscoveryPort || DiscoveryError != null;
+        if (restartDiscovery)
+        {
+            var old = _discovery;
+            old.PeerDiscovered -= OnPeerDiscovered;
+            old.PeerLost -= OnPeerLost;
+            old.Dispose();
+            _discovery = CreateDiscovery();
+            _discoveryPort = _settings.DiscoveryPort;
+            StartDiscovery();
+        }
+    }
+
+    /// <summary>
+    /// Call after <see cref="AppSettings.PairingCode"/> changed. Every live connection was authenticated
+    /// with the old code, so all of them (control, file transfers) are dropped; the background retry
+    /// connects again with the new one. Returns true when connections were dropped.
+    /// </summary>
+    public bool ApplyPairingCode()
+    {
+        static string Normalize(string code) => code.Trim().ToUpperInvariant().Replace("-", string.Empty).Replace(" ", string.Empty);
+
+        if (Normalize(_settings.PairingCode) == Normalize(_connectedPairingCode))
+            return false;
+        _connectedPairingCode = _settings.PairingCode;
+
+        SimpleLogger.Log("Connect", "Pairing code changed; dropping connections made with the old one");
+        DropAllConnections();
+        lock (_connectionLock)
+        {
+            _reportedReconnectFailures.Clear();
+        }
+        return true;
+    }
+
+    /// <summary>Drops every control connection, transfer server and transfer client.</summary>
+    private void DropAllConnections()
+    {
+        foreach (var connection in _registry.Snapshot())
+        {
+            try { connection.DisconnectAsync().GetAwaiter().GetResult(); } catch { }
+            RemoveConnection(connection);
+        }
+
+        List<PeerConnection> servers;
+        List<FileTransferClient> clients;
+        lock (_fileLock)
+        {
+            servers = _transferServers.ToList();
+            _transferServers.Clear();
+            clients = _remoteOffers.Values.Select(o => o.Client).ToList();
+        }
+        foreach (var server in servers)
+            server.Dispose();
+        foreach (var client in clients)
+            client.DropConnection();
+    }
+
+    private string _listenerName = string.Empty;
+    private int _discoveryPort;
 
     /// <summary>Stops the service.</summary>
     public void Stop()
@@ -295,13 +503,9 @@ public sealed class RoboMouseService : IDisposable
         _discovery.Stop();
         _listener.Stop();
 
-        lock (_connectionLock)
+        foreach (var connection in _registry.Clear())
         {
-            foreach (var connection in _connections.Values)
-            {
-                connection.Dispose();
-            }
-            _connections.Clear();
+            connection.Dispose();
         }
 
         lock (_powerLock)
@@ -313,47 +517,120 @@ public sealed class RoboMouseService : IDisposable
 
     #region Connection management
 
-    /// <summary>Connects to a peer.</summary>
+    /// <summary>
+    /// Connects to a peer. A second call for the same address while one is in progress waits for that
+    /// one instead of failing. The outcome is kept per peer (<see cref="GetLastConnectFailure"/>).
+    /// </summary>
     public async Task ConnectToPeerAsync(PeerConfig peerConfig, CancellationToken ct = default)
     {
         var key = $"{peerConfig.Address}:{peerConfig.Port}";
+        var configId = peerConfig.Id;
+        Task<PeerConnection> attempt;
+        bool joined;
         lock (_connectionLock)
         {
-            if (!_connectsInFlight.Add(key))
-                throw new InvalidOperationException($"Already connecting to {key}.");
+            joined = _connectsInFlight.TryGetValue(key, out attempt!);
+            if (!joined)
+            {
+                attempt = ConnectCoreAsync(peerConfig, ct);
+                _connectsInFlight[key] = attempt;
+            }
         }
 
+        PeerConnection connection;
         try
         {
-            var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
-
-            var connection = await PeerConnection.ConnectAsync(
-                peerConfig.Address,
-                peerConfig.Port,
-                GetPairingKey(),
-                _settings.MachineId,
-                _settings.MachineName,
-                width,
-                height,
-                _settings.LocalPort,
-                ct);
-
-            peerConfig.ScreenWidth = connection.PeerScreenWidth;
-            peerConfig.ScreenHeight = connection.PeerScreenHeight;
-            peerConfig.Id = connection.PeerId;
-
-            AddConnection(connection);
-            lock (_connectionLock)
-            {
-                _reportedReconnectFailures.Remove(peerConfig.Id);
-            }
+            connection = joined ? await attempt.WaitAsync(ct) : await attempt;
+        }
+        catch (Exception ex) when (!joined)
+        {
+            SetConnectFailure(configId, PeerConnectFailure.From(ex));
+            throw;
         }
         finally
         {
-            lock (_connectionLock)
+            if (!joined)
             {
-                _connectsInFlight.Remove(key);
+                lock (_connectionLock)
+                {
+                    _connectsInFlight.Remove(key);
+                }
             }
+        }
+
+        if (joined)
+        {
+            // The other caller's config object got the details; copy them onto this one.
+            peerConfig.Id = connection.PeerId;
+            peerConfig.ScreenWidth = connection.PeerScreenWidth;
+            peerConfig.ScreenHeight = connection.PeerScreenHeight;
+        }
+    }
+
+    private async Task<PeerConnection> ConnectCoreAsync(PeerConfig peerConfig, CancellationToken ct)
+    {
+        await Task.Yield(); // run outside the caller's lock
+        var (_, _, width, height) = InputSimulator.GetVirtualScreenBounds();
+        var configId = peerConfig.Id;
+
+        var connection = await PeerConnection.ConnectAsync(
+            peerConfig.Address,
+            peerConfig.Port,
+            GetPairingKey(),
+            _settings.MachineId,
+            _settings.MachineName,
+            width,
+            height,
+            _settings.LocalPort,
+            ct);
+
+        peerConfig.ScreenWidth = connection.PeerScreenWidth;
+        peerConfig.ScreenHeight = connection.PeerScreenHeight;
+        peerConfig.Id = connection.PeerId;
+
+        OnConfigConnected(peerConfig, configId);
+        AddConnection(connection);
+        lock (_connectionLock)
+        {
+            _reportedReconnectFailures.Remove(peerConfig.Id);
+        }
+        return connection;
+    }
+
+    /// <summary>
+    /// Housekeeping once a configured peer's real id is known: forget its failure, take it off the
+    /// blocked list (the user configured it, so they want it), and merge a second entry for the same
+    /// machine (added once by address and once by discovery, say) into the first.
+    /// </summary>
+    private void OnConfigConnected(PeerConfig peerConfig, string previousId)
+    {
+        SetConnectFailure(previousId, null);
+        SetConnectFailure(peerConfig.Id, null);
+
+        var changed = false;
+        var peers = _settings.Peers.ToList();
+        if (!peers.Contains(peerConfig))
+            return; // not (yet) a configured peer: nothing to tidy
+
+        if (_settings.BlockedMachineIds.Remove(peerConfig.Id))
+            changed = true;
+
+        var duplicate = peers.FirstOrDefault(p => !ReferenceEquals(p, peerConfig) && p.Id == peerConfig.Id);
+        if (duplicate != null)
+        {
+            // Keep the older entry (its position and MAC address) with the address that just worked.
+            SimpleLogger.Log("Connect", $"{peerConfig.Name} was configured twice; merging the entries");
+            duplicate.Address = peerConfig.Address;
+            duplicate.Port = peerConfig.Port;
+            duplicate.Enabled |= peerConfig.Enabled;
+            _settings.Peers.Remove(peerConfig);
+            changed = true;
+        }
+
+        if (changed)
+        {
+            SaveSettings("peer list");
+            PeersChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 
@@ -369,11 +646,11 @@ public sealed class RoboMouseService : IDisposable
         List<PeerConfig> candidates;
         lock (_connectionLock)
         {
-            candidates = _settings.Peers
+            candidates = _settings.Peers.ToList()
                 .Where(p => p.Enabled
                             && !string.IsNullOrEmpty(p.Address)
-                            && !(_connections.TryGetValue(p.Id, out var c) && c.IsConnected)
-                            && !_connectsInFlight.Contains($"{p.Address}:{p.Port}"))
+                            && _registry.Get(p.Id) == null
+                            && !_connectsInFlight.ContainsKey($"{p.Address}:{p.Port}"))
                 .ToList();
         }
 
@@ -398,6 +675,35 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Why the last attempt to connect to this peer (by config id) failed, or null when it connected
+    /// or has not been tried. Cleared as soon as a connection succeeds.
+    /// </summary>
+    public PeerConnectFailure? GetLastConnectFailure(string peerId)
+    {
+        lock (_connectionLock)
+        {
+            return _connectFailures.TryGetValue(peerId, out var failure) ? failure : null;
+        }
+    }
+
+    private void SetConnectFailure(string peerId, PeerConnectFailure? failure)
+    {
+        bool changed;
+        lock (_connectionLock)
+        {
+            if (failure == null)
+                changed = _connectFailures.Remove(peerId);
+            else
+            {
+                changed = !_connectFailures.TryGetValue(peerId, out var old) || old.Kind != failure.Kind || old.Message != failure.Message;
+                _connectFailures[peerId] = failure;
+            }
+        }
+        if (changed)
+            PeerStatusChanged?.Invoke(this, peerId);
+    }
+
     /// <summary>Connects to a peer by IP address. Creates and saves the peer config.</summary>
     public async Task<PeerConfig> ConnectToAddressAsync(string address, int port, ScreenPosition position, CancellationToken ct = default)
     {
@@ -411,13 +717,9 @@ public sealed class RoboMouseService : IDisposable
 
         await ConnectToPeerAsync(peerConfig, ct);
 
-        lock (_connectionLock)
-        {
-            if (_connections.TryGetValue(peerConfig.Id, out var conn))
-            {
-                peerConfig.Name = conn.PeerName;
-            }
-        }
+        var conn = _registry.Get(peerConfig.Id);
+        if (conn != null)
+            peerConfig.Name = conn.PeerName;
 
         var existing = _settings.Peers.FirstOrDefault(p => p.Id == peerConfig.Id);
         if (existing == null)
@@ -431,6 +733,7 @@ public sealed class RoboMouseService : IDisposable
             existing.Position = peerConfig.Position;
             existing.Name = peerConfig.Name;
         }
+        _settings.BlockedMachineIds.Remove(peerConfig.Id);
 
         return peerConfig;
     }
@@ -444,11 +747,8 @@ public sealed class RoboMouseService : IDisposable
         {
             try
             {
-                lock (_connectionLock)
-                {
-                    if (_connections.ContainsKey(peer.Id))
-                        continue;
-                }
+                if (_registry.Contains(peer.Id))
+                    continue;
 
                 await ConnectToPeerAsync(peer, ct);
             }
@@ -473,18 +773,14 @@ public sealed class RoboMouseService : IDisposable
             ScreenHeight = peer.ScreenHeight
         };
 
+        _settings.BlockedMachineIds.Remove(peer.MachineId);
         await ConnectToPeerAsync(peerConfig, ct);
     }
 
     /// <summary>Disconnects from a peer.</summary>
     public async Task DisconnectFromPeerAsync(string peerId)
     {
-        PeerConnection? connection;
-        lock (_connectionLock)
-        {
-            _connections.TryGetValue(peerId, out connection);
-        }
-
+        var connection = _registry.Get(peerId);
         if (connection != null)
         {
             await connection.DisconnectAsync();
@@ -492,35 +788,56 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Removes a configured peer: drops its connection, deletes its settings entry and blocks its
+    /// machine id, so that it cannot come straight back as a pending request. Adding it again by hand
+    /// unblocks it. Saves the settings.
+    /// </summary>
+    public async Task RemovePeerAsync(PeerConfig peer)
+    {
+        try { await DisconnectFromPeerAsync(peer.Id); }
+        catch (Exception ex) { SimpleLogger.Log("Connect", $"Disconnecting {peer.Name} failed: {ex.Message}"); }
+
+        _settings.Peers.Remove(peer);
+        if (!_settings.BlockedMachineIds.Contains(peer.Id))
+            _settings.BlockedMachineIds.Add(peer.Id);
+        SetConnectFailure(peer.Id, null);
+        SaveSettings("removed peer");
+        PeersChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Takes a machine off <see cref="AppSettings.BlockedMachineIds"/> (it may then ask to connect again). Saves.</summary>
+    public void UnblockMachine(string machineId)
+    {
+        if (_settings.BlockedMachineIds.Remove(machineId))
+            SaveSettings("blocked list");
+    }
+
     private void AddConnection(PeerConnection connection)
     {
-        PeerConnection? replaced = null;
-        lock (_connectionLock)
+        var result = _registry.Add(connection, _settings.MachineId);
+        if (!result.Added)
         {
-            if (_connections.TryGetValue(connection.PeerId, out var existing) && existing.IsConnected)
-            {
-                // Both machines connected to each other at once. Keep the connection initiated by the
-                // machine with the smaller id so both sides make the same choice, and drop the other.
-                var keepOutbound = string.CompareOrdinal(_settings.MachineId, connection.PeerId) < 0;
-                if (existing.IsOutbound == keepOutbound)
-                {
-                    SimpleLogger.Log("Conn", $"Dropping duplicate {(connection.IsOutbound ? "outbound" : "inbound")} connection to {connection.PeerName}");
-                    connection.Dispose();
-                    return;
-                }
-
-                replaced = existing;
-                _connections.Remove(connection.PeerId);
-            }
-
-            _connections[connection.PeerId] = connection;
+            SimpleLogger.Log("Conn", $"Dropping duplicate {(connection.IsOutbound ? "outbound" : "inbound")} connection to {connection.PeerName}");
+            connection.Dispose();
+            return;
         }
 
+        var replaced = result.Replaced;
         if (replaced != null)
         {
             SimpleLogger.Log("Conn", $"Replacing duplicate connection to {connection.PeerName}");
             replaced.MessageReceived -= OnMessageReceived;
             replaced.Dispose();
+
+            // Control state must not stay on the connection that was just thrown away: input would be
+            // posted into a disposed connection and the cursor would stay parked here.
+            if (result.ReplacedWasActive)
+            {
+                EndRemoteControl(notifyPeer: false);
+                PutCursorBackAtExitEdge();
+            }
+            EndBeingControlled(notifyPeer: false, onlyIf: replaced);
         }
 
         RememberMacAddress(connection);
@@ -536,25 +853,19 @@ public sealed class RoboMouseService : IDisposable
 
     private void RemoveConnection(PeerConnection connection)
     {
-        lock (_connectionLock)
-        {
-            // Only remove if this exact connection is still the registered one; a replacement may have taken over.
-            if (!_connections.TryGetValue(connection.PeerId, out var current) || !ReferenceEquals(current, connection))
-                return;
-            _connections.Remove(connection.PeerId);
-        }
+        if (!_registry.Remove(connection, out var wasActive))
+            return;
 
         connection.Dispose();
 
-        if (_activeConnection == connection)
+        if (wasActive)
         {
+            SimpleLogger.Log("Control", $"Lost {connection.PeerName} while controlling it");
             EndRemoteControl(notifyPeer: false);
+            PutCursorBackAtExitEdge();
         }
 
-        if (_controllerConnection == connection)
-        {
-            EndBeingControlled(notifyPeer: false);
-        }
+        EndBeingControlled(notifyPeer: false, onlyIf: connection);
 
         ForgetRemoteOffer(connection.PeerId);
 
@@ -567,6 +878,26 @@ public sealed class RoboMouseService : IDisposable
         UpdatePowerFollowing();
 
         PeerDisconnected?.Invoke(this, connection.PeerId);
+    }
+
+    /// <summary>
+    /// The listener's accept policy: runs after the pairing code was verified, before the handshake is
+    /// acknowledged. Unknown machines become pending requests.
+    /// </summary>
+    private string? DecideIncoming(HandshakeMessage handshake, IPEndPoint? remote)
+    {
+        bool ignored;
+        lock (_connectionLock)
+        {
+            ignored = _ignoredPeers.Contains(handshake.MachineId);
+        }
+
+        var decision = AcceptPolicy.Decide(_settings, handshake.MachineId, handshake.Kind, remote?.Address,
+            handshake.ListenPort, ignored, out _);
+        if (decision == AcceptDecision.Pending)
+            RegisterPending(handshake, remote);
+
+        return AcceptPolicy.RejectReason(decision, handshake.Kind, _settings.MachineName);
     }
 
     private void OnIncomingConnection(object? sender, PeerConnection connection)
@@ -600,19 +931,166 @@ public sealed class RoboMouseService : IDisposable
                 return;
         }
 
-        // A peer the user has switched off must not be able to take control of this screen either.
-        var config = _settings.Peers.FirstOrDefault(p => p.Id == connection.PeerId);
-        if (config is { Enabled: false })
+        // Settings can change between the accept decision and now; check again, and learn the id of a
+        // peer that was configured by address and is connecting for the first time.
+        var decision = AcceptPolicy.Decide(_settings, connection.PeerId, connection.Kind, connection.RemoteEndPoint?.Address,
+            connection.PeerListenPort, ignoredThisSession: false, out var config);
+        if (decision != AcceptDecision.Accept || config == null)
         {
-            SimpleLogger.Log("Accept", $"Refusing connection from disabled peer {connection.PeerName}");
+            SimpleLogger.Log("Accept", $"Refusing connection from {connection.PeerName} ({decision})");
             connection.Disconnected += (s, e) => connection.Dispose();
             connection.Start();
             _ = connection.DisconnectAsync();
             return;
         }
 
+        if (config.Id != connection.PeerId)
+        {
+            var previousId = config.Id;
+            SimpleLogger.Log("Accept", $"{config.Name} at {config.Address} is {connection.PeerName} ({connection.PeerId})");
+            config.Id = connection.PeerId;
+            OnConfigConnected(config, previousId);
+            SaveSettings("peer id");
+        }
+        else
+        {
+            SetConnectFailure(config.Id, null);
+        }
+
         AddConnection(connection);
     }
+
+    #region Pending peers
+
+    /// <summary>Machines waiting for the user to allow or ignore them, oldest first.</summary>
+    public IReadOnlyList<PendingPeer> PendingPeers
+    {
+        get
+        {
+            lock (_connectionLock)
+                return _pendingPeers.Values.OrderBy(p => p.RequestedAt).ToList();
+        }
+    }
+
+    private void RegisterPending(HandshakeMessage handshake, IPEndPoint? remote)
+    {
+        var pending = new PendingPeer(
+            handshake.MachineId,
+            handshake.MachineName,
+            remote?.Address is { } address ? (address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address).ToString() : string.Empty,
+            handshake.ListenPort > 0 ? handshake.ListenPort : 24800,
+            handshake.ScreenWidth,
+            handshake.ScreenHeight,
+            WakeOnLan.Normalize(handshake.MacAddress),
+            DateTime.Now);
+
+        bool isNew;
+        lock (_connectionLock)
+        {
+            isNew = !_pendingPeers.ContainsKey(pending.MachineId);
+            // Keep the first request time; refresh the address in case it moved.
+            if (!isNew)
+                pending = pending with { RequestedAt = _pendingPeers[pending.MachineId].RequestedAt };
+            _pendingPeers[pending.MachineId] = pending;
+        }
+
+        if (!isNew)
+            return;
+        SimpleLogger.Log("Accept", $"{pending.MachineName} ({pending.Address}) wants to connect; waiting for the user to allow it");
+        PendingPeersChanged?.Invoke(this, EventArgs.Empty);
+        PendingPeerRequested?.Invoke(this, pending);
+    }
+
+    /// <summary>
+    /// Allows a pending machine: adds it as a configured peer on <paramref name="position"/> (default: the
+    /// first edge no peer uses), takes it off the blocked list, saves, and connects in the background.
+    /// Returns the new config, or null when no such request is pending.
+    /// </summary>
+    public PeerConfig? AllowPendingPeer(string machineId, ScreenPosition? position = null)
+    {
+        PendingPeer? pending;
+        lock (_connectionLock)
+        {
+            if (_pendingPeers.Remove(machineId, out pending))
+                _ignoredPeers.Remove(machineId);
+        }
+        if (pending == null)
+            return null;
+
+        var config = _settings.Peers.FirstOrDefault(p => p.Id == machineId);
+        if (config == null)
+        {
+            config = new PeerConfig
+            {
+                Id = pending.MachineId,
+                Name = pending.MachineName,
+                Address = pending.Address,
+                Port = pending.Port,
+                Position = position ?? FirstFreeEdge(),
+                ScreenWidth = pending.ScreenWidth,
+                ScreenHeight = pending.ScreenHeight,
+                MacAddress = pending.MacAddress
+            };
+            _settings.Peers.Add(config);
+        }
+        else
+        {
+            config.Enabled = true;
+        }
+        _settings.BlockedMachineIds.Remove(machineId);
+        SaveSettings("allowed peer");
+        SimpleLogger.Log("Accept", $"Allowed {pending.MachineName}; placed {config.Position}");
+
+        PendingPeersChanged?.Invoke(this, EventArgs.Empty);
+        PeersChanged?.Invoke(this, EventArgs.Empty);
+
+        // Connect now rather than waiting for either side's retry.
+        var toConnect = config;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                if (_registry.Get(toConnect.Id) == null && !string.IsNullOrEmpty(toConnect.Address))
+                    await ConnectToPeerAsync(toConnect, cts.Token);
+            }
+            catch (Exception ex)
+            {
+                SimpleLogger.Log("Connect", $"Could not connect to {toConnect.Name} yet: {ex.GetBaseException().Message}");
+            }
+        });
+        return config;
+    }
+
+    /// <summary>Ignores a pending machine for the rest of this session: its connections are refused without asking again.</summary>
+    public void IgnorePendingPeer(string machineId)
+    {
+        bool removed;
+        lock (_connectionLock)
+        {
+            removed = _pendingPeers.Remove(machineId);
+            _ignoredPeers.Add(machineId);
+        }
+        if (removed)
+        {
+            SimpleLogger.Log("Accept", $"Ignoring connection requests from {machineId} for this session");
+            PendingPeersChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    /// <summary>The first edge (right, left, top, bottom) no configured peer uses; right when all are taken.</summary>
+    public ScreenPosition FirstFreeEdge()
+    {
+        var used = _settings.Peers.ToList().Select(p => p.Position).ToHashSet();
+        foreach (var edge in new[] { ScreenPosition.Right, ScreenPosition.Left, ScreenPosition.Top, ScreenPosition.Bottom })
+        {
+            if (!used.Contains(edge))
+                return edge;
+        }
+        return ScreenPosition.Right;
+    }
+
+    #endregion
 
     /// <summary>
     /// Turns a configured peer on or off and saves. Disabling drops any live connection to it;
@@ -624,7 +1102,7 @@ public sealed class RoboMouseService : IDisposable
             return;
 
         peer.Enabled = enabled;
-        _settings.Save();
+        SaveSettings("peer on/off");
 
         if (!enabled)
         {
@@ -644,23 +1122,27 @@ public sealed class RoboMouseService : IDisposable
         }
     }
 
-    /// <summary>Whether a live connection to the given peer exists.</summary>
-    public bool IsPeerConnected(string peerId)
+    /// <summary>
+    /// Saves the settings from background work. A failure (disk full, file locked) is logged rather than
+    /// thrown into a network or timer thread.
+    /// </summary>
+    private void SaveSettings(string what)
     {
-        lock (_connectionLock)
+        try
         {
-            return _connections.TryGetValue(peerId, out var c) && c.IsConnected;
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            SimpleLogger.Log("Settings", $"Could not save settings ({what}): {ex.Message}");
         }
     }
 
+    /// <summary>Whether a live connection to the given peer exists.</summary>
+    public bool IsPeerConnected(string peerId) => _registry.Get(peerId) != null;
+
     /// <summary>Gets the live connection to a peer, if any.</summary>
-    public PeerConnection? GetConnection(string peerId)
-    {
-        lock (_connectionLock)
-        {
-            return _connections.TryGetValue(peerId, out var c) && c.IsConnected ? c : null;
-        }
-    }
+    public PeerConnection? GetConnection(string peerId) => _registry.Get(peerId);
 
     /// <summary>
     /// Tests a configured peer. Uses the live connection when there is one; otherwise probes the address.
@@ -675,7 +1157,8 @@ public sealed class RoboMouseService : IDisposable
 
     /// <summary>
     /// Tests reachability of an address: TCP connect, handshake, one round-trip ping, then hang up.
-    /// The remote does not register us as a peer for this.
+    /// The remote does not register us as a peer for this (an unknown machine shows there as a request
+    /// to connect).
     /// </summary>
     public async Task<ConnectionTestResult> TestConnectionAsync(string address, int port, CancellationToken ct = default)
     {
@@ -700,27 +1183,11 @@ public sealed class RoboMouseService : IDisposable
             result.RoundTripMs = await MeasureAveragedAsync(probe, ct);
             result.Success = true;
         }
-        catch (OperationCanceledException)
-        {
-            result.Error = "Timed out. Is RoboMouse running there, and is the port open in the firewall?";
-        }
-        catch (PairingException ex)
-        {
-            result.Error = ex.Message + " Enter the same pairing code on both machines (Settings > Network).";
-        }
-        catch (System.Net.Sockets.SocketException ex)
-        {
-            result.Error = ex.SocketErrorCode switch
-            {
-                System.Net.Sockets.SocketError.ConnectionRefused => "Connection refused. RoboMouse is not listening on that port.",
-                System.Net.Sockets.SocketError.HostNotFound => "Host name could not be resolved.",
-                System.Net.Sockets.SocketError.TimedOut => "No response. Check the address and firewall.",
-                _ => ex.Message
-            };
-        }
         catch (Exception ex)
         {
-            result.Error = ex.Message;
+            var (kind, message) = PeerConnectFailure.Classify(ex);
+            result.FailureKind = kind;
+            result.Error = message;
         }
         finally
         {
@@ -753,10 +1220,12 @@ public sealed class RoboMouseService : IDisposable
         }
         catch (OperationCanceledException)
         {
+            result.FailureKind = PeerFailureKind.TimedOut;
             result.Error = "The peer stopped answering pings. The connection may be dead.";
         }
         catch (Exception ex)
         {
+            result.FailureKind = PeerFailureKind.Other;
             result.Error = ex.Message;
         }
 
@@ -864,10 +1333,7 @@ public sealed class RoboMouseService : IDisposable
         if (peer == null)
             return null;
 
-        lock (_connectionLock)
-        {
-            return _connections.ContainsKey(peer.Id) ? peer : null;
-        }
+        return _registry.Contains(peer.Id) ? peer : null;
     }
 
     #endregion
@@ -896,7 +1362,7 @@ public sealed class RoboMouseService : IDisposable
             SimpleLogger.Log("Control", "Raw input resumed; back to raw motion");
         }
 
-        var connection = _activeConnection;
+        var connection = _registry.Active;
         if (connection == null)
             return;
 
@@ -919,15 +1385,17 @@ public sealed class RoboMouseService : IDisposable
 
     private void OnMouseEvent(object? sender, InputMouseEventArgs e)
     {
-        if (!_enabled)
-            return;
-
         // Injected events (our own SendInput/SetCursorPos, or a remote controller's) are never ours to act on.
         if (e.IsInjected)
             return;
 
+        _physical.TrackButton(e.EventType);
+
+        if (!_enabled)
+            return;
+
         // While being controlled, let the local mouse behave normally.
-        if (_isControlledByRemote)
+        if (_controlled.IsActive)
             return;
 
         if (_isControllingRemote)
@@ -939,7 +1407,8 @@ public sealed class RoboMouseService : IDisposable
                 ForwardHookedMotionIfRawSilent(e);
             else
             {
-                _activeConnection?.Post(new MouseMessage
+                _forwarded.TrackButton(e.EventType);
+                _registry.Active?.Post(new MouseMessage
                 {
                     EventType = e.EventType,
                     WheelDelta = e.WheelDelta
@@ -954,24 +1423,66 @@ public sealed class RoboMouseService : IDisposable
         if (Environment.TickCount64 < Interlocked.Read(ref _returnCooldownUntil))
             return;
 
-        var edge = _screenInfo.GetEdgeAt(e.X, e.Y, _settings.EdgeThreshold);
-        if (edge == null)
+        var edges = _screenInfo.GetEdgesAt(e.X, e.Y, _settings.EdgeThreshold);
+        if (edges.Count == 0)
             return;
 
-        var targetPeer = GetPeerAtEdge(edge.Edge);
+        // Never cross while a button is held (dragging a window or selecting text): the button would stay
+        // down here while the cursor is parked, and the drag would jump to the middle of the screen.
+        if (_physical.AnyButtonDown && ButtonsReallyHeld())
+            return;
+
+        // In a corner the cursor is on two edges; take the one that leads to a peer.
+        EdgeInfo? edge = null;
+        PeerConfig? targetPeer = null;
+        foreach (var candidate in edges)
+        {
+            targetPeer = GetPeerAtEdge(candidate.Edge);
+            if (targetPeer != null)
+            {
+                edge = candidate;
+                break;
+            }
+        }
         if (targetPeer == null && _settings.WrapAround)
         {
             // No peer on this edge: wrap to the peer on the opposite edge, arriving from its far side.
-            targetPeer = GetPeerAtEdge(CursorManager.GetOppositeEdge(edge.Edge));
+            foreach (var candidate in edges)
+            {
+                targetPeer = GetPeerAtEdge(CursorManager.GetOppositeEdge(candidate.Edge));
+                if (targetPeer != null)
+                {
+                    edge = candidate;
+                    break;
+                }
+            }
         }
-        if (targetPeer == null)
+        if (targetPeer == null || edge == null)
         {
-            ConsiderWakingPeerAt(edge.Edge);
+            foreach (var candidate in edges)
+                ConsiderWakingPeerAt(candidate.Edge);
             return;
         }
 
-        StartRemoteControl(targetPeer, edge);
-        e.Handled = true;
+        if (StartRemoteControl(targetPeer, edge))
+            e.Handled = true;
+    }
+
+    /// <summary>
+    /// Double-checks with Windows that a mouse button the hook saw go down is still down. A button
+    /// released on the secure desktop (a UAC prompt) never reaches the hook, and a stale "held" would
+    /// block crossing for good.
+    /// </summary>
+    private bool ButtonsReallyHeld()
+    {
+        const int VK_LBUTTON = 0x01, VK_RBUTTON = 0x02, VK_MBUTTON = 0x04, VK_XBUTTON1 = 0x05, VK_XBUTTON2 = 0x06;
+        foreach (var vk in new[] { VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2 })
+        {
+            if ((NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0)
+                return true;
+        }
+        _physical.Clear();
+        return false;
     }
 
     /// <summary>
@@ -993,7 +1504,7 @@ public sealed class RoboMouseService : IDisposable
                 return;
 
             _hookMotionFallback = true;
-            SimpleLogger.Log("Control", "Raw input is silent (elevated window in front?); using hooked motion");
+            _uiQueue.BeginInvoke(() => SimpleLogger.Log("Control", "Raw input is silent (elevated window in front?); using hooked motion"));
         }
 
         var dx = e.X - _parkedX;
@@ -1001,7 +1512,7 @@ public sealed class RoboMouseService : IDisposable
         if (dx == 0 && dy == 0)
             return;
 
-        _activeConnection?.Post(MouseMessage.Motion(dx, dy));
+        _registry.Active?.Post(MouseMessage.Motion(dx, dy));
     }
 
     private readonly ModifierState _modifiers = new();
@@ -1012,43 +1523,80 @@ public sealed class RoboMouseService : IDisposable
         {
             // Volume knobs and media buttons are often turned into keystrokes by the vendor's software,
             // so they arrive marked as injected. While controlling a remote they belong to it. Nothing
-            // of ours injects keys on this side while it is the controller.
+            // of ours injects keys on this side while it is the controller, apart from releasing held
+            // modifiers at the moment of crossing, and those are not media keys.
             if (_enabled && _isControllingRemote && IsMediaKey(e.KeyCode))
             {
                 e.Handled = true;
-                _activeConnection?.Post(KeyboardMessage.FromEvent(e));
+                _registry.Active?.Post(KeyboardMessage.FromEvent(e));
             }
             return;
         }
 
         var isDown = e.EventType is KeyboardEventType.KeyDown or KeyboardEventType.SysKeyDown;
         _modifiers.Update(e.KeyCode, isDown);
+        _physical.TrackKey(e.KeyCode, e.ScanCode, e.IsExtendedKey, isDown);
 
         // Escape hatch and on/off switch. Works whether or not sharing is enabled, and while controlling a
         // remote it takes priority over forwarding so a hung peer can never trap the keyboard.
-        if (isDown && _hotkey?.Matches(e.KeyCode, _modifiers) == true)
+        if (isDown && _hotkey?.Key == e.KeyCode)
         {
-            e.Handled = true;
-            OnHotkeyPressed();
-            return;
+            // Modifier ups pressed on the secure desktop never reached the hook, so a stale "held" could
+            // make the plain key fire the hotkey. While not controlling, Windows' own key state is the
+            // truth; while controlling, the hook swallows modifiers so Windows never sees them held.
+            if (!_isControllingRemote)
+                _modifiers.Confirm(key => (NativeMethods.GetAsyncKeyState((int)key) & 0x8000) != 0);
+
+            if (_hotkey.Matches(e.KeyCode, _modifiers))
+            {
+                e.Handled = true;
+                OnHotkeyPressed();
+                return;
+            }
         }
 
-        if (!_enabled || _isControlledByRemote)
+        if (!_enabled || _controlled.IsActive)
             return;
 
         if (_isControllingRemote)
         {
             e.Handled = true;
-            _activeConnection?.Post(KeyboardMessage.FromEvent(e));
+            _forwarded.TrackKey(e.KeyCode, e.ScanCode, e.IsExtendedKey, isDown);
+            _registry.Active?.Post(KeyboardMessage.FromEvent(e));
         }
     }
 
     private static bool IsMediaKey(Keys key) =>
         key is >= Keys.VolumeMute and <= Keys.MediaPlayPause;
 
+    /// <summary>
+    /// The session was locked or unlocked. Keys released on the lock screen never reached the hooks,
+    /// so the modifier and held-key state is reset, and a peer being controlled is sent the key-ups for
+    /// everything forwarded as held, so nothing sticks there either.
+    /// </summary>
+    private void OnSessionLockChanged(bool locked)
+    {
+        SimpleLogger.Log("Session", locked ? "Session locked" : "Session unlocked");
+        _modifiers.Clear();
+        _physical.Clear();
+        ReleaseForwardedInput();
+    }
+
+    /// <summary>Sends the peer being controlled an up for every key and button forwarded to it as down.</summary>
+    private void ReleaseForwardedInput()
+    {
+        var (keys, buttons) = _forwarded.TakeReleases();
+        var connection = _registry.Active;
+        if (connection == null || !_isControllingRemote)
+            return;
+        foreach (var (key, scan, extended) in keys)
+            connection.Post(new KeyboardMessage { KeyCode = key, ScanCode = scan, EventType = KeyboardEventType.KeyUp, IsExtendedKey = extended });
+        foreach (var up in buttons)
+            connection.Post(new MouseMessage { EventType = up });
+    }
+
     private Hotkey? _hotkey;
 
-    /// <summary>Re-reads the toggle hotkey from settings.</summary>
     /// <summary>How remote input is being applied: in-process, or through the desktop service.</summary>
     public DesktopServiceState DesktopServiceState => _serviceInjector?.State ?? DesktopServiceState.Off;
 
@@ -1065,6 +1613,7 @@ public sealed class RoboMouseService : IDisposable
         _serviceInjector.Enabled = _settings.UseDesktopService && installed;
     }
 
+    /// <summary>Re-reads the toggle hotkey from settings.</summary>
     public void ApplyHotkeySetting()
     {
         _hotkey = Hotkey.Parse(_settings.ToggleHotkey);
@@ -1074,12 +1623,7 @@ public sealed class RoboMouseService : IDisposable
 
     private void OnLocalPowerStateChanged(PeerPowerState state)
     {
-        List<PeerConnection> connections;
-        lock (_connectionLock)
-        {
-            connections = _connections.Values.ToList();
-        }
-        foreach (var connection in connections)
+        foreach (var connection in _registry.Snapshot())
             connection.Post(new PowerStateMessage { State = state });
     }
 
@@ -1116,95 +1660,134 @@ public sealed class RoboMouseService : IDisposable
     {
         if (_isControllingRemote)
         {
-            SimpleLogger.Log("Control", "Hotkey pressed: releasing remote control");
+            _uiQueue.BeginInvoke(() => SimpleLogger.Log("Control", "Hotkey pressed: releasing remote control"));
             EndRemoteControl(notifyPeer: true);
             var bounds = _screenInfo.PrimaryBounds;
-            InputSimulator.MoveTo(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2);
+            var (x, y) = (bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2);
+            _uiQueue.BeginInvoke(() => InputSimulator.MoveTo(x, y));
             Interlocked.Exchange(ref _returnCooldownUntil, Environment.TickCount64 + ReturnCooldownMs);
             return;
         }
 
         Enabled = !Enabled;
         _settings.Enabled = Enabled;
-        SimpleLogger.Log("Control", $"Hotkey pressed: sharing {(Enabled ? "enabled" : "disabled")}");
+        var enabled = Enabled;
+        _uiQueue.BeginInvoke(() => SimpleLogger.Log("Control", $"Hotkey pressed: sharing {(enabled ? "enabled" : "disabled")}"));
     }
 
-    private void StartRemoteControl(PeerConfig peer, EdgeInfo edge)
+    /// <summary>
+    /// Hands the cursor to <paramref name="peer"/>. Called from the mouse hook, so only the state change
+    /// and the enter message happen here; logging, raw input, hiding and parking the cursor are posted
+    /// to run right after the hook returns. Returns false when the peer's connection just went away.
+    /// </summary>
+    private bool StartRemoteControl(PeerConfig peer, EdgeInfo edge)
     {
-        PeerConnection? connection;
-        lock (_connectionLock)
-        {
-            _connections.TryGetValue(peer.Id, out connection);
-        }
+        // Becomes the active connection only if it is still registered and connected, under the same
+        // lock that removing or replacing it takes, so a connection dropping at this moment is never
+        // left as the one we control through.
+        var connection = _registry.TryActivate(peer.Id);
         if (connection == null)
-            return;
-
-        SimpleLogger.Log("Control", $"Entering {peer.Name} via {edge.Edge} edge at {edge.NormalizedPosition:F3}");
+            return false;
 
         _activePeer = peer;
-        _activeConnection = connection;
+        _exitEdge = edge.Edge;
+        _exitPosition = edge.NormalizedPosition;
         _isControllingRemote = true;
-        SetPowerHost(peer.Id, isHost: false);
+        _remoteBlockReason = InputBlockReason.None;
+        _forwarded.Clear();
 
-        try
-        {
-            _rawMouse.Start();
-        }
-        catch (Exception ex)
-        {
-            _isControllingRemote = false;
-            _activePeer = null;
-            _activeConnection = null;
-            Error?.Invoke(this, ex);
-            return;
-        }
-
-        InputSimulator.HideSystemCursor();
-
-        // Park the (now hidden and frozen) cursor away from the edge so nothing local reacts to it.
         var bounds = _screenInfo.PrimaryBounds;
         _parkedX = bounds.Left + bounds.Width / 2;
         _parkedY = bounds.Top + bounds.Height / 2;
         _lastRawMotionTick = Environment.TickCount64;
         _hookMovesWithoutRaw = 0;
         _hookMotionFallback = false;
-        InputSimulator.MoveTo(_parkedX, _parkedY);
 
         // The cursor appears on the peer's edge opposite the one it left here (its left edge when we
         // left through our right). With wrap-around that is not necessarily the edge facing this screen.
         var entryEdge = CursorManager.GetOppositeEdge(edge.Edge);
-        _remoteBlockReason = InputBlockReason.None;
-        var enterMsg = new CursorEnterMessage
+        connection.Post(new CursorEnterMessage
         {
             EntryEdge = entryEdge,
             EntryX = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? 0f : edge.NormalizedPosition,
             EntryY = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? edge.NormalizedPosition : 0f,
             WrapAround = _settings.WrapAround
-        };
-        connection.Post(enterMsg);
+        });
+
+        // Modifiers held while crossing (Ctrl held to copy-drag, Shift to extend a selection) go with the
+        // cursor: the peer gets the downs so the chord still works there, and they are released here so
+        // they do not stay down on this machine while its keyboard is swallowed.
+        var modifiers = _physical.HeldModifiers();
+        foreach (var (key, scan, extended) in modifiers)
+        {
+            _forwarded.TrackKey(key, scan, extended, isDown: true);
+            connection.Post(new KeyboardMessage { KeyCode = key, ScanCode = scan, EventType = KeyboardEventType.KeyDown, IsExtendedKey = extended });
+        }
+
+        var parkedX = _parkedX;
+        var parkedY = _parkedY;
+        _uiQueue.BeginInvoke(() =>
+        {
+            SimpleLogger.Log("Control", $"Entering {peer.Name} via {edge.Edge} edge at {edge.NormalizedPosition:F3}");
+            if (!_isControllingRemote || !ReferenceEquals(_registry.Active, connection))
+                return; // Already over: the end was queued behind this and cleans up.
+
+            foreach (var (key, scan, extended) in modifiers)
+                InputSimulator.SimulateKeyboardEvent(key, scan, KeyboardEventType.KeyUp, extended);
+
+            try
+            {
+                _rawMouse.Start();
+            }
+            catch (Exception ex)
+            {
+                SimpleLogger.Log("Control", $"Raw input could not start: {ex.Message}");
+                EndRemoteControl(notifyPeer: true);
+                Error?.Invoke(this, ex);
+                return;
+            }
+
+            InputSimulator.HideSystemCursor();
+            _cursorHidden = true;
+
+            // Park the (now hidden and frozen) cursor away from the edge so nothing local reacts to it.
+            InputSimulator.MoveTo(parkedX, parkedY);
+
+            SetPowerHost(peer.Id, isHost: false);
+        });
 
         ControlStateChanged?.Invoke(this, EventArgs.Empty);
+        return true;
     }
 
     /// <summary>
     /// Stops controlling the remote. When <paramref name="notifyPeer"/> is true the remote is told to
-    /// release; when false the remote initiated the hand-back (or is gone) and already knows.
+    /// release; when false the remote initiated the hand-back (or is gone) and already knows. Undoing the
+    /// local side (raw input, hidden cursor) is queued behind the work that set it up, so the two can
+    /// never run in the wrong order.
     /// </summary>
     private void EndRemoteControl(bool notifyPeer)
     {
         if (!_isControllingRemote)
             return;
 
-        var connection = _activeConnection;
+        var connection = _registry.ClearActive();
         var peer = _activePeer;
 
         _isControllingRemote = false;
-        _activeConnection = null;
         _activePeer = null;
         _remoteBlockReason = InputBlockReason.None;
+        _forwarded.Clear();
 
-        _rawMouse.Stop();
-        InputSimulator.RestoreSystemCursor();
+        _uiQueue.BeginInvoke(() =>
+        {
+            // A new session may have started in the meantime; it owns raw input and the cursor now.
+            if (_isControllingRemote)
+                return;
+            _rawMouse.Stop();
+            InputSimulator.RestoreSystemCursor();
+            _cursorHidden = false;
+        });
 
         if (notifyPeer && connection != null && peer != null)
         {
@@ -1238,9 +1821,24 @@ public sealed class RoboMouseService : IDisposable
 
         // Land one pixel inside the local edge facing the one the cursor left through: the peer's
         // entry edge on a normal return, or the far edge when it wrapped around.
-        var localEdge = CursorManager.GetOppositeEdge(msg.ExitEdge);
-        var (x, y) = _cursorManager.GetEdgePoint(localEdge, normalized);
-        var (nudgeX, nudgeY) = localEdge switch
+        PlaceCursorInsideEdge(CursorManager.GetOppositeEdge(msg.ExitEdge), normalized);
+    }
+
+    /// <summary>
+    /// The peer went away while we controlled it: put the cursor back where it left this screen rather
+    /// than leaving it at the parked point in the middle.
+    /// </summary>
+    private void PutCursorBackAtExitEdge()
+    {
+        Interlocked.Exchange(ref _returnCooldownUntil, Environment.TickCount64 + ReturnCooldownMs);
+        PlaceCursorInsideEdge(_exitEdge, _exitPosition);
+    }
+
+    /// <summary>Moves the cursor one pixel inside a local outer edge, queued behind any pending cursor work.</summary>
+    private void PlaceCursorInsideEdge(ScreenPosition edge, float normalized)
+    {
+        var (x, y) = _cursorManager.GetEdgePoint(edge, normalized);
+        var (nudgeX, nudgeY) = edge switch
         {
             ScreenPosition.Left => (1, 0),
             ScreenPosition.Right => (-1, 0),
@@ -1248,7 +1846,11 @@ public sealed class RoboMouseService : IDisposable
             ScreenPosition.Bottom => (0, -1),
             _ => (0, 0)
         };
-        InputSimulator.MoveTo(x + nudgeX, y + nudgeY);
+        _uiQueue.BeginInvoke(() =>
+        {
+            if (!_isControllingRemote)
+                InputSimulator.MoveTo(x + nudgeX, y + nudgeY);
+        });
     }
 
     #endregion
@@ -1269,7 +1871,7 @@ public sealed class RoboMouseService : IDisposable
                     break;
 
                 case KeyboardMessage keyMsg:
-                    HandleRemoteKeyboardInput(keyMsg, connection);
+                    _controlled.ApplyKey(connection, keyMsg);
                     break;
 
                 case CursorEnterMessage enterMsg:
@@ -1277,7 +1879,7 @@ public sealed class RoboMouseService : IDisposable
                     break;
 
                 case InputStatusMessage statusMsg:
-                    if (_isControllingRemote && connection == _activeConnection && statusMsg.Reason != _remoteBlockReason)
+                    if (_isControllingRemote && connection == _registry.Active && statusMsg.Reason != _remoteBlockReason)
                     {
                         _remoteBlockReason = statusMsg.Reason;
                         SimpleLogger.Log("Control", $"{connection.PeerName} input status: {statusMsg.Reason}");
@@ -1295,13 +1897,13 @@ public sealed class RoboMouseService : IDisposable
                     break;
 
                 case CursorLeaveMessage leaveMsg:
-                    if (_isControllingRemote && connection == _activeConnection)
+                    if (_isControllingRemote && connection == _registry.Active)
                     {
                         HandleReturnFromRemote(leaveMsg);
                     }
-                    else if (_isControlledByRemote && connection == _controllerConnection)
+                    else
                     {
-                        EndBeingControlled(notifyPeer: false);
+                        EndBeingControlled(notifyPeer: false, onlyIf: connection);
                     }
                     break;
 
@@ -1326,15 +1928,30 @@ public sealed class RoboMouseService : IDisposable
 
     private void HandleCursorEnter(CursorEnterMessage msg, PeerConnection connection)
     {
+        // Sharing switched off here, or this machine is driving another screen right now: say no, and
+        // hand the cursor straight back so the controller does not sit with a hidden, parked pointer.
+        var previousEdge = _controlled.EntryEdge;
+        var outcome = _controlled.Enter(connection, msg.EntryEdge, msg.WrapAround, _enabled, _isControllingRemote, out var replaced);
+
+        if (outcome == EnterOutcome.Refused)
+        {
+            SimpleLogger.Log("Control", $"Refusing control from {connection.PeerName}: {(_enabled ? "controlling another machine" : "sharing is off")}");
+            connection.Post(new CursorLeaveMessage { ExitEdge = msg.EntryEdge, ExitX = msg.EntryX, ExitY = msg.EntryY });
+            return;
+        }
+
+        if (replaced != null)
+        {
+            // A second machine took over; the first one's held input was released. Give it its cursor back.
+            SimpleLogger.Log("Control", $"{connection.PeerName} takes over from {replaced.PeerName}");
+            replaced.Post(new CursorLeaveMessage { ExitEdge = previousEdge, ExitX = 0.5f, ExitY = 0.5f });
+        }
+
         SimpleLogger.Log("Control", $"Controlled by {connection.PeerName} via {msg.EntryEdge} edge");
 
-        _controllerConnection = connection;
-        _entryEdge = msg.EntryEdge;
-        _controllerWrapsAround = msg.WrapAround;
         _edgeOvershoot = 0;
         _injectionBlocked = false;
         _localBlockReason = InputBlockReason.None;
-        _isControlledByRemote = true;
         SetPowerHost(connection.PeerId, isHost: true);
         _desktopPollTimer?.Dispose();
         _desktopPollTimer = new System.Threading.Timer(_ => ReportInputStatus(), null, 250, 250);
@@ -1348,40 +1965,16 @@ public sealed class RoboMouseService : IDisposable
 
     private void HandleRemoteMouseInput(MouseMessage msg, PeerConnection connection)
     {
-        if (!_isControlledByRemote || connection != _controllerConnection)
-            return;
-
         if (msg.IsMotion)
         {
+            if (!_controlled.IsControlledBy(connection))
+                return;
             MoveRemoteCursor(msg.DeltaX, msg.DeltaY);
             CheckForReturnEdge(msg.DeltaX, msg.DeltaY);
             return;
         }
 
-        switch (msg.EventType)
-        {
-            case MouseEventType.LeftDown or MouseEventType.RightDown or MouseEventType.MiddleDown
-                or MouseEventType.XButton1Down or MouseEventType.XButton2Down:
-                _heldButtons.Add(msg.EventType);
-                break;
-            case MouseEventType.LeftUp:
-                _heldButtons.Remove(MouseEventType.LeftDown);
-                break;
-            case MouseEventType.RightUp:
-                _heldButtons.Remove(MouseEventType.RightDown);
-                break;
-            case MouseEventType.MiddleUp:
-                _heldButtons.Remove(MouseEventType.MiddleDown);
-                break;
-            case MouseEventType.XButton1Up:
-                _heldButtons.Remove(MouseEventType.XButton1Down);
-                break;
-            case MouseEventType.XButton2Up:
-                _heldButtons.Remove(MouseEventType.XButton2Down);
-                break;
-        }
-
-        _injector.SimulateMouseEvent(msg.EventType, msg.WheelDelta);
+        _controlled.ApplyMouseButton(connection, msg.EventType, msg.WheelDelta);
     }
 
     private bool _injectionBlocked;
@@ -1427,6 +2020,7 @@ public sealed class RoboMouseService : IDisposable
     {
         var (x, y) = _injector.GetCursorPosition();
         var layout = _screenInfo.Layout;
+        var entryEdge = _controlled.EntryEdge;
 
         // Which edge the cursor is pinned against while being pushed further into it. Normally only the
         // entry edge hands control back; with wrap-around any edge does.
@@ -1439,13 +2033,13 @@ public sealed class RoboMouseService : IDisposable
             _ => (false, 0)
         };
 
-        var exitEdge = _entryEdge;
-        var (pinned, push) = Probe(_entryEdge, x, y, dx, dy, layout);
-        if (_controllerWrapsAround && (!pinned || push <= 0))
+        var exitEdge = entryEdge;
+        var (pinned, push) = Probe(entryEdge, x, y, dx, dy, layout);
+        if (_controlled.WrapsAround && (!pinned || push <= 0))
         {
             foreach (var edge in new[] { ScreenPosition.Left, ScreenPosition.Right, ScreenPosition.Top, ScreenPosition.Bottom })
             {
-                if (edge == _entryEdge)
+                if (edge == entryEdge)
                     continue;
                 var probe = Probe(edge, x, y, dx, dy, layout);
                 if (probe.pinned && probe.push > 0)
@@ -1474,51 +2068,31 @@ public sealed class RoboMouseService : IDisposable
             ExitY = exitEdge is ScreenPosition.Left or ScreenPosition.Right ? normalized : 0f
         };
 
-        var connection = _controllerConnection;
+        var connection = _controlled.Controller;
         EndBeingControlled(notifyPeer: false);
         connection?.Post(leave);
     }
 
-    private void HandleRemoteKeyboardInput(KeyboardMessage msg, PeerConnection connection)
-    {
-        if (!_isControlledByRemote || connection != _controllerConnection)
-            return;
-
-        if (msg.EventType is KeyboardEventType.KeyDown or KeyboardEventType.SysKeyDown)
-        {
-            _heldKeys[msg.KeyCode] = (msg.ScanCode, msg.IsExtendedKey);
-        }
-        else
-        {
-            _heldKeys.Remove(msg.KeyCode);
-        }
-
-        _injector.SimulateKeyboardEvent(msg.KeyCode, msg.ScanCode, msg.EventType, msg.IsExtendedKey);
-    }
-
     /// <summary>
     /// Stops being controlled. Releases any keys or buttons the controller left held so nothing sticks.
+    /// With <paramref name="onlyIf"/> set, only when that peer is the one in control.
     /// </summary>
-    private void EndBeingControlled(bool notifyPeer)
+    private void EndBeingControlled(bool notifyPeer, IPeerLink? onlyIf = null)
     {
-        if (!_isControlledByRemote)
+        var entryEdge = _controlled.EntryEdge;
+        if (!_controlled.TryEnd(onlyIf, out var connection))
             return;
 
-        var connection = _controllerConnection;
-        _isControlledByRemote = false;
-        _controllerConnection = null;
         _edgeOvershoot = 0;
         _desktopPollTimer?.Dispose();
         _desktopPollTimer = null;
         _localBlockReason = InputBlockReason.None;
 
-        ReleaseHeldInput();
-
         if (notifyPeer && connection != null)
         {
             connection.Post(new CursorLeaveMessage
             {
-                ExitEdge = _entryEdge,
+                ExitEdge = entryEdge,
                 ExitX = 0.5f,
                 ExitY = 0.5f
             });
@@ -1533,8 +2107,8 @@ public sealed class RoboMouseService : IDisposable
     /// </summary>
     private void ReportInputStatus()
     {
-        var connection = _controllerConnection;
-        if (!_isControlledByRemote || connection == null)
+        var connection = _controlled.Controller;
+        if (!_controlled.IsActive || connection == null)
             return;
 
         InputBlockReason reason;
@@ -1557,31 +2131,6 @@ public sealed class RoboMouseService : IDisposable
         _localBlockReason = reason;
         SimpleLogger.Log("Input", $"Input status for {connection.PeerName}: {reason}");
         connection.Post(new InputStatusMessage { Reason = reason });
-    }
-
-    private void ReleaseHeldInput()
-    {
-        foreach (var (key, (scan, extended)) in _heldKeys)
-        {
-            _injector.SimulateKeyboardEvent(key, scan, KeyboardEventType.KeyUp, extended);
-        }
-        _heldKeys.Clear();
-
-        foreach (var button in _heldButtons)
-        {
-            var up = button switch
-            {
-                MouseEventType.LeftDown => MouseEventType.LeftUp,
-                MouseEventType.RightDown => MouseEventType.RightUp,
-                MouseEventType.MiddleDown => MouseEventType.MiddleUp,
-                MouseEventType.XButton1Down => MouseEventType.XButton1Up,
-                MouseEventType.XButton2Down => MouseEventType.XButton2Up,
-                _ => (MouseEventType?)null
-            };
-            if (up != null)
-                _injector.SimulateMouseEvent(up.Value);
-        }
-        _heldButtons.Clear();
     }
 
     #endregion
@@ -1639,13 +2188,10 @@ public sealed class RoboMouseService : IDisposable
     /// <summary>Posts a message to every connected peer except the one it came from.</summary>
     private void PostToPeers(ProtocolMessage message, PeerConnection? except)
     {
-        lock (_connectionLock)
+        foreach (var connection in _registry.Snapshot())
         {
-            foreach (var connection in _connections.Values)
-            {
-                if (connection != except)
-                    connection.Post(message);
-            }
+            if (connection != except)
+                connection.Post(message);
         }
     }
 
@@ -1910,6 +2456,7 @@ public sealed class RoboMouseService : IDisposable
         }
 
         _desktopPollTimer?.Dispose();
+        _sessionMonitor.Dispose();
         _powerMonitor.Dispose();
         _powerFollower.Dispose();
         _serviceInjector?.Dispose();
@@ -1919,8 +2466,14 @@ public sealed class RoboMouseService : IDisposable
         _clipboardManager.Dispose();
         _discovery.Dispose();
         _listener.Dispose();
+
+        // Queued cursor work dies with the window; never leave the pointer hidden.
+        if (_cursorHidden)
+            InputSimulator.RestoreSystemCursor();
+        _uiQueue.Dispose();
     }
 }
+
 
 /// <summary>
 /// Outcome of a connection test.
@@ -1940,6 +2493,9 @@ public class ConnectionTestResult
     public int RoundTripMs { get; set; }
     public bool UsedExistingConnection { get; set; }
     public string? Error { get; set; }
+
+    /// <summary>Why the test failed, when it did.</summary>
+    public PeerFailureKind? FailureKind { get; set; }
 
     public string Summary
     {

@@ -106,4 +106,30 @@ public class MonitorLayoutTests
         var layout = new MonitorLayout(Array.Empty<MonitorRect>());
         Assert.Equal(new Rectangle(0, 0, 1920, 1080), layout.PrimaryBounds);
     }
+
+    [Fact]
+    public void Corner_ReportsBothEdges()
+    {
+        var layout = new MonitorLayout(new[] { Monitor(0, 0, 1920, 1080, primary: true) });
+
+        Assert.Equal(new[] { ScreenPosition.Right, ScreenPosition.Top }, layout.GetEdgesAt(1919, 0).Select(e => e.Edge));
+        Assert.Equal(new[] { ScreenPosition.Left, ScreenPosition.Bottom }, layout.GetEdgesAt(0, 1079).Select(e => e.Edge));
+        Assert.Equal(new[] { ScreenPosition.Right }, layout.GetEdgesAt(1919, 500).Select(e => e.Edge));
+        Assert.Empty(layout.GetEdgesAt(900, 500));
+
+        // The single-edge query still answers with the first of them.
+        Assert.Equal(ScreenPosition.Right, layout.GetEdgeAt(1919, 0)!.Edge);
+    }
+
+    [Fact]
+    public void Corner_WhereMonitorsMeet_IsOnlyTheOuterEdge()
+    {
+        var layout = MainOnRight();
+
+        // Top-left of the main display: the left monitor continues beyond its left edge, and it is
+        // below the left monitor's top, but nothing is above it.
+        Assert.Equal(new[] { ScreenPosition.Top }, layout.GetEdgesAt(0, 0).Select(e => e.Edge));
+        // Bottom-left corner of the tall left monitor is a true corner of the desktop.
+        Assert.Equal(new[] { ScreenPosition.Left, ScreenPosition.Bottom }, layout.GetEdgesAt(-2560, 1239).Select(e => e.Edge));
+    }
 }

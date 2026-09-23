@@ -103,4 +103,21 @@ public sealed class ModifierState
     {
         Ctrl = Alt = Shift = Win = false;
     }
+
+    /// <summary>
+    /// Drops any modifier this state thinks is held that <paramref name="isDown"/> (the system's view)
+    /// says is up. Key-ups pressed on the secure desktop never reach the hook, so after a UAC prompt or
+    /// the lock screen a modifier can be stuck "down" here and a plain key would fire the hotkey.
+    /// </summary>
+    public void Confirm(Func<Keys, bool> isDown)
+    {
+        if (Ctrl && !isDown(Keys.ControlKey))
+            Ctrl = false;
+        if (Alt && !isDown(Keys.Menu))
+            Alt = false;
+        if (Shift && !isDown(Keys.ShiftKey))
+            Shift = false;
+        if (Win && !isDown(Keys.LWin) && !isDown(Keys.RWin))
+            Win = false;
+    }
 }
