@@ -18,7 +18,7 @@
       <views:SettingCard Header="Start with Windows" Description="{Binding StartupDescription}">
         <ToggleSwitch IsChecked="{Binding StartWithWindows}" />
       </views:SettingCard>
-      <views:SettingCard Header="Start minimized to the tray" Description="When off, Settings opens each time RoboMouse starts. It always opens while no peers are set up.">
+      <views:SettingCard Header="Start minimized to the tray" Description="When off, Settings opens each time RoboMouse starts. While no peers are set up, the pairing wizard opens instead.">
         <ToggleSwitch IsChecked="{Binding StartMinimized}" />
       </views:SettingCard>
 
