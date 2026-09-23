@@ -6,10 +6,15 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
-  # Test builds on demand from any branch (Actions > Build > Run workflow). They are never signed and
-  # are versioned 0.0.<run>, which the installer refuses to put over an installed release.
+  # Test builds on demand from any branch (Actions > Build > Run workflow). They are never signed.
+  # Versioned 0.0.<run> (which the installer refuses to put over an installed release) unless a
+  # version is given, e.g. 1.2.0 for a pre-release to install over 1.1.x.
   workflow_dispatch:
     inputs:
+      version:
+        description: "Version for this test build (x.y.z). Empty: 0.0.<run>"
+        type: string
+        default: ""
       sign:
         description: "Sign the MSIX with a self-signed certificate for sideload testing (also uploads the .cer)"
         type: boolean
@@ -35,9 +40,13 @@ jobs:
 
       - name: Version
         shell: pwsh
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
             $version = "${{ github.ref_name }}".TrimStart("v")
+          } elseif ($env:INPUT_VERSION -match '^\d+\.\d+\.\d+$') {
+            $version = $env:INPUT_VERSION
           } else {
             $version = "0.0.${{ github.run_number }}"
           }
@@ -111,12 +120,16 @@ jobs:
           dotnet-version: 10.0.x
 
       # One version for everything: the assembly (shown in the settings window), the release zip, the
-      # installers and the MSIX manifest. Tags use the tag; manual runs get 0.0.<run>.
+      # installers and the MSIX manifest. Tags use the tag; manual runs get their version input or 0.0.<run>.
       - name: Version
         shell: pwsh
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
             $version = "${{ github.ref_name }}".TrimStart("v")
+          } elseif ($env:INPUT_VERSION -match '^\d+\.\d+\.\d+$') {
+            $version = $env:INPUT_VERSION
           } else {
             $version = "0.0.${{ github.run_number }}"
           }
@@ -187,7 +200,7 @@ jobs:
 
       # Tag builds produce the unsigned package for Partner Center (the Store signs it).
       # Manual runs produce a test package: signed with a throwaway certificate when "sign" is set,
-      # versioned 0.0.<run>.0 so it never collides with a Store submission.
+      # versioned 0.0.<run>.0 (or <version input>.0) for sideloading, not for the Store.
       - name: Build Store package (MSIX)
         shell: pwsh
         env:
