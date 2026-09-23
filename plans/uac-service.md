@@ -74,23 +74,59 @@ The app process itself stays a normal user.
 
 ## Security boundary (write this down; a reviewer and a careful user will ask)
 
-The service and helper run as SYSTEM and inject input, so the trust rules are explicit:
+The service and helper run as SYSTEM and inject input, so the trust rules are explicit.
 
-1. **The control pipe only accepts the interactive user's RoboMouse.App.** The pipe ACL grants the
-   console session's user; the service additionally checks the connecting process's image path is the
-   installed `RoboMouse.App.exe` and that it runs in the active console session. No elevation, no
-   other process, no other session.
-2. **The helper only takes commands from the service.** Its pipe has a random name, one instance and
+**What turning it on means, in plain words:** while the service is on, a program running as you
+could approve UAC prompts on this PC, the same way the PC controlling it can. The caller checks below
+stop *other* programs from impersonating RoboMouse, but they cannot stop a program running as you from
+driving RoboMouse itself (for example by injecting into it). The General page says this under the
+toggle; it is off by default and installs stopped.
+
+1. **The control pipe only accepts the interactive user's RoboMouse.App** (`CallerPolicy`). The pipe
+   ACL grants interactive users; then, from one `PROCESS_QUERY_LIMITED_INFORMATION` handle held for
+   the whole check (so the pid cannot be recycled mid-check):
+   - the image path comes from the kernel (`QueryFullProcessImageNameW`), not the client's own PEB;
+   - the process was created before the connection was accepted and its creation time is unchanged
+     at the end of the check (pid reuse), and it has not exited;
+   - its session equals both `GetNamedPipeClientSessionId` and the active console session;
+   - installed app: the path equals the configured `RoboMouse.App.exe`, and when the service exe is
+     Authenticode-signed the app's signature must verify (`WinVerifyTrust`) with the same signer
+     subject (subject, not thumbprint: Artifact Signing rotates short-lived leaf certificates). An
+     unsigned service, i.e. a dev build from `Install-DevService.ps1`, checks the path only and logs it;
+   - Store app: `RoboMouse.App.exe` with our package family **and** inside that package's install
+     folder (`GetPackageFullName` → `GetPackagePathByFullName`). Files in an MSIX are not signed one by
+     one; Windows verifies the package itself.
+   The first pipe instance is created with `FILE_FLAG_FIRST_PIPE_INSTANCE`.
+2. **The app only talks to the real service** (`DesktopServiceControl.VerifyPipeServer`). Before it
+   sends anything it checks the pipe's server process is the pid the SCM reports for
+   `RoboMouseService`, in session 0, with the service configured as LocalSystem, and it connects with
+   `Identification` impersonation so the service can never act as the user.
+3. **The helper only takes commands from the service.** Its pipe has a random name, one instance and
    an ACL admitting only the service's own identity (SYSTEM), and the service checks the connecting
-   pid is the helper it just started.
-   **Input never crosses sessions:** the helper runs in the session the verified app runs in, and is
-   stopped while another session owns the console (fast user switching).
-3. **The service does no networking and parses no untrusted data.** All network traffic stays in the
-   normal-user app; the service only relays already-validated input intents.
-4. **The helper exists only while the app is connected**, so nothing SYSTEM-level sits in the user's
-   session when RoboMouse is not running.
-5. Injection on the secure desktop is limited to what Winlogon allows (mouse move, click, keystrokes
+   pid is the helper it just started. The helper's token has SeDebug, SeTcb, SeImpersonate,
+   SeLoadDriver, SeBackup/Restore, SeTakeOwnership and the other powerful privileges removed; SYSTEM
+   identity is all it needs for the Winlogon desktop.
+   **Input never crosses sessions:** the helper runs in the session the verified app runs in, is
+   stopped while another session owns the console, and the app connection is dropped when the
+   console session changes (fast user switching) so the new user's app can connect.
+4. **The service does no networking and relays only well-formed input.** Nothing is relayed before a
+   version-checked `Hello`; every command's payload length and values are checked per opcode before
+   relaying (and again in the helper, which skips bad commands instead of failing); frames are capped
+   at 64 KB.
+5. **The helper exists only while the app is connected**, so nothing SYSTEM-level sits in the user's
+   session when RoboMouse is not running. Keys and buttons relayed as down are tracked, and a
+   replacement helper releases them first.
+6. **The service log cannot be redirected.** `%ProgramData%\RoboMouse` is created by the installer
+   with an explicit ACL (SYSTEM and Administrators full, Users read, owner Administrators). The
+   service refuses to log there if the folder is a junction or owned by anyone else (it uses the
+   event log instead), removes link files in place of the log, rolls it at 1 MB and rate-limits lines
+   a local process can trigger.
+7. Injection on the secure desktop is limited to what Winlogon allows (mouse move, click, keystrokes
    to the credential UI); the service never reads secure-desktop contents.
+8. The service runs with `sc privs` limited to SeTcb, SeAssignPrimaryToken, SeIncreaseQuota (and
+   SeChangeNotify) and an unrestricted service SID. A *restricted* SID type makes the token
+   write-restricted, which would deny the helper (a copy of that token) the desktop write rights
+   `SendInput` needs on Winlogon; switching to it needs a test on real hardware first.
 
 ## Build / packaging
 

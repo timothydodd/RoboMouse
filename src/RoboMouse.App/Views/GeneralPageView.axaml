@@ -59,6 +59,8 @@
                          IsVisible="{Binding DesktopServiceInstalled}">
         <ToggleSwitch IsChecked="{Binding UseDesktopService}" />
       </views:SettingCard>
+      <TextBlock Classes="caption" Margin="4,8,0,0" IsVisible="{Binding DesktopServiceInstalled}"
+                 Text="While this is on, a program running as you could approve UAC prompts on this PC, the same way the PC controlling it can. Leave it off unless you need to click through UAC prompts or sign in from the other PC." />
 
       <TextBlock Classes="section" Text="Display" />
       <views:SettingCard Header="When the mouse arrives on this screen">
