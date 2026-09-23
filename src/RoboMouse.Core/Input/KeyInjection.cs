@@ -11,7 +11,9 @@ namespace RoboMouse.Core.Input;
 /// controller's Z arriving as Y on a US machine, or the other way round).</item>
 /// <item>A key event with no scan code, or a key whose meaning never depends on the layout and whose scan
 /// code is ambiguous (Pause and Num Lock share 0x45; media, browser and launch keys often come from
-/// vendor software with made-up scan codes), goes by virtual-key code.</item>
+/// vendor software with made-up scan codes), goes by virtual-key code. So do the modifiers (Shift, Ctrl,
+/// Alt, Win, Caps Lock): they mean the same in every layout, and the hook reports Right Shift with the
+/// extended flag, which as a scan code (E0 36) is no key at all.</item>
 /// <item>A Unicode character (<see cref="Keys.Packet"/>: an on-screen keyboard, IME or password manager
 /// typing text) carries the UTF-16 code unit in the scan code field and is injected with
 /// <c>KEYEVENTF_UNICODE</c>, so it arrives as that character whatever the layout.</item>
@@ -45,5 +47,9 @@ public static class KeyInjection
     /// <summary>Keys injected by virtual-key code even when they have a scan code: layout-independent, and their scan codes are unreliable.</summary>
     public static bool InjectByVirtualKey(Keys key) =>
         key is Keys.Pause or Keys.NumLock or Keys.Cancel or Keys.Snapshot or Keys.Sleep
-            or >= Keys.BrowserBack and <= Keys.LaunchApplication2;
+            or >= Keys.BrowserBack and <= Keys.LaunchApplication2
+            or Keys.ShiftKey or Keys.LShiftKey or Keys.RShiftKey
+            or Keys.ControlKey or Keys.LControlKey or Keys.RControlKey
+            or Keys.Menu or Keys.LMenu or Keys.RMenu
+            or Keys.LWin or Keys.RWin or Keys.CapsLock;
 }

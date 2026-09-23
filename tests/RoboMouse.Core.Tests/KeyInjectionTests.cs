@@ -33,6 +33,25 @@ public class KeyInjectionTests
         Assert.Equal(KeyInjection.KEYEVENTF_EXTENDEDKEY | KeyInjection.KEYEVENTF_KEYUP, media.Flags);
     }
 
+    [Theory]
+    [InlineData(Keys.LShiftKey, 0x2Au, false)]
+    [InlineData(Keys.RShiftKey, 0x36u, true)] // the hook reports Right Shift as extended; E0 36 is no key
+    [InlineData(Keys.LControlKey, 0x1Du, false)]
+    [InlineData(Keys.RMenu, 0x38u, true)]
+    [InlineData(Keys.LWin, 0x5Bu, true)]
+    [InlineData(Keys.CapsLock, 0x3Au, false)]
+    public void Modifiers_GoByVirtualKey(Keys key, uint scan, bool extended)
+    {
+        var down = KeyInjection.For(key, scan, KeyboardEventType.KeyDown, extended);
+        Assert.Equal((ushort)key, down.VirtualKey);
+        Assert.Equal(scan, down.ScanCode);
+        Assert.Equal(0u, down.Flags & KeyInjection.KEYEVENTF_SCANCODE);
+
+        var up = KeyInjection.For(key, scan, KeyboardEventType.KeyUp, extended);
+        Assert.Equal((ushort)key, up.VirtualKey);
+        Assert.NotEqual(0u, up.Flags & KeyInjection.KEYEVENTF_KEYUP);
+    }
+
     [Fact]
     public void UnicodeCharacters_AreTypedAsCharacters()
     {
