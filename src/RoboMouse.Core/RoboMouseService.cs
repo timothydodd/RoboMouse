@@ -52,6 +52,18 @@ public sealed class RoboMouseService : IDisposable
     private volatile bool _isControllingRemote;
     private long _returnCooldownUntil;
 
+    // Raw input stops arriving when an elevated window is in the foreground (UIPI does not deliver it to
+    // a normal-user process), but the low-level hook still sees every move. While controlling, the
+    // cursor is parked and every move is blocked, so a hooked move's position minus the parked point
+    // is the (accelerated) delta the hardware produced. That is the fallback motion source.
+    private const int RawInputSilenceMs = 250;
+    private const int HookMovesBeforeFallback = 3;
+    private int _parkedX;
+    private int _parkedY;
+    private long _lastRawMotionTick;
+    private int _hookMovesWithoutRaw;
+    private bool _hookMotionFallback;
+
     // Controlled state (a remote machine drives this screen)
     private volatile bool _isControlledByRemote;
     private PeerConnection? _controllerConnection;
@@ -876,6 +888,14 @@ public sealed class RoboMouseService : IDisposable
         if (!_isControllingRemote)
             return;
 
+        _lastRawMotionTick = Environment.TickCount64;
+        _hookMovesWithoutRaw = 0;
+        if (_hookMotionFallback)
+        {
+            _hookMotionFallback = false;
+            SimpleLogger.Log("Control", "Raw input resumed; back to raw motion");
+        }
+
         var connection = _activeConnection;
         if (connection == null)
             return;
@@ -915,7 +935,9 @@ public sealed class RoboMouseService : IDisposable
             // Freeze the local cursor: swallow everything. Motion arrives separately via raw input.
             e.Handled = true;
 
-            if (e.EventType != MouseEventType.Move)
+            if (e.EventType == MouseEventType.Move)
+                ForwardHookedMotionIfRawSilent(e);
+            else
             {
                 _activeConnection?.Post(new MouseMessage
                 {
@@ -950,6 +972,36 @@ public sealed class RoboMouseService : IDisposable
 
         StartRemoteControl(targetPeer, edge);
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// Forwards a blocked move as motion when raw input has gone quiet (an elevated window took the
+    /// foreground on this machine). A few hooked moves with no raw motion beside them are needed before
+    /// switching, so the two sources never both forward the same movement.
+    /// </summary>
+    private void ForwardHookedMotionIfRawSilent(InputMouseEventArgs e)
+    {
+        var now = Environment.TickCount64;
+        if (!_hookMotionFallback)
+        {
+            if (now - _lastRawMotionTick < RawInputSilenceMs)
+            {
+                _hookMovesWithoutRaw = 0;
+                return;
+            }
+            if (++_hookMovesWithoutRaw < HookMovesBeforeFallback)
+                return;
+
+            _hookMotionFallback = true;
+            SimpleLogger.Log("Control", "Raw input is silent (elevated window in front?); using hooked motion");
+        }
+
+        var dx = e.X - _parkedX;
+        var dy = e.Y - _parkedY;
+        if (dx == 0 && dy == 0)
+            return;
+
+        _activeConnection?.Post(MouseMessage.Motion(dx, dy));
     }
 
     private readonly ModifierState _modifiers = new();
@@ -1111,7 +1163,12 @@ public sealed class RoboMouseService : IDisposable
 
         // Park the (now hidden and frozen) cursor away from the edge so nothing local reacts to it.
         var bounds = _screenInfo.PrimaryBounds;
-        InputSimulator.MoveTo(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2);
+        _parkedX = bounds.Left + bounds.Width / 2;
+        _parkedY = bounds.Top + bounds.Height / 2;
+        _lastRawMotionTick = Environment.TickCount64;
+        _hookMovesWithoutRaw = 0;
+        _hookMotionFallback = false;
+        InputSimulator.MoveTo(_parkedX, _parkedY);
 
         // The cursor appears on the peer's edge opposite the one it left here (its left edge when we
         // left through our right). With wrap-around that is not necessarily the edge facing this screen.

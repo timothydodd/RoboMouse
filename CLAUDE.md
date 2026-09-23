@@ -36,7 +36,7 @@ RoboMouse is a Windows application for sharing mouse/keyboard between computers.
 
 **Input Layer** (`src/RoboMouse.Core/Input/`):
 - `MouseHook` / `KeyboardHook` - Low-level Windows hooks via SetWindowsHookEx. Used to detect edge hits and to freeze/swallow local input while controlling a remote. Events carry `IsInjected` so software-generated input is never acted on.
-- `RawMouseInput` - Raw Input (WM_INPUT) receiver giving unaccelerated hardware motion counts; this is the only source of motion forwarded to a remote.
+- `RawMouseInput` - Raw Input (WM_INPUT) receiver giving unaccelerated hardware motion counts; the normal source of motion forwarded to a remote. Windows stops delivering raw input to a normal-user process while an elevated window is in the foreground (e.g. an app launched by a scheduled task), so when raw input goes silent while controlling, `RoboMouseService` falls back to the hook's blocked moves (position minus the parked point) until raw input resumes.
 - `InputSimulator` - Generates synthetic input via SendInput API. Remote motion is injected as relative `MOUSEEVENTF_MOVE` so the local pointer settings apply.
 - `ClipboardManager` - Monitors and syncs clipboard changes. Copied files become a `FileOfferSource` (names/sizes plus local paths that never leave the machine). Offers from peers are placed on the clipboard as a `VirtualFileDataObject` (CFSTR_FILEDESCRIPTORW/FILECONTENTS) created on a dedicated `StaWorker` thread so Explorer's reads never block the UI thread or the hooks.
 
