@@ -55,10 +55,14 @@ internal sealed class ServiceWorker : IDisposable
         Log.Write($"Accepting the app at '{appPath}'" + (packageFamily != null ? $" or package family '{packageFamily}'" : ""));
 
         var signatures = new AuthenticodeReader();
-        var serviceSigner = Environment.ProcessPath is { } self ? signatures.GetTrustedSigner(self) : null;
-        Log.Write(serviceSigner != null
-            ? $"Service is signed by '{serviceSigner}'; the app must be signed by the same publisher"
-            : "Service exe is not signed (a dev build); the app is checked by path only");
+        var serviceSigner = new Lazy<string?>(() =>
+        {
+            var signer = Environment.ProcessPath is { } self ? signatures.GetTrustedSigner(self) : null;
+            Log.Write(signer != null
+                ? $"Service is signed by '{signer}'; the app must be signed by the same publisher"
+                : "Service exe is not signed (a dev build); the app is checked by path only");
+            return signer;
+        });
 
         _pipe = new ControlPipeServer(new CallerPolicy(appPath, packageFamily, serviceSigner, new Win32ProcessInspector(), signatures));
         _pipe.ClientConnected += HandleAppAsync;

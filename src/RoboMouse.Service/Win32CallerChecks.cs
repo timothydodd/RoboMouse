@@ -82,8 +82,9 @@ internal sealed unsafe class Win32ClientProcess : IClientProcess
 /// <summary>
 /// Authenticode through WinVerifyTrust: the signature must verify and chain to a trusted root. The
 /// signer is compared by certificate subject, not thumbprint, because Azure Artifact Signing issues a
-/// new short-lived leaf certificate every few days for the same verified identity. No network access:
-/// revocation is not checked and only cached URLs are used, so a check can never hang the service.
+/// new short-lived leaf certificate every few days for the same verified identity. Revocation is not
+/// checked (no CRL/OCSP round trips); the chain may still fetch a missing root through Windows' root
+/// update, which is why the service's own signer is only worked out on the first connection.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed unsafe class AuthenticodeReader : ISignatureReader
@@ -102,7 +103,7 @@ internal sealed unsafe class AuthenticodeReader : ISignatureReader
                 dwUnionChoice = WTD_CHOICE_FILE,
                 pFile = &fileInfo,
                 dwStateAction = WTD_STATEACTION_VERIFY,
-                dwProvFlags = WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL
+                dwProvFlags = WTD_REVOCATION_CHECK_NONE
             };
 
             try

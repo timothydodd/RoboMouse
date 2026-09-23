@@ -67,7 +67,7 @@ internal sealed class CallerPolicy
 
     private readonly string _expectedAppPath;
     private readonly string? _expectedPackageFamily;
-    private readonly string? _serviceSigner;
+    private readonly Lazy<string?> _serviceSigner;
     private readonly IProcessInspector _processes;
     private readonly ISignatureReader _signatures;
 
@@ -78,6 +78,14 @@ internal sealed class CallerPolicy
     /// Install-DevService.ps1); then the installed app is checked by path only.
     /// </param>
     public CallerPolicy(string expectedAppPath, string? expectedPackageFamily, string? serviceSigner,
+        IProcessInspector processes, ISignatureReader signatures)
+        : this(expectedAppPath, expectedPackageFamily, new Lazy<string?>(serviceSigner), processes, signatures) { }
+
+    /// <summary>
+    /// With the service's own signer worked out on first use: verifying a signature can build a
+    /// certificate chain, which must not hold up the service's start.
+    /// </summary>
+    public CallerPolicy(string expectedAppPath, string? expectedPackageFamily, Lazy<string?> serviceSigner,
         IProcessInspector processes, ISignatureReader signatures)
     {
         _expectedAppPath = expectedAppPath;
@@ -125,14 +133,15 @@ internal sealed class CallerPolicy
 
         if (PathEquals(path, _expectedAppPath))
         {
-            if (_serviceSigner != null)
+            var serviceSigner = _serviceSigner.Value;
+            if (serviceSigner != null)
             {
                 var signer = _signatures.GetTrustedSigner(path);
-                if (!string.Equals(signer, _serviceSigner, StringComparison.Ordinal))
+                if (!string.Equals(signer, serviceSigner, StringComparison.Ordinal))
                 {
                     reason = signer == null
                         ? $"'{path}' has no valid signature"
-                        : $"'{path}' is signed by '{signer}', not '{_serviceSigner}'";
+                        : $"'{path}' is signed by '{signer}', not '{serviceSigner}'";
                     return false;
                 }
             }

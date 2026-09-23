@@ -109,7 +109,6 @@ internal static unsafe partial class ServiceNative
     public const uint WTD_STATEACTION_VERIFY = 1;
     public const uint WTD_STATEACTION_CLOSE = 2;
     public const uint WTD_REVOCATION_CHECK_NONE = 0x10;
-    public const uint WTD_CACHE_ONLY_URL_RETRIEVAL = 0x1000;
 
     /// <summary>WINTRUST_ACTION_GENERIC_VERIFY_V2: Authenticode policy.</summary>
     public static readonly Guid WintrustActionGenericVerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
