@@ -163,3 +163,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 Write-Host "`nAll installer checks passed."
+# Explicitly: the last sc.exe call (checking the service is gone) leaves a non-zero $LASTEXITCODE,
+# which the Actions pwsh wrapper would report as a failure.
+exit 0
