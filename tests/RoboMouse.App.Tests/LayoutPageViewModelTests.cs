@@ -1,129 +1,153 @@
+using System.Drawing;
 using RoboMouse.App.ViewModels;
 using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Screen;
 using Xunit;
 
 namespace RoboMouse.App.Tests;
 
 public class LayoutPageViewModelTests
 {
-    [Fact]
-    public void Drag_WithoutSave_LeavesConfigsAlone()
+    // This PC: one 1920x1080 display at the origin (the fake backend's default).
+    private static MonitorRect Remote(string id, int x, int y, int w, int h, bool primary = false) =>
+        new(new Rectangle(x, y, w, h), default, primary, id);
+
+    private static MonitorPlacement Placed(string id, int x, int y, int w = 1920, int h = 1080, int remoteX = 0) =>
+        new() { Id = id, X = x, Y = y, Width = w, Height = h, RemoteX = remoteX, RemoteWidth = w, RemoteHeight = h, Primary = remoteX == 0 };
+
+    /// <summary>The laptop is connected with two monitors, one each side of this PC; the Mac is offline, below.</summary>
+    private static (AppSettings Settings, FakeBackend Backend) Arranged()
     {
         var settings = Samples.Settings();
-        var layout = new LayoutPageViewModel(settings);
+        settings.Peers[0].Monitors = new() { Placed("1", -1920, 0), Placed("2", 1920, 0, remoteX: 1920) };
+        settings.Peers[1].Monitors = new() { Placed("1", 0, 1080) };
+        var backend = new FakeBackend { Settings = settings };
+        backend.PeerMonitors["laptop"] = new() { Remote("1", 0, 0, 1920, 1080, primary: true), Remote("2", 1920, 0, 1920, 1080) };
+        return (settings, backend);
+    }
 
-        layout.MoveToEdge(layout.Placements[0], ScreenPosition.Top, 300, 0);
+    private static LayoutItem Item(LayoutPageViewModel layout, string peerId, string monitorId) =>
+        layout.Items.Single(i => i.Peer?.Id == peerId && i.MonitorId == monitorId);
 
-        // Cancel just drops the view model: the configs must still hold what was saved.
-        Assert.Equal(ScreenPosition.Left, settings.Peers[0].Position);
-        Assert.Equal(120, settings.Peers[0].OffsetY);
-        Assert.Equal(0, settings.Peers[0].OffsetX);
+    [Fact]
+    public void EveryMonitor_IsItsOwnScreen()
+    {
+        var (settings, backend) = Arranged();
+        var layout = new LayoutPageViewModel(settings, backend);
 
-        var reopened = new LayoutPageViewModel(settings);
-        Assert.Equal(ScreenPosition.Left, reopened.Placements[0].Position);
-        Assert.Equal(120, reopened.Placements[0].OffsetY);
+        Assert.Single(layout.Items, i => i.IsLocal);
+        var one = Item(layout, "laptop", "1");
+        var two = Item(layout, "laptop", "2");
+        Assert.Equal(new Rectangle(-1920, 0, 1920, 1080), one.Rect);
+        Assert.Equal(new Rectangle(1920, 0, 1920, 1080), two.Rect);
+        Assert.Equal("Laptop 2", two.Label);
+        Assert.True(one.IsConnected);
+        Assert.False(Item(layout, "mac", "1").IsConnected);
     }
 
     [Fact]
-    public void Save_WritesPlacementsIntoConfigs()
+    public void Move_SnapsAgainstAScreen_AndNeverOverlaps()
     {
-        var settings = Samples.Settings();
-        var layout = new LayoutPageViewModel(settings);
+        var (settings, backend) = Arranged();
+        var layout = new LayoutPageViewModel(settings, backend);
+        var two = Item(layout, "laptop", "2");
 
-        layout.MoveToEdge(layout.Placements[0], ScreenPosition.Top, 300, 0);
+        // Dropped on top of this PC, a little up and left of its top edge.
+        var placed = layout.Move(two, new Point(-50, -900));
+
+        Assert.Equal(new Rectangle(0, -1080, 1920, 1080), placed); // above this PC, lined up
+        Assert.False(VirtualDesktop.OverlapsAny(placed, layout.Items.Where(i => i != two).Select(i => i.Rect)));
+    }
+
+    [Fact]
+    public void Move_WithoutSave_LeavesConfigsAlone_AndSaveWritesIt()
+    {
+        var (settings, backend) = Arranged();
+        var layout = new LayoutPageViewModel(settings, backend);
+        layout.Move(Item(layout, "laptop", "2"), new Point(0, -1080));
+
+        Assert.True(layout.IsModified);
+        Assert.Equal(1920, settings.Peers[0].Monitors[1].X);
+        Assert.Equal(1920, Item(new LayoutPageViewModel(settings, backend), "laptop", "2").X);
+
+        var before = settings.Peers[0].Monitors;
         layout.Save();
 
-        Assert.Equal(ScreenPosition.Top, settings.Peers[0].Position);
-        Assert.Equal(300, settings.Peers[0].OffsetX);
-        Assert.Equal(0, settings.Peers[0].OffsetY);
-        Assert.False(layout.Placements[0].IsModified);
+        Assert.False(layout.IsModified);
+        Assert.Equal((0, -1080), (settings.Peers[0].Monitors[1].X, settings.Peers[0].Monitors[1].Y));
+        Assert.NotSame(before, settings.Peers[0].Monitors); // replaced, never changed in place
+        Assert.Equal(1920, before[1].X);
     }
 
     [Fact]
-    public void DropOnOccupiedEdge_SwapsTheTwo()
+    public void Reload_KeepsUnsavedMoves_ButFollowsPlacementsChangedElsewhere()
     {
-        var settings = Samples.Settings();
-        var layout = new LayoutPageViewModel(settings);
-        var laptop = layout.Placements[0];
-        var mac = layout.Placements[1];
+        var (settings, backend) = Arranged();
+        var layout = new LayoutPageViewModel(settings, backend);
+        layout.Move(Item(layout, "laptop", "2"), new Point(0, -1080));
+        layout.Move(Item(layout, "laptop", "1"), new Point(0, 2160));
 
-        var moved = layout.MoveToEdge(laptop, ScreenPosition.Right, 0, 40);
-
-        Assert.Same(mac, moved);
-        Assert.Equal(ScreenPosition.Right, laptop.Position);
-        Assert.Equal(40, laptop.OffsetY);
-        // The Mac takes the edge and offset the laptop came from.
-        Assert.Equal(ScreenPosition.Left, mac.Position);
-        Assert.Equal(120, mac.OffsetY);
-    }
-
-    [Fact]
-    public void DropOnFreeOrOwnEdge_MovesNobodyElse()
-    {
-        var settings = Samples.Settings();
-        var layout = new LayoutPageViewModel(settings);
-
-        Assert.Null(layout.MoveToEdge(layout.Placements[0], ScreenPosition.Bottom, 10, 0));
-        Assert.Null(layout.MoveToEdge(layout.Placements[1], ScreenPosition.Right, 0, 50));
-        Assert.Equal(ScreenPosition.Right, layout.Placements[1].Position);
-    }
-
-    [Fact]
-    public void Reload_KeepsUnsavedDrags_ButFollowsEditsMadeElsewhere()
-    {
-        var settings = Samples.Settings();
-        var layout = new LayoutPageViewModel(settings);
-        layout.MoveToEdge(layout.Placements[0], ScreenPosition.Bottom, 10, 0);
-        layout.MoveToEdge(layout.Placements[1], ScreenPosition.Top, 20, 0);
-
-        // The Peers page edited (and saved) the Mac, and added a peer.
-        settings.Peers[1].Position = ScreenPosition.Left;
-        settings.Peers.Add(new PeerConfig { Id = "new", Name = "New", Position = ScreenPosition.Right });
+        // The service placed monitor 1 again (the laptop's display changed), and a peer was added.
+        settings.Peers[0].Monitors = new() { Placed("1", -1920, 500), settings.Peers[0].Monitors[1] };
+        settings.Peers.Add(new PeerConfig { Id = "new", Name = "New", Position = ScreenPosition.Top });
         layout.Reload();
 
-        Assert.Equal(3, layout.Placements.Count);
-        Assert.Equal(ScreenPosition.Bottom, layout.Placements[0].Position);
-        Assert.Equal(ScreenPosition.Left, layout.Placements[1].Position);
-        Assert.Equal(ScreenPosition.Right, layout.Placements[2].Position);
+        Assert.Equal((0, -1080), (Item(layout, "laptop", "2").X, Item(layout, "laptop", "2").Y));
+        Assert.Equal((-1920, 500), (Item(layout, "laptop", "1").X, Item(layout, "laptop", "1").Y));
+        Assert.True(layout.Items.Single(i => i.Peer?.Id == "new").IsPlaceholder);
     }
 
     [Fact]
-    public void Nudge_ShiftsAlongTheEdge()
+    public void ConnectedPeer_ShowsOnlyTheMonitorsItHasNow()
     {
-        var layout = new LayoutPageViewModel(Samples.Settings());
-        var left = layout.Placements[0];   // Left, OffsetY 120
+        var (settings, backend) = Arranged();
+        backend.PeerMonitors["laptop"].RemoveAt(1); // monitor 2 unplugged
+        var layout = new LayoutPageViewModel(settings, backend);
 
-        layout.Nudge(left, -100);
-        Assert.Equal(20, left.OffsetY);
-        Assert.Equal(0, left.OffsetX);
-
-        layout.MoveToEdge(left, ScreenPosition.Top);
-        layout.Nudge(left, 10);
-        Assert.Equal(10, left.OffsetX);
+        Assert.Single(layout.Items, i => i.Peer?.Id == "laptop");
+        Assert.Equal(2, settings.Peers[0].Monitors.Count); // its place is kept for when it comes back
     }
 
     [Fact]
-    public void KeyboardMove_ToAnOccupiedEdge_Swaps()
+    public void Placeholder_CannotBeMoved()
     {
-        var layout = new LayoutPageViewModel(Samples.Settings());
-        var laptop = layout.Placements[0];
-        var mac = layout.Placements[1];
+        var settings = Samples.Settings();
+        var layout = new LayoutPageViewModel(settings, new FakeBackend { Settings = settings });
+        var laptop = layout.Items.Single(i => i.Peer?.Id == "laptop");
 
-        var swapped = layout.MoveToEdge(laptop, ScreenPosition.Right);
-
-        Assert.Same(mac, swapped);
-        Assert.Equal(ScreenPosition.Right, laptop.Position);
-        Assert.Equal(0, laptop.OffsetY);
-        Assert.Equal(ScreenPosition.Left, mac.Position);
-        Assert.Null(layout.MoveToEdge(laptop, ScreenPosition.Right));
+        Assert.True(laptop.IsPlaceholder);
+        Assert.Equal(laptop.Rect, layout.Move(laptop, new Point(5000, 5000)));
+        Assert.False(layout.Nudge(laptop, 100, 0));
+        Assert.False(layout.IsModified);
     }
 
     [Fact]
-    public void Describe_ReadsWellAloud()
+    public void Nudge_SlidesAlongAnEdge_AndJumpsPastAScreenInTheWay()
     {
-        var layout = new LayoutPageViewModel(Samples.Settings());
+        var (settings, backend) = Arranged();
+        var layout = new LayoutPageViewModel(settings, backend);
+        var one = Item(layout, "laptop", "1");
 
-        Assert.Equal("Laptop: left of this screen, shifted 120 pixels down", LayoutPageViewModel.Describe(layout.Placements[0]));
-        Assert.Equal("Mac mini: right of this screen, lined up with its start", LayoutPageViewModel.Describe(layout.Placements[1]));
+        Assert.True(layout.Nudge(one, 0, 100));
+        Assert.Equal(new Point(-1920, 100), one.Rect.Location);
+
+        // Right is this PC: it ends up somewhere past the left edge, overlapping nothing.
+        Assert.True(layout.Nudge(one, 100, 0));
+        Assert.True(one.X > -1920);
+        Assert.False(VirtualDesktop.OverlapsAny(one.Rect, layout.Items.Where(i => i != one).Select(i => i.Rect)));
+
+        // Left of everything there is nothing to touch.
+        var two = Item(layout, "laptop", "2");
+        Assert.False(layout.Nudge(two, 100, 0));
+    }
+
+    [Fact]
+    public void Describe_SaysWhatAScreenTouches()
+    {
+        var (settings, backend) = Arranged();
+        var layout = new LayoutPageViewModel(settings, backend);
+
+        Assert.Equal("Laptop 1, 1920 by 1080, left of This PC", layout.Describe(Item(layout, "laptop", "1")));
+        Assert.Equal("Mac mini, 1920 by 1080, below This PC, offline", layout.Describe(Item(layout, "mac", "1")));
     }
 }

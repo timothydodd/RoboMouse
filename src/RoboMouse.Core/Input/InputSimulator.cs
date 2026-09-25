@@ -280,6 +280,14 @@ public static unsafe class InputSimulator
         return (point.X, point.Y);
     }
 
+    /// <summary>The cursor position, or false when Windows will not say (the secure desktop is up).</summary>
+    public static bool TryGetCursorPosition(out int x, out int y)
+    {
+        var ok = NativeMethods.GetCursorPos(out var point);
+        (x, y) = (point.X, point.Y);
+        return ok;
+    }
+
     /// <summary>
     /// Clips the cursor to the specified rectangle.
     /// </summary>

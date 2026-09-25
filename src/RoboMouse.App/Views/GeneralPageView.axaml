@@ -13,8 +13,6 @@
       <views:SettingCard Header="Machine name" Description="How this computer appears on the other machines.">
         <TextBox Text="{Binding MachineName}" Width="260" />
       </views:SettingCard>
-
-      <TextBlock Classes="section" Text="Startup" />
       <views:SettingCard Header="Start with Windows" Description="{Binding StartupDescription}">
         <ToggleSwitch IsChecked="{Binding StartWithWindows}" />
       </views:SettingCard>
@@ -22,21 +20,15 @@
         <ToggleSwitch IsChecked="{Binding StartMinimized}" />
       </views:SettingCard>
 
-      <TextBlock Classes="section" Text="Hotkeys" />
+      <TextBlock Classes="section" Text="Moving between screens" />
       <views:SettingCard Header="Toggle hotkey"
                          Description="Releases control of another screen if you are stuck there; otherwise turns sharing on or off. Click the box and press the new combination.">
         <views:HotkeyBox Hotkey="{Binding ToggleHotkey}" Width="220" AutomationProperties.Name="Toggle hotkey" />
       </views:SettingCard>
-      <views:SettingCard Header="Lock the cursor to its screen"
-                         Description="Keeps the cursor on the screen it is on, this one or another PC's, until you press it again. The tray menu shows when it is locked. Backspace clears the box.">
-        <views:HotkeyBox Hotkey="{Binding LockCursorHotkey}" AllowClear="True" Width="220" AutomationProperties.Name="Lock the cursor hotkey" />
+      <views:SettingCard Header="Wrap around"
+                         Description="Pushing through an edge with no screen beyond it comes out on the far side of the row or column, so screens in a row form a loop.">
+        <ToggleSwitch IsChecked="{Binding WrapAround}" />
       </views:SettingCard>
-      <views:SettingCard Header="Lock all PCs"
-                         Description="Locks this PC and asks every connected PC to lock too. Each PC only follows a PC it has paired with. Also in the tray menu.">
-        <views:HotkeyBox Hotkey="{Binding LockAllHotkey}" AllowClear="True" Width="220" AutomationProperties.Name="Lock all PCs hotkey" />
-      </views:SettingCard>
-      <TextBlock Classes="caption" Margin="4,8,0,0" TextWrapping="Wrap"
-                 Text="Each PC also has a hotkey that moves the cursor straight onto its screen: Ctrl+Alt+F1 to F4 for the first four peers. Change it by editing the peer on the Peers page." />
 
       <TextBlock Classes="section" Text="Clipboard" />
       <views:SettingCard Header="Share the clipboard" Description="What you copy on one machine can be pasted on the others. Choose what is shared below.">
@@ -53,116 +45,26 @@
                            Description="Paste them in Explorer on the other machine. Files transfer only when you paste, straight from the machine you copied them on.">
           <ToggleSwitch IsChecked="{Binding ShareFiles}" />
         </views:SettingCard>
-        <views:SettingCard Classes="nested" Header="Largest text or image to share"
-                           Description="Anything bigger stays on this machine. Files are not limited by this.">
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <NumericUpDown Value="{Binding ClipboardMaxMegabytes}" Minimum="1" Maximum="100" Increment="1" FormatString="0.#"
-                           ShowButtonSpinner="False" Width="100" />
-            <TextBlock Text="MB" VerticalAlignment="Center" Classes="muted" />
-          </StackPanel>
-        </views:SettingCard>
       </StackPanel>
 
-      <TextBlock Classes="section" Text="Edges" />
-      <views:SettingCard Header="Wrap around"
-                         Description="Pushing through an edge that has no PC comes out on the far side of the PC on the opposite edge, and a PC you are controlling hands the mouse back from any edge. With two PCs the screens form a loop.">
-        <ToggleSwitch IsChecked="{Binding WrapAround}" />
+      <TextBlock Classes="section" Text="Follow the controlling PC" />
+      <TextBlock Classes="caption" Margin="4,0,0,8" TextWrapping="Wrap"
+                 Text="Turn these on at the PC being controlled. The controlling PC is the one that last moved the mouse onto this screen." />
+      <views:SettingCard Header="Stay awake with it"
+                         Description="While its display is on, this PC and its display stay on too. When its display turns off or it goes to sleep, this display turns off and the usual sleep timers apply again.">
+        <ToggleSwitch IsChecked="{Binding FollowHostPower}" AutomationProperties.Name="Stay awake with the controlling PC" />
       </views:SettingCard>
-      <views:SettingCard Header="Wake a sleeping PC"
-                         Description="Keep pushing the mouse against the edge of a PC that is asleep to wake it with Wake-on-LAN; it connects by itself once it is up. That PC needs Wake-on-LAN turned on in its BIOS and network adapter, usually a wired connection, and must have connected here once before.">
-        <ToggleSwitch IsChecked="{Binding WakeOnEdge}" />
-      </views:SettingCard>
-
-      <TextBlock Classes="section" Text="Switching screens" />
-      <views:SettingCard Header="Not while a mouse button is held"
-                         Description="Dragging a window or selecting text against the edge stays on this screen.">
-        <ToggleSwitch IsChecked="{Binding BlockWhileButtonHeld}" AutomationProperties.Name="Do not switch while a mouse button is held" />
-      </views:SettingCard>
-      <views:SettingCard Header="Corner dead zone"
-                         Description="Pushing this close to a corner does not switch, so buttons in the corners (Close, Start) are easy to hit. 0 turns it off.">
-        <StackPanel Orientation="Horizontal" Spacing="8">
-          <NumericUpDown Value="{Binding CornerDeadZone}" Minimum="0" Maximum="500" Increment="5" FormatString="0"
-                         ShowButtonSpinner="False" Width="100" AutomationProperties.Name="Corner dead zone in pixels" />
-          <TextBlock Text="px" VerticalAlignment="Center" Classes="muted" />
-        </StackPanel>
-      </views:SettingCard>
-      <views:SettingCard Header="Push twice to switch"
-                         Description="Switch only when the cursor hits the edge twice within half a second.">
-        <ToggleSwitch IsChecked="{Binding DoubleTap}" AutomationProperties.Name="Push twice to switch" />
-      </views:SettingCard>
-      <views:SettingCard Header="Wait before switching"
-                         Description="Keep pushing against the edge this long before the cursor moves over. 0 switches at once. With push twice also on, either one switches.">
-        <StackPanel Orientation="Horizontal" Spacing="8">
-          <NumericUpDown Value="{Binding CrossingDelayMs}" Minimum="0" Maximum="2000" Increment="50" FormatString="0"
-                         ShowButtonSpinner="False" Width="100" AutomationProperties.Name="Delay before switching in milliseconds" />
-          <TextBlock Text="ms" VerticalAlignment="Center" Classes="muted" />
-        </StackPanel>
-      </views:SettingCard>
-      <views:SettingCard Header="Hold a key to switch"
-                         Description="Switch only while this key is held. The key is passed on to the other PC as held.">
-        <ComboBox ItemsSource="{Binding ModifierChoices}" SelectedItem="{Binding SelectedCrossingModifier}" Width="180"
-                  AutomationProperties.Name="Key to hold to switch" />
-      </views:SettingCard>
-      <views:SettingCard Header="Not while a full-screen app is in front"
-                         Description="Games, videos and presentations filling the screen keep the cursor.">
-        <ToggleSwitch IsChecked="{Binding BlockWhileFullScreen}" AutomationProperties.Name="Do not switch while a full-screen app is in front" />
-      </views:SettingCard>
-
-      <TextBlock Classes="section" Text="Power and locking" />
-      <views:SettingCard Header="Stay awake with the controlling PC"
-                         Description="Turn this on at the PC being controlled. While the PC that last controlled this one has its display on, this PC and its display stay on too; when that PC's display turns off or it goes to sleep, this display turns off and the usual sleep timers apply again.">
-        <ToggleSwitch IsChecked="{Binding FollowHostPower}" />
-      </views:SettingCard>
-      <views:SettingCard Header="Lock with the controlling PC"
-                         Description="When the PC that last controlled this one locks, this PC locks too. Only a paired PC is followed.">
+      <views:SettingCard Header="Lock with it"
+                         Description="When it locks, this PC locks too. Only a paired PC is followed.">
         <ToggleSwitch IsChecked="{Binding LockWithHost}" AutomationProperties.Name="Lock with the controlling PC" />
       </views:SettingCard>
-      <views:SettingCard Header="Screen saver with the controlling PC"
-                         Description="When that PC's screen saver starts, start this one's too, unless this PC was used in the last minute.">
+      <views:SettingCard Header="Screen saver with it"
+                         Description="When its screen saver starts, start this one's too, unless this PC was used in the last minute.">
         <ToggleSwitch IsChecked="{Binding ScreensaverWithHost}" AutomationProperties.Name="Start the screen saver with the controlling PC" />
       </views:SettingCard>
 
-      <TextBlock Classes="section" Text="Secure desktop" IsVisible="{Binding DesktopServiceInstalled}" />
-      <views:SettingCard Header="Control UAC prompts and the lock screen"
-                         Description="{Binding DesktopServiceDescription}"
-                         IsVisible="{Binding DesktopServiceInstalled}">
-        <ToggleSwitch IsChecked="{Binding UseDesktopService}" />
-      </views:SettingCard>
-      <TextBlock Classes="caption" Margin="4,8,0,0" IsVisible="{Binding DesktopServiceInstalled}"
-                 Text="While this is on, a program running as you could approve UAC prompts on this PC, the same way the PC controlling it can. Leave it off unless you need to click through UAC prompts or sign in from the other PC." />
-
-      <TextBlock Classes="section" Text="Display" />
-      <views:SettingCard Header="When the mouse arrives on this screen">
-        <ComboBox ItemsSource="{Binding HighlightChoices}" SelectedItem="{Binding SelectedHighlight}" Width="280" />
-      </views:SettingCard>
-      <views:SettingCard Header="Debug panel" Description="Show motion and latency while controlling another screen."
-                         IsVisible="{Binding IsDebugBuild}">
-        <ToggleSwitch IsChecked="{Binding ShowDebugPanel}" />
-      </views:SettingCard>
-
-      <TextBlock Classes="section" Text="Tray icon" />
-      <Border Classes="card">
-        <StackPanel Spacing="6">
-          <TextBlock Classes="caption" Text="The border colour of the tray icon shows what RoboMouse is doing:" Margin="0,0,0,4" />
-          <StackPanel Orientation="Horizontal" Spacing="10">
-            <Ellipse Classes="dot" Fill="{StaticResource AppStatusIdleBrush}" />
-            <TextBlock Text="No peers connected" />
-          </StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="10">
-            <Ellipse Classes="dot" Fill="{StaticResource AppStatusOkBrush}" />
-            <TextBlock Text="Connected" />
-          </StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="10">
-            <Ellipse Classes="dot" Fill="{DynamicResource SystemControlHighlightAccentBrush}" />
-            <TextBlock Text="Controlling another screen" />
-          </StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="10">
-            <Ellipse Classes="dot" Fill="{StaticResource AppStatusWarnBrush}" />
-            <TextBlock Text="Being controlled" />
-          </StackPanel>
-          <TextBlock Classes="caption" Text="A faded icon means sharing is switched off." Margin="0,4,0,0" />
-        </StackPanel>
-      </Border>
+      <TextBlock Classes="caption" Margin="4,16,0,0" TextWrapping="Wrap"
+                 Text="When a switch happens, more hotkeys, the clipboard size limit, waking sleeping PCs and more are on the Advanced page." />
     </StackPanel>
   </ScrollViewer>
 

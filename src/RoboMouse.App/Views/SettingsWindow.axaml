@@ -64,9 +64,10 @@
       <!-- Pages: each stays alive so unsaved edits and layout drags survive switching -->
       <Panel Grid.Column="1">
         <views:GeneralPageView DataContext="{Binding General}" IsVisible="{Binding IsActive}" />
-        <views:NetworkPageView DataContext="{Binding Network}" IsVisible="{Binding IsActive}" />
         <views:PeersPageView DataContext="{Binding Peers}" IsVisible="{Binding IsActive}" />
         <views:LayoutPageView DataContext="{Binding Layout}" IsVisible="{Binding IsActive}" />
+        <views:NetworkPageView DataContext="{Binding Network}" IsVisible="{Binding IsActive}" />
+        <views:AdvancedPageView DataContext="{Binding Advanced}" IsVisible="{Binding IsActive}" />
         <views:AboutPageView DataContext="{Binding About}" IsVisible="{Binding IsActive}" />
       </Panel>
     </Grid>

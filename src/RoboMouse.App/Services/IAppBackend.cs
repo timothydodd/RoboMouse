@@ -3,6 +3,7 @@ using RoboMouse.Core.Configuration;
 using RoboMouse.Core.Input;
 using RoboMouse.Core.Network;
 using RoboMouse.Core.Network.Protocol;
+using RoboMouse.Core.Screen;
 
 namespace RoboMouse.App.Services;
 
@@ -95,6 +96,21 @@ public interface IAppBackend
     /// </summary>
     Task<bool> ApplyDesktopServiceSettingAsync(bool enabled);
 
+    /// <summary>This PC's monitors as they are now.</summary>
+    MonitorLayout LocalLayout { get; }
+
+    /// <summary>The monitors a connected peer has, or null when it is not connected.</summary>
+    IReadOnlyList<MonitorRect>? GetPeerMonitors(string peerId);
+
+    /// <summary>
+    /// Goes up each time a peer's monitors or this PC's change (and placements may have moved), so
+    /// the Layout page can redraw. Read on the UI timer; the change itself happens on a background thread.
+    /// </summary>
+    int ScreensVersion { get; }
+
+    /// <summary>Applies saved placements: rebuilds the layout the mouse crosses on and sends it to the peers.</summary>
+    void ApplyLayout();
+
     /// <summary>Whether Windows starts RoboMouse at sign-in (Run key or Store startup task).</summary>
     Task<StartupState> GetStartupStateAsync();
 
@@ -108,10 +124,13 @@ public sealed class ServiceBackend : IAppBackend
     private readonly RoboMouseService _service;
     private readonly AppSettings _settings;
 
+    private int _screensVersion;
+
     public ServiceBackend(RoboMouseService service, AppSettings settings)
     {
         _service = service;
         _settings = settings;
+        _service.ScreensChanged += (_, _) => Interlocked.Increment(ref _screensVersion);
     }
 
     public void SaveSettings() => _settings.Save();
@@ -165,6 +184,11 @@ public sealed class ServiceBackend : IAppBackend
         _service.ApplyDesktopServiceSetting();
         return ok || !enabled;
     }
+
+    public MonitorLayout LocalLayout => _service.LocalLayout;
+    public IReadOnlyList<MonitorRect>? GetPeerMonitors(string peerId) => _service.GetPeerMonitors(peerId);
+    public int ScreensVersion => Volatile.Read(ref _screensVersion);
+    public void ApplyLayout() => _service.ApplyLayout();
 
     public Task<StartupState> GetStartupStateAsync() => StartupRegistration.GetStateAsync();
     public Task<StartupState> ApplyStartupAsync(bool enabled) => StartupRegistration.ApplyAsync(enabled);

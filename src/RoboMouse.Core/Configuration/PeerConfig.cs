@@ -23,21 +23,29 @@ public class PeerConfig
     public int Port { get; set; } = 24800;
 
     /// <summary>
-    /// Position of this peer's screen relative to the local screen.
+    /// The side of this PC's screens the peer was added on. Only used to place its monitors the first
+    /// time it reports them (<see cref="Monitors"/> is empty); after that each monitor has its own place.
     /// </summary>
     public ScreenPosition Position { get; set; } = ScreenPosition.Right;
 
     /// <summary>
-    /// Vertical offset in pixels (for Left/Right positions).
+    /// Vertical offset in pixels (for Left/Right positions) of that first placement.
     /// Positive values shift the peer screen down, negative shifts up.
     /// </summary>
     public int OffsetY { get; set; } = 0;
 
     /// <summary>
-    /// Horizontal offset in pixels (for Top/Bottom positions).
+    /// Horizontal offset in pixels (for Top/Bottom positions) of that first placement.
     /// Positive values shift the peer screen right, negative shifts left.
     /// </summary>
     public int OffsetX { get; set; } = 0;
+
+    /// <summary>
+    /// Where each of the peer's monitors sits on this PC's layout. Empty until the peer has reported
+    /// its monitors once. A monitor it no longer reports keeps its entry, so it returns to the same
+    /// place when plugged back in. Replaced as a whole, never changed in place: other threads read it.
+    /// </summary>
+    public List<MonitorPlacement> Monitors { get; set; } = new();
 
     /// <summary>
     /// The peer's screen width in pixels (received during handshake).

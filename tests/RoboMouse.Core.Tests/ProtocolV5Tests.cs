@@ -41,14 +41,26 @@ public class ProtocolV5Tests
         Assert.Null(ProtocolMessage.Deserialize(bytes));
     }
 
+    [Fact]
+    public void Deserialize_RejectsProtocol5Messages()
+    {
+        // Protocol 6 changed the cursor messages; a protocol 5 peer must not be half understood.
+        var bytes = new PingMessage().Serialize();
+        bytes[2] = 5;
+        Assert.Null(ProtocolMessage.Deserialize(bytes));
+    }
+
     private static IEnumerable<ProtocolMessage> Samples() => new ProtocolMessage[]
     {
         new HandshakeMessage { MachineId = "id", MachineName = "PC", ScreenWidth = 1, ScreenHeight = 2, ListenPort = 3, MacAddress = "001122334455" },
         new HandshakeAckMessage { Accepted = false, MachineId = "id", MachineName = "PC", RejectReason = "pending: x", MacAddress = "aa" },
         new MouseMessage { DeltaX = 1, DeltaY = -1, EventType = MouseEventType.LeftDown, WheelDelta = 120 },
         new KeyboardMessage { KeyCode = Keys.A, ScanCode = 0x1E, EventType = KeyboardEventType.KeyDown },
-        new CursorEnterMessage { EntryEdge = Configuration.ScreenPosition.Left, EntryY = 0.5f },
+        new CursorEnterMessage { MonitorId = "m", EntryY = 0.5f },
         new CursorLeaveMessage(),
+        CursorLeaveMessage.To(5, 6),
+        new ScreenInfoMessage { Monitors = { new(new System.Drawing.Rectangle(0, 0, 10, 10), default, true, "m", 100) } },
+        new VirtualLayoutMessage { Screens = { new("m", new System.Drawing.Rectangle(0, 0, 10, 10)), new(null, new System.Drawing.Rectangle(10, 0, 10, 10)) } },
         new InputStatusMessage { Reason = InputBlockReason.SecureDesktop },
         new PowerStateMessage(),
         new ClipboardMessage { ContentType = ClipboardContentType.Text, Data = new byte[40], FormatHint = "text/plain", OriginId = "o", Sequence = 1 },

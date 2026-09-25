@@ -115,6 +115,19 @@ internal sealed class FakeBackend : IAppBackend
     public Task<bool> ApplyDesktopServiceSettingAsync(bool enabled) => Task.FromResult(true);
     public Task<StartupState> GetStartupStateAsync() => Task.FromResult(StartupState.Off);
 
+    /// <summary>This PC: one 1920x1080 display unless a test sets another.</summary>
+    public RoboMouse.Core.Screen.MonitorLayout LocalLayout { get; set; } = new(new[]
+    {
+        new RoboMouse.Core.Screen.MonitorRect(new System.Drawing.Rectangle(0, 0, 1920, 1080), default, true, "main")
+    });
+
+    /// <summary>What each connected peer reports; a peer not in here is offline.</summary>
+    public Dictionary<string, List<RoboMouse.Core.Screen.MonitorRect>> PeerMonitors { get; } = new();
+    public IReadOnlyList<RoboMouse.Core.Screen.MonitorRect>? GetPeerMonitors(string peerId) => PeerMonitors.GetValueOrDefault(peerId);
+    public int ScreensVersion { get; set; }
+    public int LayoutApplied { get; private set; }
+    public void ApplyLayout() => LayoutApplied++;
+
     public Task<StartupState> ApplyStartupAsync(bool enabled)
     {
         StartupApplied.Add(enabled);

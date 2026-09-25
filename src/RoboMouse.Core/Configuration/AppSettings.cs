@@ -292,6 +292,8 @@ public class AppSettings
             {
                 // "null" in the file for a collection would otherwise surface as a crash much later.
                 settings.Peers ??= new();
+                foreach (var peer in settings.Peers.Where(p => p is not null))
+                    peer.Monitors = peer.Monitors?.Where(m => m is not null).ToList() ?? new();
                 settings.BlockedMachineIds ??= new();
                 settings.Clipboard ??= new();
                 settings.Crossing ??= new();

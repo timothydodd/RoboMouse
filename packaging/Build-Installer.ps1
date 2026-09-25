@@ -77,7 +77,8 @@ if (-not (Test-Path (Join-Path $stageDir "service\RoboMouse.Service.exe"))) {
 $iscc = @(
     (Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
     (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
-    (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
+    (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $iscc) { throw "Inno Setup 6 not found. Install it from https://jrsoftware.org/isdl.php or 'choco install innosetup'." }
 

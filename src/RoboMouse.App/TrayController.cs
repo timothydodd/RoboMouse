@@ -51,7 +51,6 @@ public sealed class TrayController : IDisposable
 #endif
     private EdgeHighlight? _highlight;
     private bool _wasControllingRemote;
-    private ScreenPosition _lastControlledEdge = ScreenPosition.Right;
     private bool _disposed;
 
     public TrayController(AppSettings settings, IClassicDesktopStyleApplicationLifetime lifetime, AppState appState)
@@ -196,7 +195,7 @@ public sealed class TrayController : IDisposable
                     ? "not connected"
                     : connection.RoundTripMs >= 0 ? $"{connection.RoundTripMs} ms" : "connected";
 
-            var item = new NativeMenuItem($"{peer.Name}  ({PeerPositions.Describe(peer.Position)}, {detail})")
+            var item = new NativeMenuItem($"{peer.Name}  ({detail})")
             {
                 ToggleType = MenuItemToggleType.CheckBox,
                 IsChecked = peer.Enabled,
@@ -237,17 +236,12 @@ public sealed class TrayController : IDisposable
         foreach (var found in discovered)
         {
             var submenu = new NativeMenu();
+            // Several PCs can share a side: their screens are placed beside each other there, and can be
+            // arranged on the Layout page.
             foreach (var position in PeerPositions.All)
             {
                 var captured = position;
-                var taken = _settings.Peers.FirstOrDefault(p => p.Position == position);
-                var positionItem = new NativeMenuItem(
-                    taken == null
-                        ? $"Add {PeerPositions.Describe(position).ToLower()} of this screen"
-                        : $"{PeerPositions.Describe(position)} of this screen (used by {taken.Name})")
-                {
-                    IsEnabled = taken == null
-                };
+                var positionItem = new NativeMenuItem($"Add {PeerPositions.Phrase(position)}");
                 positionItem.Click += (s, e) => _ = AddDiscoveredPeerAsync(found, captured);
                 submenu.Items.Add(positionItem);
             }
@@ -471,15 +465,12 @@ public sealed class TrayController : IDisposable
         UpdateStatus();
 
         // Mark where the mouse arrived on this screen: either a remote took control of it (it came in
-        // on the entry edge), or we just came back from controlling a remote (it came in on that peer's edge).
-        if (_service.IsControllingRemote && _service.ActivePeer != null)
-            _lastControlledEdge = _service.ActivePeer.Position;
-
+        // on the entry edge), or we just came back from controlling a remote (the edge it came back over).
         var isLocalAgain = _wasControllingRemote && !_service.IsControllingRemote && !_service.IsControlledByRemote;
         if (_settings.EdgeHighlight != EdgeHighlightStyle.None && (_service.IsControlledByRemote || isLocalAgain))
         {
             _highlight ??= new EdgeHighlight();
-            _highlight.Flash(_settings.EdgeHighlight, _service.IsControlledByRemote ? _service.EntryEdge : _lastControlledEdge);
+            _highlight.Flash(_settings.EdgeHighlight, _service.IsControlledByRemote ? _service.EntryEdge : _service.CrossedEdge);
         }
 
         _wasControllingRemote = _service.IsControllingRemote;
@@ -511,7 +502,7 @@ public sealed class TrayController : IDisposable
             if (show)
             {
                 _debugPanel ??= new DebugPanelWindow(_debugViewModel);
-                _debugPanel.ShowOnEdge(_service.ActivePeer?.Position.ToString());
+                _debugPanel.ShowOnEdge(_service.CrossedEdge.ToString());
             }
             else if (_debugPanel is { IsVisible: true })
             {

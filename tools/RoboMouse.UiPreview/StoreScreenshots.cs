@@ -67,14 +67,14 @@ internal static class StoreScreenshots
         {
             var page = slide.File switch
             {
-                "02-network" => 1,
-                "03-peers" => 2,
-                "04-layout" or "06-layout-dark" => 3,
-                _ => 0
+                "02-network" => SettingsPage.Network,
+                "03-peers" => SettingsPage.Peers,
+                "04-layout" or "06-layout-dark" => SettingsPage.Layout,
+                _ => SettingsPage.General
             };
             var settingsWindow = new SettingsWindow(settings, backend) { Width = WindowWidth, Height = WindowHeight };
             settingsWindow.Show();
-            settingsWindow.ViewModel.SelectedPage = settingsWindow.ViewModel.Pages[page];
+            settingsWindow.ViewModel.ShowPage(page);
             window = settingsWindow;
         }
 

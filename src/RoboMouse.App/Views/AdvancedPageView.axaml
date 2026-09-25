@@ -1,0 +1,106 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RoboMouse.App.ViewModels"
+             xmlns:views="using:RoboMouse.App.Views"
+             x:Class="RoboMouse.App.Views.AdvancedPageView"
+             x:DataType="vm:AdvancedPageViewModel">
+
+  <ScrollViewer>
+    <StackPanel Margin="{StaticResource AppPagePadding}" MaxWidth="860" HorizontalAlignment="Stretch">
+      <TextBlock Classes="title" Text="Advanced" />
+      <TextBlock Classes="caption" Margin="0,0,0,4" TextWrapping="Wrap"
+                 Text="Most people never need to change these." />
+
+      <TextBlock Classes="section" Text="When to switch screens" />
+      <views:SettingCard Header="Not while a mouse button is held"
+                         Description="Dragging a window or selecting text against the edge stays on this screen.">
+        <ToggleSwitch IsChecked="{Binding BlockWhileButtonHeld}" AutomationProperties.Name="Do not switch while a mouse button is held" />
+      </views:SettingCard>
+      <views:SettingCard Header="Corner dead zone"
+                         Description="Pushing this close to a corner does not switch, so buttons in the corners (Close, Start) are easy to hit. 0 turns it off.">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <NumericUpDown Value="{Binding CornerDeadZone}" Minimum="0" Maximum="500" Increment="5" FormatString="0"
+                         ShowButtonSpinner="False" Width="100" AutomationProperties.Name="Corner dead zone in pixels" />
+          <TextBlock Text="px" VerticalAlignment="Center" Classes="muted" />
+        </StackPanel>
+      </views:SettingCard>
+      <views:SettingCard Header="Push past the edge"
+                         Description="The mouse has to keep moving about this far past the edge before the cursor goes to the other screen, so working near an edge never switches by accident. Applies both ways, into another PC and back (update both PCs). 0 switches as soon as the cursor touches the edge.">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <NumericUpDown Value="{Binding PushDistance}" Minimum="0" Maximum="500" Increment="5" FormatString="0"
+                         ShowButtonSpinner="False" Width="100" AutomationProperties.Name="Push past the edge, in pixels" />
+          <TextBlock Text="px" VerticalAlignment="Center" Classes="muted" />
+        </StackPanel>
+      </views:SettingCard>
+      <views:SettingCard Header="Push twice to switch"
+                         Description="Switch only when the cursor hits the edge twice within half a second.">
+        <ToggleSwitch IsChecked="{Binding DoubleTap}" AutomationProperties.Name="Push twice to switch" />
+      </views:SettingCard>
+      <views:SettingCard Header="Wait before switching"
+                         Description="Keep pushing against the edge this long before the cursor moves over. 0 switches at once. With push twice also on, either one switches.">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <NumericUpDown Value="{Binding CrossingDelayMs}" Minimum="0" Maximum="2000" Increment="50" FormatString="0"
+                         ShowButtonSpinner="False" Width="100" AutomationProperties.Name="Delay before switching in milliseconds" />
+          <TextBlock Text="ms" VerticalAlignment="Center" Classes="muted" />
+        </StackPanel>
+      </views:SettingCard>
+      <views:SettingCard Header="Hold a key to switch"
+                         Description="Switch only while this key is held. The key is passed on to the other PC as held.">
+        <ComboBox ItemsSource="{Binding ModifierChoices}" SelectedItem="{Binding SelectedCrossingModifier}" Width="180"
+                  AutomationProperties.Name="Key to hold to switch" />
+      </views:SettingCard>
+      <views:SettingCard Header="Not while a full-screen app is in front"
+                         Description="Games, videos and presentations filling the screen keep the cursor.">
+        <ToggleSwitch IsChecked="{Binding BlockWhileFullScreen}" AutomationProperties.Name="Do not switch while a full-screen app is in front" />
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="More hotkeys" />
+      <views:SettingCard Header="Lock the cursor to its screen"
+                         Description="Keeps the cursor on the screen it is on, this one or another PC's, until you press it again. The tray menu shows when it is locked. Backspace clears the box.">
+        <views:HotkeyBox Hotkey="{Binding LockCursorHotkey}" AllowClear="True" Width="220" AutomationProperties.Name="Lock the cursor hotkey" />
+      </views:SettingCard>
+      <views:SettingCard Header="Lock all PCs"
+                         Description="Locks this PC and asks every connected PC to lock too. Each PC only follows a PC it has paired with. Also in the tray menu.">
+        <views:HotkeyBox Hotkey="{Binding LockAllHotkey}" AllowClear="True" Width="220" AutomationProperties.Name="Lock all PCs hotkey" />
+      </views:SettingCard>
+      <TextBlock Classes="caption" Margin="4,8,0,0" TextWrapping="Wrap"
+                 Text="Each PC also has a hotkey that moves the cursor straight onto its screen: Ctrl+Alt+F1 to F4 for the first four peers. Change it by editing the peer on the Peers page." />
+
+      <TextBlock Classes="section" Text="Clipboard" />
+      <views:SettingCard Header="Largest text or image to share"
+                         Description="Anything bigger stays on this machine. Files are not limited by this.">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <NumericUpDown Value="{Binding ClipboardMaxMegabytes}" Minimum="1" Maximum="100" Increment="1" FormatString="0.#"
+                         ShowButtonSpinner="False" Width="100" AutomationProperties.Name="Largest text or image to share, in megabytes" />
+          <TextBlock Text="MB" VerticalAlignment="Center" Classes="muted" />
+        </StackPanel>
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="Waking" />
+      <views:SettingCard Header="Wake a sleeping PC"
+                         Description="Keep pushing the mouse against the edge of a PC that is asleep to wake it with Wake-on-LAN; it connects by itself once it is up. That PC needs Wake-on-LAN turned on in its BIOS and network adapter, usually a wired connection, and must have connected here once before.">
+        <ToggleSwitch IsChecked="{Binding WakeOnEdge}" />
+      </views:SettingCard>
+
+      <TextBlock Classes="section" Text="Secure desktop" IsVisible="{Binding DesktopServiceInstalled}" />
+      <views:SettingCard Header="Control UAC prompts and the lock screen"
+                         Description="{Binding DesktopServiceDescription}"
+                         IsVisible="{Binding DesktopServiceInstalled}">
+        <ToggleSwitch IsChecked="{Binding UseDesktopService}" />
+      </views:SettingCard>
+      <TextBlock Classes="caption" Margin="4,8,0,0" IsVisible="{Binding DesktopServiceInstalled}" TextWrapping="Wrap"
+                 Text="While this is on, a program running as you could approve UAC prompts on this PC, the same way the PC controlling it can. Leave it off unless you need to click through UAC prompts or sign in from the other PC." />
+
+      <TextBlock Classes="section" Text="Display" />
+      <views:SettingCard Header="When the mouse arrives on this screen">
+        <ComboBox ItemsSource="{Binding HighlightChoices}" SelectedItem="{Binding SelectedHighlight}" Width="280"
+                  AutomationProperties.Name="When the mouse arrives on this screen" />
+      </views:SettingCard>
+      <views:SettingCard Header="Debug panel" Description="Show motion and latency while controlling another screen."
+                         IsVisible="{Binding IsDebugBuild}">
+        <ToggleSwitch IsChecked="{Binding ShowDebugPanel}" />
+      </views:SettingCard>
+    </StackPanel>
+  </ScrollViewer>
+
+</UserControl>

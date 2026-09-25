@@ -135,21 +135,81 @@ public class MessageSerializationTests
     {
         var original = new CursorEnterMessage
         {
+            MonitorId = "\\\\.\\DISPLAY2",
             EntryX = 0.75f,
             EntryY = 0.25f,
-            EntryEdge = Configuration.ScreenPosition.Left,
-            WrapAround = true
+            WrapAround = true,
+            HandBackPush = 30
         };
 
         var serialized = original.Serialize();
         var deserialized = ProtocolMessage.Deserialize(serialized) as CursorEnterMessage;
 
         Assert.NotNull(deserialized);
+        Assert.Equal(original.MonitorId, deserialized.MonitorId);
         Assert.Equal(original.EntryX, deserialized.EntryX, precision: 5);
         Assert.Equal(original.EntryY, deserialized.EntryY, precision: 5);
-        Assert.Equal(original.EntryEdge, deserialized.EntryEdge);
         Assert.True(deserialized.WrapAround);
+        Assert.Equal(30, deserialized.HandBackPush);
         Assert.False((ProtocolMessage.Deserialize(new CursorEnterMessage().Serialize()) as CursorEnterMessage)!.WrapAround);
+    }
+
+    [Fact]
+    public void CursorLeaveMessage_RoundTrip_CarriesTheTargetOrReleased()
+    {
+        var target = ProtocolMessage.Deserialize(CursorLeaveMessage.To(-1920, 540).Serialize()) as CursorLeaveMessage;
+        Assert.False(target!.Released);
+        Assert.Equal((-1920, 540), (target.TargetX, target.TargetY));
+
+        var released = ProtocolMessage.Deserialize(new CursorLeaveMessage().Serialize()) as CursorLeaveMessage;
+        Assert.True(released!.Released);
+    }
+
+    [Fact]
+    public void ScreenInfoMessage_RoundTrip_PreservesMonitors()
+    {
+        var original = new ScreenInfoMessage
+        {
+            Monitors =
+            {
+                new(new System.Drawing.Rectangle(0, 0, 3840, 2160), default, true, "A", 150),
+                new(new System.Drawing.Rectangle(-1920, 200, 1920, 1080), default, false, "B", 100)
+            }
+        };
+
+        var deserialized = ProtocolMessage.Deserialize(original.Serialize()) as ScreenInfoMessage;
+
+        Assert.NotNull(deserialized);
+        Assert.Equal(2, deserialized.Monitors.Count);
+        Assert.Equal(("A", 150, true), (deserialized.Monitors[0].Id, deserialized.Monitors[0].Scale, deserialized.Monitors[0].Primary));
+        Assert.Equal(new System.Drawing.Rectangle(-1920, 200, 1920, 1080), deserialized.Monitors[1].Bounds);
+    }
+
+    [Fact]
+    public void VirtualLayoutMessage_RoundTrip_KeepsWhichScreensAreTheReceivers()
+    {
+        var original = new VirtualLayoutMessage
+        {
+            Screens =
+            {
+                new("B", new System.Drawing.Rectangle(1920, 0, 1920, 1080)),
+                new(null, new System.Drawing.Rectangle(0, 0, 1920, 1080))
+            }
+        };
+
+        var deserialized = ProtocolMessage.Deserialize(original.Serialize()) as VirtualLayoutMessage;
+        var desktop = deserialized!.ToDesktop();
+
+        Assert.Equal(2, desktop.Screens.Count);
+        Assert.True(desktop.Find(Screen.VirtualDesktop.Local, "B").HasValue);
+        Assert.Equal(VirtualLayoutMessage.Foreign, desktop.ScreenAt(10, 10)!.Value.Owner);
+    }
+
+    [Fact]
+    public void ScreenInfoMessage_WithAnEmptyMonitor_IsSkipped()
+    {
+        var bad = new ScreenInfoMessage { Monitors = { new(System.Drawing.Rectangle.Empty, default, true, "A", 100) } };
+        Assert.Null(ProtocolMessage.Deserialize(bad.Serialize()));
     }
 
     [Theory]

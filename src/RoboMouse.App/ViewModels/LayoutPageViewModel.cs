@@ -1,79 +1,111 @@
+using System.Drawing;
+using RoboMouse.App.Services;
 using RoboMouse.Core.Configuration;
+using RoboMouse.Core.Screen;
 
 namespace RoboMouse.App.ViewModels;
 
 /// <summary>
-/// Where one peer sits on the Layout page before Save: its edge and its offset along that edge.
-/// The canvas edits these, never the <see cref="PeerConfig"/> itself, so Cancel leaves the settings alone.
+/// One screen on the Layout page: a monitor of this PC (fixed where Windows has it) or of a peer
+/// (movable). Positions are in layout units, which are this PC's virtual-screen pixels.
 /// </summary>
-public sealed class PeerPlacement
+public sealed class LayoutItem
 {
-    public PeerConfig Peer { get; }
-    public ScreenPosition Position { get; set; }
-    public int OffsetX { get; set; }
-    public int OffsetY { get; set; }
+    /// <summary>The peer the monitor belongs to, or null for this PC.</summary>
+    public PeerConfig? Peer { get; init; }
+    public string MonitorId { get; init; } = string.Empty;
 
-    // What the config held when this placement was taken. A config that no longer matches was changed
-    // elsewhere (the Peers page saves edits straight away), so the placement is retaken from it.
-    private ScreenPosition _originalPosition;
-    private int _originalOffsetX;
-    private int _originalOffsetY;
+    /// <summary>1-based, in the machine's own order; shown when it has more than one monitor.</summary>
+    public int Number { get; init; }
+    public int MonitorCount { get; init; } = 1;
+    public bool IsPrimary { get; init; }
 
-    public PeerPlacement(PeerConfig peer)
-    {
-        Peer = peer;
-        Retake();
-    }
+    /// <summary>The monitor's resolution on its own machine.</summary>
+    public Size PixelSize { get; init; }
 
-    /// <summary>True when the placement differs from what is saved in the config.</summary>
-    public bool IsModified => Position != Peer.Position || OffsetX != Peer.OffsetX || OffsetY != Peer.OffsetY;
+    public int X { get; set; }
+    public int Y { get; set; }
+    public int Width { get; init; }
+    public int Height { get; init; }
 
-    internal bool ConfigChangedElsewhere =>
-        Peer.Position != _originalPosition || Peer.OffsetX != _originalOffsetX || Peer.OffsetY != _originalOffsetY;
+    /// <summary>The peer is connected (its monitors are the ones it has now).</summary>
+    public bool IsConnected { get; init; }
 
-    /// <summary>Discards any edit and reads the placement from the config again.</summary>
-    internal void Retake()
-    {
-        Position = _originalPosition = Peer.Position;
-        OffsetX = _originalOffsetX = Peer.OffsetX;
-        OffsetY = _originalOffsetY = Peer.OffsetY;
-    }
+    /// <summary>
+    /// A peer that has never reported its monitors, drawn where it was added. It cannot be moved: its
+    /// monitors are placed on their own once it connects.
+    /// </summary>
+    public bool IsPlaceholder { get; init; }
 
-    /// <summary>Writes the placement into the config.</summary>
-    internal void Apply()
-    {
-        Peer.Position = Position;
-        Peer.OffsetX = OffsetX;
-        Peer.OffsetY = OffsetY;
-        Retake();
-    }
+    public bool IsLocal => Peer == null;
+    public bool IsMovable => !IsLocal && !IsPlaceholder;
+    public Rectangle Rect => new(X, Y, Width, Height);
+
+    public string Name => Peer?.Name ?? "This PC";
+
+    /// <summary>"Laptop", "Laptop 2", "This PC 1 (main)".</summary>
+    public string Label => MonitorCount > 1
+        ? $"{Name} {Number}{(IsLocal && IsPrimary ? " (main)" : string.Empty)}"
+        : Name;
 }
 
 /// <summary>
-/// Layout page: the drag-to-arrange canvas. Drags change <see cref="Placements"/> only; <see cref="Save"/>
-/// writes them into the peer configs, and closing the window without saving simply drops them.
+/// Layout page: every monitor of this PC and of each peer on one canvas. This PC's monitors sit where
+/// Windows has them; each peer monitor is dragged anywhere against another screen, so a peer's
+/// monitors can be split up or put in another order, and several peers can share one edge. Drags change
+/// the items only; <see cref="Save"/> writes them into <see cref="PeerConfig.Monitors"/>, and closing
+/// the window without saving drops them.
 /// </summary>
 public sealed class LayoutPageViewModel : PageViewModel
 {
-    private readonly List<PeerPlacement> _placements = new();
+    /// <summary>How close (layout units) a side must come to another screen's to line up with it.</summary>
+    public const int AlignThreshold = 120;
+
+    private readonly IAppBackend? _backend;
+    private readonly List<LayoutItem> _items = new();
+
+    // Unsaved moves, by peer and monitor, with the placement the move was made from. A placement that
+    // no longer matches was changed elsewhere (the service placed it again), so the move is dropped.
+    private readonly Dictionary<(PeerConfig Peer, string MonitorId), (Point Moved, Point From)> _drafts = new();
 
     public AppSettings Settings { get; }
 
-    /// <summary>One entry per configured peer, in the order of <see cref="AppSettings.Peers"/>.</summary>
-    public IReadOnlyList<PeerPlacement> Placements => _placements;
+    /// <summary>Every screen, this PC's first.</summary>
+    public IReadOnlyList<LayoutItem> Items => _items;
 
-    /// <summary>Set by the view: asks the canvas to rebuild from <see cref="Placements"/>.</summary>
+    /// <summary>This PC's monitors: from the backend, or a stand-in where the monitor API is missing.</summary>
+    public Func<MonitorLayout> LocalLayoutSource { get; set; }
+
+    /// <summary>Set by the view: asks the canvas to rebuild from <see cref="Items"/>.</summary>
     public Action? ReloadRequested { get; set; }
 
-    public LayoutPageViewModel(AppSettings settings)
+    public LayoutPageViewModel(AppSettings settings, IAppBackend? backend = null, Func<MonitorLayout>? localLayout = null)
     {
         Settings = settings;
+        _backend = backend;
+        LocalLayoutSource = localLayout ?? (() => backend?.LocalLayout ?? ReadLocalLayout());
         Sync();
     }
 
+    private static MonitorLayout ReadLocalLayout()
+    {
+        try
+        {
+            return ScreenInfo.ReadLayout();
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or PlatformNotSupportedException)
+        {
+            var main = new Rectangle(0, 0, 2560, 1440);
+            return new MonitorLayout(new[] { new MonitorRect(main, main, true) });
+        }
+    }
+
+    /// <summary>True when there are moves not saved yet.</summary>
+    public bool IsModified => _drafts.Count > 0;
+
     /// <summary>
-    /// Follows the peer list (peers added, removed or edited on the Peers page) and redraws. Unsaved
-    /// drags survive unless that peer's config was changed in the meantime.
+    /// Follows the peer list and the monitors (a peer connected or reported new ones, this PC's changed)
+    /// and redraws. Unsaved moves survive unless that monitor was placed again meanwhile.
     /// </summary>
     public void Reload()
     {
@@ -83,88 +115,179 @@ public sealed class LayoutPageViewModel : PageViewModel
 
     private void Sync()
     {
-        var existing = _placements.ToDictionary(p => p.Peer);
-        _placements.Clear();
+        _items.Clear();
+        var local = LocalLayoutSource();
+        var number = 0;
+        foreach (var m in local.Monitors)
+        {
+            _items.Add(new LayoutItem
+            {
+                MonitorId = m.Id,
+                Number = ++number,
+                MonitorCount = local.Monitors.Count,
+                IsPrimary = m.Primary,
+                PixelSize = m.Bounds.Size,
+                X = m.Bounds.X,
+                Y = m.Bounds.Y,
+                Width = m.Bounds.Width,
+                Height = m.Bounds.Height,
+                IsConnected = true
+            });
+        }
+
+        var livePeers = new HashSet<PeerConfig>();
         foreach (var peer in Settings.Peers)
         {
-            if (existing.TryGetValue(peer, out var placement))
+            livePeers.Add(peer);
+            var reported = _backend?.GetPeerMonitors(peer.Id);
+            var present = reported?.Select(r => r.Id).ToHashSet();
+            var placements = peer.Monitors.ToList();
+            if (placements.Count == 0)
             {
-                if (placement.ConfigChangedElsewhere)
-                    placement.Retake();
+                _items.Add(Placeholder(peer, local.VirtualBounds));
+                continue;
             }
-            else
+
+            var shown = placements.Where(p => present == null || present.Contains(p.Id))
+                .OrderBy(p => p.RemoteX).ThenBy(p => p.RemoteY).ToList();
+            number = 0;
+            foreach (var p in shown)
             {
-                placement = new PeerPlacement(peer);
+                var item = new LayoutItem
+                {
+                    Peer = peer,
+                    MonitorId = p.Id,
+                    Number = ++number,
+                    MonitorCount = shown.Count,
+                    IsPrimary = p.Primary,
+                    PixelSize = new Size(p.RemoteWidth, p.RemoteHeight),
+                    X = p.X,
+                    Y = p.Y,
+                    Width = p.Width,
+                    Height = p.Height,
+                    IsConnected = present != null
+                };
+                if (_drafts.TryGetValue((peer, p.Id), out var draft))
+                {
+                    if (draft.From == new Point(p.X, p.Y))
+                        (item.X, item.Y) = (draft.Moved.X, draft.Moved.Y);
+                    else
+                        _drafts.Remove((peer, p.Id));
+                }
+                _items.Add(item);
             }
-            _placements.Add(placement);
         }
+
+        // Moves on peers that have since been removed.
+        foreach (var key in _drafts.Keys.Where(k => !livePeers.Contains(k.Peer)).ToList())
+            _drafts.Remove(key);
     }
 
-    /// <summary>
-    /// Puts a peer on an edge at the given offset. Another peer already on that edge would never be
-    /// reached, so the two swap: it moves to the edge (and offset) the dropped peer came from.
-    /// Returns the peer that moved out of the way, or null.
-    /// </summary>
-    public PeerPlacement? MoveToEdge(PeerPlacement moved, ScreenPosition position, int offsetX, int offsetY)
+    /// <summary>A peer with no placements yet: one screen of its handshake size on the side it was added.</summary>
+    private static LayoutItem Placeholder(PeerConfig peer, Rectangle local)
     {
-        var (fromPosition, fromX, fromY) = (moved.Position, moved.OffsetX, moved.OffsetY);
-        moved.Position = position;
-        moved.OffsetX = offsetX;
-        moved.OffsetY = offsetY;
-
-        if (fromPosition == position)
-            return null;
-
-        var occupant = _placements.FirstOrDefault(p => p != moved && p.Position == position);
-        if (occupant == null)
-            return null;
-
-        occupant.Position = fromPosition;
-        occupant.OffsetX = fromX;
-        occupant.OffsetY = fromY;
-        return occupant;
-    }
-
-    /// <summary>
-    /// Shifts a peer along the edge it sits on (the keyboard's arrow keys): positive moves it right on
-    /// a top or bottom edge, down on a left or right edge.
-    /// </summary>
-    public void Nudge(PeerPlacement placement, int pixels)
-    {
-        if (placement.Position is ScreenPosition.Left or ScreenPosition.Right)
-            placement.OffsetY += pixels;
-        else
-            placement.OffsetX += pixels;
-    }
-
-    /// <summary>
-    /// Moves a peer to another edge from the keyboard, lined up with the start of that edge. Swaps with
-    /// a peer already there, like a drop. Returns the peer that moved out of the way, or null.
-    /// </summary>
-    public PeerPlacement? MoveToEdge(PeerPlacement placement, ScreenPosition position) =>
-        placement.Position == position ? null : MoveToEdge(placement, position, 0, 0);
-
-    /// <summary>Where a peer sits, in words (for screen readers).</summary>
-    public static string Describe(PeerPlacement placement)
-    {
-        var side = placement.Position switch
+        var (w, h) = (Math.Max(1, peer.ScreenWidth), Math.Max(1, peer.ScreenHeight));
+        var (x, y) = peer.Position switch
         {
-            ScreenPosition.Left => "left of this screen",
-            ScreenPosition.Right => "right of this screen",
-            ScreenPosition.Top => "above this screen",
-            _ => "below this screen"
+            ScreenPosition.Left => (local.Left - w, local.Top + peer.OffsetY),
+            ScreenPosition.Top => (local.Left + peer.OffsetX, local.Top - h),
+            ScreenPosition.Bottom => (local.Left + peer.OffsetX, local.Bottom),
+            _ => (local.Right, local.Top + peer.OffsetY)
         };
-        var along = placement.Position is ScreenPosition.Left or ScreenPosition.Right ? placement.OffsetY : placement.OffsetX;
-        var (more, less) = placement.Position is ScreenPosition.Left or ScreenPosition.Right ? ("down", "up") : ("right", "left");
-        var shift = along == 0 ? "lined up with its start" : $"shifted {Math.Abs(along)} pixels {(along > 0 ? more : less)}";
-        var state = placement.Peer.Enabled ? string.Empty : ", disabled";
-        return $"{placement.Peer.Name}: {side}, {shift}{state}";
+        return new LayoutItem { Peer = peer, PixelSize = new Size(w, h), X = x, Y = y, Width = w, Height = h, IsPlaceholder = true };
     }
 
-    /// <summary>Writes every placement into its peer config. The caller saves the settings file.</summary>
+    /// <summary>The screens a moved one must not overlap: every real one except itself.</summary>
+    private List<Rectangle> Others(LayoutItem moving) =>
+        _items.Where(i => i != moving && !i.IsPlaceholder).Select(i => i.Rect).ToList();
+
+    /// <summary>
+    /// Drops a peer monitor at <paramref name="proposed"/> (its size unchanged): it settles against the
+    /// nearest screen edge, overlapping nothing, lined up when close. Returns where it went.
+    /// </summary>
+    public Rectangle Move(LayoutItem item, Point proposed)
+    {
+        if (!item.IsMovable)
+            return item.Rect;
+        var snapped = VirtualDesktop.Snap(new Rectangle(proposed, new Size(item.Width, item.Height)), Others(item), AlignThreshold);
+        SetPosition(item, snapped.Location);
+        return snapped;
+    }
+
+    /// <summary>
+    /// Moves a peer monitor by a step from the keyboard, to the nearest place in that direction where
+    /// it still touches another screen and overlaps none. Returns false when it cannot go further.
+    /// </summary>
+    public bool Nudge(LayoutItem item, int dx, int dy)
+    {
+        if (!item.IsMovable || (dx == 0 && dy == 0))
+            return false;
+        var others = Others(item);
+        var start = item.Rect;
+        // Try ever bigger steps, so a screen blocked by a neighbour jumps past it rather than stopping.
+        for (var k = 1; k <= 64; k++)
+        {
+            var proposed = new Rectangle(start.X + dx * k, start.Y + dy * k, start.Width, start.Height);
+            var snapped = VirtualDesktop.Snap(proposed, others, alignThreshold: 0);
+            // It must have moved the way asked, not been pulled back or sideways past where it was.
+            var progress = dx != 0 ? Math.Sign(snapped.X - start.X) == Math.Sign(dx) : Math.Sign(snapped.Y - start.Y) == Math.Sign(dy);
+            if (snapped != start && progress)
+            {
+                SetPosition(item, snapped.Location);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void SetPosition(LayoutItem item, Point location)
+    {
+        item.X = location.X;
+        item.Y = location.Y;
+        var key = (item.Peer!, item.MonitorId);
+        var saved = item.Peer!.Monitors.FirstOrDefault(p => p.Id == item.MonitorId);
+        var from = saved == null ? location : new Point(saved.X, saved.Y);
+        if (from == location)
+            _drafts.Remove(key);
+        else
+            _drafts[key] = (location, from);
+    }
+
+    /// <summary>Where a screen sits, in words (for screen readers): its size and what it touches on each side.</summary>
+    public string Describe(LayoutItem item)
+    {
+        var parts = new List<string> { $"{item.Label}, {item.PixelSize.Width} by {item.PixelSize.Height}" };
+        var r = item.Rect;
+        foreach (var other in _items)
+        {
+            if (other == item || other.IsPlaceholder || !VirtualDesktop.Touches(r, other.Rect))
+                continue;
+            var o = other.Rect;
+            var side = r.Right == o.Left ? "left of" : r.Left == o.Right ? "right of" : r.Bottom == o.Top ? "above" : "below";
+            parts.Add($"{side} {other.Label}");
+        }
+        if (item.IsPlaceholder)
+            parts.Add("not arranged yet, connect it first");
+        else if (!item.IsLocal && !item.IsConnected)
+            parts.Add("offline");
+        if (item.Peer is { Enabled: false })
+            parts.Add("disabled");
+        return string.Join(", ", parts);
+    }
+
+    /// <summary>Writes every move into its peer's placements. The caller saves the settings file and applies the layout.</summary>
     public void Save()
     {
-        foreach (var placement in _placements)
-            placement.Apply();
+        foreach (var peer in _drafts.Keys.Select(k => k.Peer).Distinct().ToList())
+        {
+            peer.Monitors = peer.Monitors.Select(p =>
+            {
+                var copy = p.Clone();
+                if (_drafts.TryGetValue((peer, p.Id), out var draft))
+                    (copy.X, copy.Y) = (draft.Moved.X, draft.Moved.Y);
+                return copy;
+            }).ToList();
+        }
+        _drafts.Clear();
     }
 }

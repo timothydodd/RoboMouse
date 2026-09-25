@@ -3,8 +3,12 @@ using RoboMouse.Core.Configuration;
 
 namespace RoboMouse.Core.Screen;
 
-/// <summary>One monitor of the local desktop, in virtual-screen pixels.</summary>
-public readonly record struct MonitorRect(Rectangle Bounds, Rectangle WorkingArea, bool Primary);
+/// <summary>
+/// One monitor of the local desktop, in virtual-screen pixels. <paramref name="Id"/> is the Windows
+/// device name (<c>\\.\DISPLAY1</c>), stable enough to remember where a peer's monitor was placed;
+/// <paramref name="Scale"/> is its display scaling in percent.
+/// </summary>
+public readonly record struct MonitorRect(Rectangle Bounds, Rectangle WorkingArea, bool Primary, string Id = "", int Scale = 100);
 
 /// <summary>
 /// An immutable snapshot of the monitor arrangement and the edge geometry on it. The desktop is the
@@ -29,6 +33,20 @@ public sealed class MonitorLayout
         var list = monitors.Where(m => m.Bounds.Width > 0 && m.Bounds.Height > 0).ToList();
         if (list.Count == 0)
             list.Add(new MonitorRect(Fallback, Fallback, true));
+
+        // Every monitor needs a distinct id to be placed on its own; one without (or a duplicate) gets
+        // its position in the list.
+        var seen = new HashSet<string>();
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (string.IsNullOrEmpty(list[i].Id) || !seen.Add(list[i].Id))
+            {
+                list[i] = list[i] with { Id = $"#{i + 1}" };
+                seen.Add(list[i].Id);
+            }
+            if (list[i].Scale <= 0)
+                list[i] = list[i] with { Scale = 100 };
+        }
         Monitors = list;
 
         var primary = list.FirstOrDefault(m => m.Primary);
@@ -40,19 +58,43 @@ public sealed class MonitorLayout
         VirtualBounds = union;
     }
 
+    /// <summary>The primary monitor, or the first one.</summary>
+    public MonitorRect PrimaryMonitor => Monitors.FirstOrDefault(m => m.Primary) is { Bounds.IsEmpty: false } primary ? primary : Monitors[0];
+
     /// <summary>The monitor containing the point, or the nearest one.</summary>
-    public Rectangle GetScreenAt(int x, int y)
+    public Rectangle GetScreenAt(int x, int y) => GetMonitorAt(x, y).Bounds;
+
+    /// <summary>The monitor containing the point, or the nearest one.</summary>
+    public MonitorRect GetMonitorAt(int x, int y)
     {
-        var best = Monitors[0].Bounds;
+        var best = Monitors[0];
         long bestDistance = long.MaxValue;
         foreach (var m in Monitors)
         {
             var d = DistanceSquared(m.Bounds, x, y);
             if (d < bestDistance)
-                (best, bestDistance) = (m.Bounds, d);
+                (best, bestDistance) = (m, d);
         }
         return best;
     }
+
+    /// <summary>The monitor with this device name, if it is still connected.</summary>
+    public MonitorRect? FindMonitor(string id)
+    {
+        foreach (var m in Monitors)
+        {
+            if (m.Id == id)
+                return m;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A string that changes whenever the arrangement does (a monitor added or removed, moved, resized,
+    /// rescaled, or a different main display), for noticing display changes.
+    /// </summary>
+    public string Signature => string.Join(";", Monitors.Select(m =>
+        $"{m.Id}:{m.Bounds.X},{m.Bounds.Y},{m.Bounds.Width},{m.Bounds.Height}@{m.Scale}{(m.Primary ? "*" : "")}"));
 
     /// <summary>
     /// The outer edge of the desktop the point is on, if any. The normalized position is measured

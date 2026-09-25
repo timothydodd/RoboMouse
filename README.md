@@ -12,11 +12,11 @@ machines find each other on your network and connect directly, encrypted.
 
 - **Mouse and keyboard sharing** - cross a screen edge to control another PC; each machine keeps its own pointer speed and keyboard layout
 - **Clipboard and files** - copy text, images or files on one machine, paste on another; choose what is shared, a size limit, and which PCs share it
-- **Crossing guards** - no switching while dragging, a corner dead zone, and optionally push twice, wait, hold a key, or stay put while a full-screen app is in front
+- **Crossing guards** - no switching while dragging, a corner dead zone, and optionally push past the edge by a set distance (both ways), push twice, wait, hold a key, or stay put while a full-screen app is in front
 - **Hotkeys** - take control back or turn sharing off (Ctrl+Alt+M), jump straight to a PC (Ctrl+Alt+F1 to F4), lock the cursor to its screen (Scroll Lock)
 - **Lock all PCs** at once, and optionally lock, start the screen saver or stay awake along with the PC controlling this one
 - **UAC prompts and the lock screen** - with the optional desktop service
-- **Pairing wizard**, automatic discovery and a drag-and-drop **screen layout**
+- **Pairing wizard**, automatic discovery and a drag-and-drop **screen layout**: every monitor of every PC is placed on its own, in any order, and several PCs can share one side
 - **Private** - every PC has its own identity key, a new machine must be approved before it can connect, and everything is encrypted (AES-256-GCM)
 - **Update check** (GitHub downloads) and a one-click **diagnostics export** for bug reports
 - **Tray app** - the icon's border shows state (grey = no peers, green = connected, blue = controlling, orange = being controlled, faded = disabled)
@@ -51,9 +51,12 @@ and lock screen control.
 4. **Place it**: pick the side of your screen it sits on, then **Finish**.
 5. **Approve it on the other PC.** A machine it has never seen shows "*name* wants to connect";
    click **Allow** (or use **Settings > Peers > Asking to connect**). Allowing places it on a free
-   edge and opens **Settings > Layout** so you can drag it where it really sits. Nothing can control
-   a PC until it has been allowed or added there.
-6. Move the mouse off that edge. Push back through the same edge to return.
+   side and opens **Settings > Layout**. Nothing can control a PC until it has been allowed or
+   added there.
+6. Once connected, **Settings > Layout** shows each of its monitors as its own screen. Drag each one
+   to where it really sits: beside any of your monitors, in a different order from the other PC's
+   own arrangement, or sharing a side with another PC. The mouse crosses wherever two screens touch.
+7. Move the mouse off that edge. Push back through it to return.
 
 On first contact the two PCs record each other's identity key. From then on they recognise each
 other by that key and no longer need the code, so **Generate new** under Settings > Network only
@@ -65,6 +68,17 @@ if the other one has stopped responding. Otherwise it turns sharing on or off.
 
 Untick a peer under **Settings > Peers** to switch it off without removing it. A removed peer stays
 blocked until you add it again.
+
+## Upgrading to 1.3
+
+1.3 uses a new network protocol (version 6), because the cursor now enters and leaves a particular
+monitor. **Update every PC**: 1.2 and 1.3 cannot connect to each other (RoboMouse reports a version
+mismatch).
+
+Each peer's screens start out where the peer was before (its side and offset). Arrange them per
+monitor under **Settings > Layout** once the peer has connected. Settings are now split: everyday
+ones on **General**, fine-tuning (when a switch happens, the lock hotkeys, the clipboard size
+limit, Wake-on-LAN, the desktop service, the arrival cue) on **Advanced**.
 
 ## Upgrading to 1.2
 
@@ -83,7 +97,7 @@ RoboMouse runs as a normal user, so by itself it cannot click a UAC prompt, type
 running as administrator, or unlock the PC. The tray status tells you when that happens.
 
 The **desktop service** fixes this. It comes with `RoboMouse-Setup`; Store users add it with
-`RoboMouse-Service-Setup`. On the machine being controlled, turn on **Settings > General > Control
+`RoboMouse-Service-Setup`. On the machine being controlled, turn on **Settings > Advanced > Control
 UAC prompts and the lock screen** and approve the one UAC prompt. It stays off until you do.
 
 What it does, how it is locked down and its limits: [docs/desktop-service.md](docs/desktop-service.md).
@@ -103,7 +117,6 @@ Neither opens anything on a network Windows treats as Public.
 ## Known limitations
 
 - **Sign-in after a reboot and Ctrl+Alt+Del** are not covered, even with the desktop service.
-- **One PC per screen edge.** Each side of your desktop leads to one peer.
 - **Different subnets.** Discovery does not cross subnets; add such peers by IP.
 - **File paste targets.** Explorer, Outlook, Teams and Office accept pasted files; apps that want
   plain file paths (VS Code) do not. Paste into a folder first.

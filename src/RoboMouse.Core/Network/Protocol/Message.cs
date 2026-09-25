@@ -11,8 +11,12 @@ public abstract class Message
     /// <summary>
     /// Protocol version number. Both machines must run the same one. Version 5 added pinned identity
     /// keys to the secure handshake, chunked clipboard transfers and clipboard origin/sequence stamps.
+    /// Version 6 placed each monitor on the layout on its own: machines exchange their monitors
+    /// (<see cref="ScreenInfoMessage"/>), the controller sends its layout to each peer
+    /// (<see cref="VirtualLayoutMessage"/>), and the cursor enters a named monitor and leaves at a
+    /// point on the controller's layout.
     /// </summary>
-    public const byte ProtocolVersion = 5;
+    public const byte ProtocolVersion = 6;
 
     /// <summary>
     /// Magic bytes to identify RoboMouse protocol.
@@ -137,6 +141,8 @@ public abstract class Message
             MessageType.CursorLock => CursorLockMessage.DeserializePayload(payload),
             MessageType.SessionState => SessionStateMessage.DeserializePayload(payload),
             MessageType.LockRequest => new LockRequestMessage(),
+            MessageType.ScreenInfo => ScreenInfoMessage.DeserializePayload(payload),
+            MessageType.VirtualLayout => VirtualLayoutMessage.DeserializePayload(payload),
             MessageType.Clipboard => ClipboardMessage.DeserializePayload(payload),
             MessageType.FileOffer => FileOfferMessage.DeserializePayload(payload),
             MessageType.FileOfferRevoked => FileOfferRevokedMessage.DeserializePayload(payload),

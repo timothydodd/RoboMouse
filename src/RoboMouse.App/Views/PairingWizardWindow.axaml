@@ -123,7 +123,7 @@
       <StackPanel Spacing="12" IsVisible="{Binding IsPlaceStep}">
         <TextBlock Classes="subtitle" Text="{Binding OtherName, StringFormat='Where is {0}?'}" />
         <TextBlock TextWrapping="Wrap"
-                   Text="Pick the side of this screen the other PC's screen is on. Moving the mouse off that edge takes it across. You can fine-tune this later under Settings > Layout." />
+                   Text="Pick the side of this screen the other PC's screens are on. Moving the mouse off that edge takes it across. Once it connects, you can place each of its screens exactly under Settings > Layout." />
         <ListBox ItemsSource="{Binding Positions}" SelectedItem="{Binding SelectedPosition}" Classes="rows"
                  AutomationProperties.Name="Side of this screen">
           <ListBox.ItemTemplate>

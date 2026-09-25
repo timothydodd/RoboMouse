@@ -56,13 +56,20 @@ public class DesktopServiceInjectorTests
         return service;
     }
 
+    /// <summary>GetCursorPos from the app fails while the secure desktop is up, so the helper must answer.</summary>
+    private static bool SecureDesktopUp(out int x, out int y)
+    {
+        (x, y) = (0, 0);
+        return false;
+    }
+
     [Fact]
     public async Task RoutesInputInOrder_AndAnswersCursorQueries_OnceTheHelperIsReady()
     {
         var pipeName = NewPipeName();
         using var server = CreateServer(pipeName);
         var local = new RecordingInjector();
-        using var injector = new DesktopServiceInjector(pipeName, local, null) { CursorQueryTimeoutMs = 10000, Enabled = true };
+        using var injector = new DesktopServiceInjector(pipeName, local, null) { CursorQueryTimeoutMs = 10000, Enabled = true, TryLocalCursor = SecureDesktopUp };
 
         await server.WaitForConnectionAsync(Ct).WaitAsync(Timeout, Ct);
         using var service = new PipeConnection(server);
@@ -100,7 +107,7 @@ public class DesktopServiceInjectorTests
         var pipeName = NewPipeName();
         using var server = CreateServer(pipeName);
         var local = new RecordingInjector { Position = (1, 1) };
-        using var injector = new DesktopServiceInjector(pipeName, local, null) { CursorQueryTimeoutMs = 200, Enabled = true };
+        using var injector = new DesktopServiceInjector(pipeName, local, null) { CursorQueryTimeoutMs = 200, Enabled = true, TryLocalCursor = SecureDesktopUp };
         using var service = await AcceptAsync(server);
         await WaitForAsync(() => injector.State == DesktopServiceState.Active);
 

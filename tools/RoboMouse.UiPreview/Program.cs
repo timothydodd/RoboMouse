@@ -74,35 +74,36 @@ internal static class Program
                 Capture(window, Path.Combine(outDir, $"settings-{page.Title.ToLowerInvariant()}{suffix}.png"));
             }
             // The layout page again with a second, smaller monitor that has been made the main display.
-            ScreenLayoutControl.LayoutSource = () => new MonitorLayout(new[]
+            backend.LocalLayoutSource = () => new MonitorLayout(new[]
             {
-                Monitor(0, 0, 1920, 1080, primary: true),
-                Monitor(-2560, -200, 2560, 1440, primary: false)
+                Monitor(0, 0, 2560, 1440, primary: true),
+                Monitor(0, -1080, 1920, 1080, primary: false)
             });
             window.ViewModel.SelectedPage = window.ViewModel.Pages.First(p => p.Title == "Layout");
             window.ViewModel.Layout.Reload();
             Capture(window, Path.Combine(outDir, $"settings-layout-multimonitor{suffix}.png"));
-            ScreenLayoutControl.LayoutSource = null;
 
             // Error states: a cleared port box, and startup turned off from Task Manager.
             window.ViewModel.Network.LocalPort = null;
             window.ViewModel.SelectedPage = window.ViewModel.Pages.First(p => p.Title == "Network");
             Capture(window, Path.Combine(outDir, $"settings-network-invalid{suffix}.png"));
-            // The General page scrolled down to the clipboard controls.
+            // The General and Advanced pages scrolled down.
             window.ViewModel.ShowPage(SettingsPage.General);
             Dispatcher.UIThread.RunJobs();
             var generalScroll = window.GetVisualDescendants().OfType<GeneralPageView>().Single()
                 .GetVisualDescendants().OfType<ScrollViewer>().First();
-            generalScroll.Offset = new Vector(0, 330);
-            Capture(window, Path.Combine(outDir, $"settings-general-clipboard{suffix}.png"));
-            // Further down: hotkeys, then switching screens, then power and locking.
-            generalScroll.Offset = new Vector(0, 240);
-            Capture(window, Path.Combine(outDir, $"settings-general-hotkeys{suffix}.png"));
-            generalScroll.Offset = new Vector(0, 1000);
-            Capture(window, Path.Combine(outDir, $"settings-general-switching{suffix}.png"));
-            generalScroll.Offset = new Vector(0, 1500);
-            Capture(window, Path.Combine(outDir, $"settings-general-power{suffix}.png"));
+            generalScroll.Offset = new Vector(0, 600);
+            Capture(window, Path.Combine(outDir, $"settings-general-bottom{suffix}.png"));
             generalScroll.Offset = default;
+            window.ViewModel.ShowPage(SettingsPage.Advanced);
+            Dispatcher.UIThread.RunJobs();
+            var advancedScroll = window.GetVisualDescendants().OfType<AdvancedPageView>().Single()
+                .GetVisualDescendants().OfType<ScrollViewer>().First();
+            advancedScroll.Offset = new Vector(0, 700);
+            Capture(window, Path.Combine(outDir, $"settings-advanced-middle{suffix}.png"));
+            advancedScroll.Offset = new Vector(0, 1400);
+            Capture(window, Path.Combine(outDir, $"settings-advanced-bottom{suffix}.png"));
+            advancedScroll.Offset = default;
 
             window.ViewModel.General.ShowStartupState(RoboMouse.App.StartupState.DisabledByUser);
             window.ViewModel.SelectedPage = window.ViewModel.Pages.First(p => p.Title == "General");

@@ -44,7 +44,7 @@ public unsafe class ScreenInfo
 
     /// <summary>Reads the monitor arrangement as it is right now.</summary>
     public static MonitorLayout ReadLayout() =>
-        new(EnumerateMonitors().Select(m => new MonitorRect(m.Bounds, m.WorkingArea, m.Primary)));
+        new(EnumerateMonitors().Select(m => new MonitorRect(m.Bounds, m.WorkingArea, m.Primary, m.Id, m.Scale)));
 
     /// <summary>The bounding rectangle of all monitors, from the system metrics.</summary>
     public static Rectangle GetVirtualScreen()
@@ -70,7 +70,7 @@ public unsafe class ScreenInfo
     /// <summary>Every outer edge the point is on (two in a corner).</summary>
     public List<EdgeInfo> GetEdgesAt(int x, int y, int threshold = 0) => Layout.GetEdgesAt(x, y, threshold);
 
-    private readonly record struct Monitor(Rectangle Bounds, Rectangle WorkingArea, bool Primary);
+    private readonly record struct Monitor(Rectangle Bounds, Rectangle WorkingArea, bool Primary, string Id = "", int Scale = 100);
 
     [ThreadStatic]
     private static List<Monitor>? t_enumerating;
@@ -93,15 +93,34 @@ public unsafe class ScreenInfo
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
     private static int MonitorCallback(nint hMonitor, nint hdc, NativeMethods.RECT* rect, nint data)
     {
-        var info = new NativeMethods.MONITORINFO { cbSize = (uint)sizeof(NativeMethods.MONITORINFO) };
-        if (NativeMethods.GetMonitorInfoW(hMonitor, &info))
+        var ex = new NativeMethods.MONITORINFOEXW();
+        ex.Info.cbSize = (uint)sizeof(NativeMethods.MONITORINFOEXW);
+        if (NativeMethods.GetMonitorInfoExW(hMonitor, &ex))
         {
+            var info = ex.Info;
             t_enumerating?.Add(new Monitor(
                 ToRectangle(info.rcMonitor),
                 ToRectangle(info.rcWork),
-                (info.dwFlags & NativeMethods.MONITORINFOF_PRIMARY) != 0));
+                (info.dwFlags & NativeMethods.MONITORINFOF_PRIMARY) != 0,
+                new string(ex.szDevice),
+                ReadScale(hMonitor)));
         }
         return 1; // continue
+    }
+
+    /// <summary>The monitor's scaling in percent; 100 where shcore is missing or the call fails.</summary>
+    private static int ReadScale(nint hMonitor)
+    {
+        try
+        {
+            uint dpiX, dpiY;
+            if (NativeMethods.GetDpiForMonitor(hMonitor, NativeMethods.MDT_EFFECTIVE_DPI, &dpiX, &dpiY) == 0 && dpiX > 0)
+                return (int)Math.Round(dpiX * 100.0 / 96);
+        }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
+        {
+        }
+        return 100;
     }
 
     private static Rectangle ToRectangle(NativeMethods.RECT r) => Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);

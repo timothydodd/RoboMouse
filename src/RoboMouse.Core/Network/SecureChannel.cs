@@ -62,8 +62,12 @@ public sealed class ChannelCredentials
 /// </summary>
 public sealed class SecureChannel : Stream
 {
-    /// <summary>Handshake format version: 1 up to protocol 4, 2 since protocol 5.</summary>
-    internal const byte HandshakeVersion = 2;
+    /// <summary>
+    /// Handshake format version: 1 up to protocol 4, 2 for protocol 5, 3 since protocol 6. The format
+    /// itself did not change in 3; the number did so a protocol 5 build reports a version mismatch
+    /// instead of failing the transcript signature (which names the protocol version).
+    /// </summary>
+    internal const byte HandshakeVersion = 3;
 
     private const int NonceBytes = 32;
     private const int TagBytes = 16;

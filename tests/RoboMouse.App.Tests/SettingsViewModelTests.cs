@@ -130,7 +130,7 @@ public class SettingsViewModelTests
         vm.General.SyncImages = false;
         vm.General.SyncText = true;
         vm.General.ShareFiles = false;
-        vm.General.ClipboardMaxMegabytes = 25;
+        vm.Advanced.ClipboardMaxMegabytes = 25;
 
         await vm.SaveCommand.ExecuteAsync(null);
 
@@ -146,13 +146,13 @@ public class SettingsViewModelTests
         var settings = Samples.Settings();
         var (vm, dialogs, closed) = Create(settings);
         vm.SelectedPage = vm.Pages[2];
-        vm.General.ClipboardMaxMegabytes = null;
+        vm.Advanced.ClipboardMaxMegabytes = null;
 
         await vm.SaveCommand.ExecuteAsync(null);
 
         Assert.False(closed[0]);
-        Assert.Same(vm.General, vm.SelectedPage!.Page);
-        Assert.Contains(dialogs.Messages, m => m.Contains("General page"));
+        Assert.Same(vm.Advanced, vm.SelectedPage!.Page);
+        Assert.Contains(dialogs.Messages, m => m.Contains("Advanced page"));
     }
 
     [Fact]
@@ -167,7 +167,10 @@ public class SettingsViewModelTests
         vm.Peers.Pending.Single().AllowCommand.Execute(null);
 
         Assert.Same(vm.Layout, vm.SelectedPage!.Page);
-        Assert.Contains(vm.Layout.Placements, p => p.Peer.Id == "studio" && p.Position == Core.Configuration.ScreenPosition.Top);
+        // Not connected yet, so drawn where it was added (the first free side) until its screens are placed.
+        var studio = vm.Layout.Items.Single(i => i.Peer?.Id == "studio");
+        Assert.True(studio.IsPlaceholder);
+        Assert.Equal(-1080, studio.Y); // above this PC: left and right were taken
     }
 
     private static int CountOf(string text, string part)

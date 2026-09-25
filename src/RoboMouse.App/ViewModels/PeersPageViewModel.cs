@@ -302,14 +302,22 @@ public sealed partial class PeerItemViewModel : ObservableObject
     {
         Peer = peer;
         _owner = owner;
-        _positionText = PeerPositions.Describe(peer.Position);
+        _positionText = DescribePlacement(peer);
         _isEnabled = peer.Enabled;
     }
+
+    /// <summary>"2 screens" once its monitors are placed, or the side it starts on until then.</summary>
+    internal static string DescribePlacement(PeerConfig peer) => peer.Monitors.Count switch
+    {
+        0 => PeerPositions.Describe(peer.Position),
+        1 => "1 screen",
+        var n => $"{n} screens"
+    };
 
     public void Refresh(ConnectedPeerInfo? connection, PeerConnectFailure? failure = null)
     {
         (StatusText, StatusTone, StatusDetail) = Describe(Peer, connection, failure);
-        PositionText = PeerPositions.Describe(Peer.Position);
+        PositionText = DescribePlacement(Peer);
         CanPairAgain = Peer.Enabled && connection == null && failure?.Kind == PeerFailureKind.IdentityMismatch;
         IdentityText = DescribeIdentity(Peer);
 

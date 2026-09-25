@@ -2,27 +2,39 @@
 
 ## Moving between screens
 
-1. The mouse hook sees the cursor reach a screen edge that has a peer configured.
+1. The mouse hook sees the cursor reach an outer edge of one of this PC's monitors, and looks up
+   what the **layout** has beyond that stretch of edge. The layout is this PC's own monitors where
+   Windows has them plus every peer monitor wherever it was placed (Settings > Layout), all in one
+   coordinate space; a peer monitor's size there is its resolution scaled by the two display
+   scalings, so screens of the same physical size line up. Only the part of an edge that another
+   screen actually touches leads anywhere, so two PCs side by side on one edge each get their own
+   stretch of it.
 2. The **crossing guards** decide whether it may cross now: not while a mouse button is held (on by
    default, so a window drag is never cut off), not within the corner dead zone at the ends of the
-   edge (20 px by default), and, if you turned them on, only on a second push, after pushing for a
-   moment, while a chosen key is held, or when no full-screen program is in front. Nothing crosses
+   edge (20 px by default), and, if you turned them on, only after pushing a set distance past the
+   edge (measured from raw mouse motion, since Windows pins the cursor at the edge; the same distance
+   applies on the way back), on a second push, after pushing for a moment, while a chosen key is held, or when no full-screen program is in front. Nothing crosses
    while the cursor is locked to its screen (Scroll Lock by default).
 3. The controlling machine hides its cursor, starts reading raw hardware motion (Raw Input) and
-   tells the peer the cursor is entering. Modifier keys held at that moment (Ctrl for a copy-drag,
+   tells the peer which of its monitors the cursor enters, and where. Modifier keys held at that moment (Ctrl for a copy-drag,
    say) go with it: they are released locally and pressed on the peer.
 4. While controlling, local mouse and keyboard events are swallowed and forwarded instead.
-5. The controlled machine places its cursor on the entry edge and injects each motion delta as
+5. The controlled machine places its cursor there and injects each motion delta as
    relative movement, so its own pointer speed and acceleration apply, exactly as for a directly
    attached mouse. Keys are injected by scan code, so the controlled machine's own keyboard layout
    decides what they type; text from an on-screen keyboard or password manager arrives as the
    characters themselves.
-6. When the cursor is pushed back through the edge it came in on, the controlled machine hands
-   control back and releases any held keys or buttons. If the connection drops instead, the cursor
-   comes back at the edge it left through.
+6. Only the controlled machine knows where its cursor really is, so it decides what happens at its
+   edges, from the controller's layout (sent to it whenever it changes). Pushed against an edge with
+   another of its own monitors beyond it on the layout, the cursor moves there, even if Windows
+   arranges its monitors differently; a move Windows makes that the layout does not allow is undone.
+   Pushed far enough into someone else's screen, it hands control back with that point on the
+   controller's layout: one of the controller's monitors (control resumes there) or another peer's
+   (control moves straight on to that peer). Held keys and buttons are released. If the connection
+   drops instead, the cursor comes back where it left.
 
-With **wrap-around** on, an edge with no peer leads to the peer on the opposite edge, so two
-screens form a ring. A peer's **jump hotkey** (Ctrl+Alt+F1 to F4 for the first four peers) puts the
+With **wrap-around** on, an edge with nothing beyond it leads to the farthest screen the other way
+on the same row or column, entered from its far side, so screens in a row form a loop. A peer's **jump hotkey** (Ctrl+Alt+F1 to F4 for the first four peers) puts the
 cursor straight onto the middle of its screen, from here or from another peer.
 
 The toggle hotkey (default Ctrl+Alt+M) is checked before anything else: while controlling it brings
@@ -60,8 +72,8 @@ file as you would a password. **Generate new** under Settings > Network replaces
 ## Network protocol
 
 A custom binary protocol over TCP (default port 24800), with a 16-byte header (magic, version,
-type, length, timestamp). This is protocol **version 5** (1.2.0); both peers must run the same
-version. 1.1.x (protocol 4) and 1.2 refuse each other with a version message rather than a broken
+type, length, timestamp). This is protocol **version 6** (1.3.0); both peers must run the same
+version. Different versions refuse each other with a version message rather than a broken
 connection.
 
 - **Handshake / HandshakeAck**: machine info, screen dimensions, connection kind, listen port; the
@@ -70,7 +82,12 @@ connection.
 - **Mouse / Keyboard**: relative motion in raw hardware counts, buttons, wheel, keys with scan codes
 - **Clipboard / ClipboardChunk**: text and images; content over 256 KB goes in 256 KB chunks
 - **FileOffer / FileOfferRevoked / FileRequest / FileChunk**: file copy and paste
-- **CursorEnter / CursorLeave**: handing control over and back
+- **ScreenInfo**: each machine's monitors (id, rectangle, scaling, main display), on connect and
+  whenever they change
+- **VirtualLayout**: the controller's layout as the receiver needs it: the receiver's own monitors by
+  id, every other screen unnamed
+- **CursorEnter / CursorLeave**: handing control over (a monitor and a point on it) and back (a
+  point on the controller's layout, or "released")
 - **CursorLock**: the controller locked the cursor to the controlled screen
 - **InputStatus**: the controlled side reporting a UAC prompt or elevated window
 - **PowerState / SessionState / LockRequest**: display and sleep state, lock and screen saver
@@ -93,8 +110,8 @@ dropped, so the list cannot show a forged copy of a machine you have paired with
 ## Clipboard
 
 Text and images are sent to every peer you share the clipboard with (General page switches for
-text, images and files, a size limit, and a per-peer switch when you edit a peer). A peer with
-sharing off is sent nothing and nothing it sends is used.
+text, images and files, a size limit on the Advanced page, and a per-peer switch when you edit a
+peer). A peer with sharing off is sent nothing and nothing it sends is used.
 
 Every change carries a stamp: the machine it was copied on and a number that only grows. A machine
 applies and passes on a change only when it is newer than what its clipboard holds, so in a chain

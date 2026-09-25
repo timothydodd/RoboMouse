@@ -125,10 +125,10 @@ public class PeerSetupViewModelTests
     }
 
     [Fact]
-    public async Task NewPeerOnTakenEdge_SwapMovesTheOtherToAFreeEdge()
+    public async Task NewPeerOnASideAnotherUses_IsAdded_WithoutMovingTheOther()
     {
         var settings = Samples.Settings();
-        var dialogs = new FakeDialogs { Answer = Services.DialogResult.Yes };
+        var dialogs = new FakeDialogs();
         var vm = NewPeer(settings, dialogs);
         vm.Name = "Studio";
         vm.Address = "192.168.1.42";
@@ -136,8 +136,20 @@ public class PeerSetupViewModelTests
 
         await vm.ConfirmCommand.ExecuteAsync(null);
 
+        // Several PCs can share a side now; their screens are placed beside each other there.
         Assert.NotNull(vm.Result);
         Assert.Equal(ScreenPosition.Left, vm.Result.Position);
-        Assert.Equal(ScreenPosition.Top, settings.Peers[0].Position);
+        Assert.Equal(ScreenPosition.Left, settings.Peers[0].Position);
+        Assert.Empty(dialogs.Messages);
+    }
+
+    [Fact]
+    public void PeerWithPlacedScreens_DoesNotOfferASide()
+    {
+        var settings = Samples.Settings();
+        Assert.True(new PeerSetupViewModel(settings.Peers[0], settings, null, new FakeDialogs()).ShowPosition);
+
+        settings.Peers[0].Monitors = new() { new MonitorPlacement { Id = "1", X = -1920, Width = 1920, Height = 1080 } };
+        Assert.False(new PeerSetupViewModel(settings.Peers[0], settings, null, new FakeDialogs()).ShowPosition);
     }
 }

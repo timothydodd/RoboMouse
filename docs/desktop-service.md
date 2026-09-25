@@ -34,7 +34,7 @@ the same service).
 The installer registers the service **stopped and manual-start**, so installing it changes nothing
 by itself.
 
-1. Open **Settings > General**. The card **Control UAC prompts and the lock screen** appears only
+1. Open **Settings > Advanced**. The card **Control UAC prompts and the lock screen** appears only
    when the service is installed.
 2. Turn it on and approve the single UAC prompt. That sets the service to start automatically and
    starts it. Turning it off reverses both.
@@ -123,7 +123,7 @@ The service and helper run as SYSTEM and inject input, so the rules are explicit
 
 - The service logs to `%ProgramData%\RoboMouse\service.log`; it should show the app connecting and
   a helper process id. The app log shows "Desktop service ready".
-- The card is missing from Settings > General: the service is not installed on that machine.
+- The card is missing from Settings > Advanced: the service is not installed on that machine.
 - The service log rolls to `service.log.1` at 1 MB. If the folder is not safe to write, lines go to
   the Application event log under `RoboMouseService`.
 - For development, `packaging\Install-DevService.ps1` (elevated PowerShell) registers a locally

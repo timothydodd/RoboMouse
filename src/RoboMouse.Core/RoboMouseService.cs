@@ -18,11 +18,12 @@ namespace RoboMouse.Core;
 /// hardware motion and forwards it as relative deltas. The controlled machine injects those
 /// deltas through its own input pipeline, so its own pointer settings apply and its cursor
 /// position is always the real one. The controlled machine therefore owns edge detection:
-/// when its cursor is pushed through the edge it entered from, it hands control back.
+/// the controller sends it its layout, and when its cursor is pushed into someone else's screen
+/// there it hands control back, naming the point it went to (RoboMouseService.Layout.cs).
 /// </summary>
-public sealed class RoboMouseService : IDisposable
+public sealed partial class RoboMouseService : IDisposable
 {
-    /// <summary>Raw counts of motion into the entry edge required before control returns.</summary>
+    /// <summary>Raw counts of motion into an edge leading to another screen required before control returns.</summary>
     private const int ReturnOvershootCounts = 12;
 
     /// <summary>After control returns, ignore edge hits for this long so the placed cursor does not re-enter.</summary>
@@ -30,7 +31,6 @@ public sealed class RoboMouseService : IDisposable
 
     private readonly AppSettings _settings;
     private readonly ScreenInfo _screenInfo;
-    private readonly CursorManager _cursorManager;
     private readonly MouseHook _mouseHook;
     private readonly KeyboardHook _keyboardHook;
     private readonly RawMouseInput _rawMouse;
@@ -69,9 +69,11 @@ public sealed class RoboMouseService : IDisposable
     private volatile bool _isControllingRemote;
     private long _returnCooldownUntil;
 
-    // Where the cursor left this screen, so it can be put back there if the peer drops mid-session.
-    private ScreenPosition _exitEdge;
-    private float _exitPosition;
+    // Where the cursor left this screen, so it can be put back there if the peer drops mid-session,
+    // and the edge it crossed (for the arrival cue and the debug panel).
+    private int _exitX;
+    private int _exitY;
+    private ScreenPosition _crossedEdge = ScreenPosition.Right;
 
     // Whether the system cursors are currently swapped for blank ones (only touched on the UI queue).
     private bool _cursorHidden;
@@ -84,6 +86,12 @@ public sealed class RoboMouseService : IDisposable
     private const int HookMovesBeforeFallback = 3;
     private int _parkedX;
     private int _parkedY;
+
+    // Where the cursor was put on return, and until when moves measured from the parked point are dropped.
+    private const int StaleMoveWindowMs = 200;
+    private int _placedX;
+    private int _placedY;
+    private long _placedUntil;
     private long _lastRawMotionTick;
     private int _hookMovesWithoutRaw;
     private bool _hookMotionFallback;
@@ -96,6 +104,29 @@ public sealed class RoboMouseService : IDisposable
     // Crossing guards (CrossingSettings). The guard is only touched on the hook's thread; the full-screen
     // check is too slow for the hook, so it polls on a timer while that guard is on.
     private readonly CrossingGuard _crossingGuard = new();
+
+    // Push past the edge: a crossing the guards allowed, waiting for the mouse to push far enough.
+    // Hook thread only (raw input arrives on the same thread).
+    private readonly EdgePush _edgePush = new();
+    private PendingCrossing? _pendingCrossing;
+
+    private sealed class PendingCrossing
+    {
+        public PeerConfig Peer = null!;
+        public string MonitorId = string.Empty;
+        public float Fx, Fy;
+        public int ExitX, ExitY;
+        public ScreenPosition Edge;
+
+        public void Set(PeerConfig peer, string monitorId, float fx, float fy, int exitX, int exitY, ScreenPosition edge) =>
+            (Peer, MonitorId, Fx, Fy, ExitX, ExitY, Edge) = (peer, monitorId, fx, fy, exitX, exitY, edge);
+    }
+
+    // Reused for every pending crossing, so following the cursor along the edge allocates nothing.
+    private readonly PendingCrossing _pendingSlot = new();
+
+    // On the controlled side: the push the controller asked for before handing back.
+    private int _handBackPush = ReturnOvershootCounts;
     private readonly FullScreenDetector _fullScreen = new();
 
     // Global hotkeys, parsed from the settings; swapped whole when they change. Capturing a new chord in
@@ -119,7 +150,8 @@ public sealed class RoboMouseService : IDisposable
 
     // Controlled state (a remote machine drives this screen)
     private readonly ControlledSession _controlled;
-    private int _edgeOvershoot;
+    private readonly ControlledCrossing _crossing = new();
+    private readonly LagMonitor _lagMonitor = new();
     private InputBlockReason _localBlockReason;
     private System.Threading.Timer? _desktopPollTimer;
     private volatile InputBlockReason _remoteBlockReason;
@@ -261,6 +293,12 @@ public sealed class RoboMouseService : IDisposable
     public ScreenPosition EntryEdge => _controlled.EntryEdge;
 
     /// <summary>
+    /// The edge of this PC's screen the cursor last crossed: where it left while controlling a remote,
+    /// where it came back in once it returned.
+    /// </summary>
+    public ScreenPosition CrossedEdge => _crossedEdge;
+
+    /// <summary>
     /// While controlling a remote: why that machine cannot apply our input right now (a UAC prompt, an
     /// elevated window), or <see cref="InputBlockReason.None"/>. Changes raise <see cref="ControlStateChanged"/>.
     /// </summary>
@@ -332,7 +370,6 @@ public sealed class RoboMouseService : IDisposable
         _injector = injector ?? (_serviceInjector = new DesktopServiceInjector());
         _controlled = new ControlledSession(_injector);
         _screenInfo = new ScreenInfo();
-        _cursorManager = new CursorManager(_screenInfo);
         _uiQueue = new MessageWindow();
         _connectedPairingCode = settings.PairingCode;
 
@@ -443,6 +480,7 @@ public sealed class RoboMouseService : IDisposable
         _enabled = _settings.Enabled;
         ApplyCrossingSettings();
         _screensaverTimer = new System.Threading.Timer(_ => PollScreensaver(), null, ScreensaverPollMs, ScreensaverPollMs);
+        StartDisplayWatch();
 
         _reconnectTimer = new System.Threading.Timer(_ => _ = ReconnectConfiguredPeersAsync(), null, ReconnectIntervalMs, ReconnectIntervalMs);
         _offerSweepTimer = new System.Threading.Timer(_ => SweepRetiredOffers(), null, OfferSweepInterval, OfferSweepInterval);
@@ -578,6 +616,7 @@ public sealed class RoboMouseService : IDisposable
         _offerSweepTimer = null;
         _screensaverTimer?.Dispose();
         _screensaverTimer = null;
+        StopDisplayWatch();
         _fullScreen.Enabled = false;
 
         _enabled = false;
@@ -747,7 +786,7 @@ public sealed class RoboMouseService : IDisposable
         {
             SaveSettings("peer list");
             ApplyHotkeySetting(); // jump hotkeys follow the peer list
-            PeersChanged?.Invoke(this, EventArgs.Empty);
+            RaisePeersChanged();
         }
     }
 
@@ -952,7 +991,7 @@ public sealed class RoboMouseService : IDisposable
         }
         SetConnectFailure(peerId, null);
         ApplyHotkeySetting(); // jump hotkeys follow the peer list
-        PeersChanged?.Invoke(this, EventArgs.Empty);
+        RaisePeersChanged();
         return true;
     }
 
@@ -975,7 +1014,7 @@ public sealed class RoboMouseService : IDisposable
         SetConnectFailure(peer.Id, null);
         SaveSettings("removed peer");
         ApplyHotkeySetting(); // jump hotkeys follow the peer list
-        PeersChanged?.Invoke(this, EventArgs.Empty);
+        RaisePeersChanged();
     }
 
     /// <summary>Takes a machine off <see cref="AppSettings.BlockedMachineIds"/> (it may then ask to connect again). Saves.</summary>
@@ -1006,8 +1045,8 @@ public sealed class RoboMouseService : IDisposable
             // posted into a disposed connection and the cursor would stay parked here.
             if (result.ReplacedWasActive)
             {
+                PutCursorBackAtExit();
                 EndRemoteControl(notifyPeer: false);
-                PutCursorBackAtExitEdge();
             }
             EndBeingControlled(notifyPeer: false, onlyIf: replaced);
         }
@@ -1019,6 +1058,7 @@ public sealed class RoboMouseService : IDisposable
         connection.Start();
         connection.Post(new PowerStateMessage { State = _powerMonitor.State });
         connection.Post(CurrentSessionState());
+        connection.Post(ScreenInfoMessage.From(CurrentLocalLayout()));
 
         if (replaced == null)
             PeerConnected?.Invoke(this, connection);
@@ -1038,13 +1078,14 @@ public sealed class RoboMouseService : IDisposable
         if (wasActive)
         {
             SimpleLogger.Log("Control", $"Lost {connection.PeerName} while controlling it");
+            PutCursorBackAtExit();
             EndRemoteControl(notifyPeer: false);
-            PutCursorBackAtExitEdge();
         }
 
         EndBeingControlled(notifyPeer: false, onlyIf: connection);
 
         ForgetRemoteOffer(connection.PeerId);
+        ForgetPeerScreens(connection);
 
         // A host that vanished (it slept before it could say so, or the network dropped) is no reason to
         // blank this display; just stop holding it on. The host is remembered for when it reconnects.
@@ -1253,7 +1294,7 @@ public sealed class RoboMouseService : IDisposable
 
         PendingPeersChanged?.Invoke(this, EventArgs.Empty);
         ApplyHotkeySetting(); // jump hotkeys follow the peer list
-        PeersChanged?.Invoke(this, EventArgs.Empty);
+        RaisePeersChanged();
 
         // Connect now rather than waiting for either side's retry.
         var toConnect = config;
@@ -1315,6 +1356,7 @@ public sealed class RoboMouseService : IDisposable
         peer.Enabled = enabled;
         SaveSettings("peer on/off");
         ApplyHotkeySetting();
+        RebuildLayout();
 
         if (!enabled)
         {
@@ -1526,10 +1568,12 @@ public sealed class RoboMouseService : IDisposable
     }
 
     /// <summary>
-    /// Called from the mouse hook while the cursor leans on an edge whose peer is not connected. Never
-    /// does I/O here: the packet is sent from the thread pool.
+    /// Called from the mouse hook while the cursor leans on an edge that leads to no connected peer:
+    /// the layout has <paramref name="peerId"/>'s screen there, or (null) nothing, in which case a peer
+    /// whose monitors were never placed but that was added on one of these sides counts. Never does
+    /// I/O here: the packet is sent from the thread pool.
     /// </summary>
-    private void ConsiderWakingPeerAt(ScreenPosition edge)
+    private void ConsiderWakingPeer(string? peerId, List<EdgeInfo> edges)
     {
         if (!_settings.WakeOnEdge)
             return;
@@ -1541,7 +1585,9 @@ public sealed class RoboMouseService : IDisposable
         if (++_wakeEdgeHits < WakeEdgeHits || now < _nextWakeAllowed)
             return;
 
-        var peer = _settings.Peers.FirstOrDefault(p => p.Position == edge && p.Enabled);
+        var peer = peerId != null
+            ? _settings.Peers.FirstOrDefault(p => p.Id == peerId && p.Enabled)
+            : _settings.Peers.FirstOrDefault(p => p.Enabled && p.Monitors.Count == 0 && edges.Any(e => e.Edge == p.Position) && !_registry.Contains(p.Id));
         if (peer == null || !CanWake(peer))
             return;
 
@@ -1552,13 +1598,17 @@ public sealed class RoboMouseService : IDisposable
 
     #endregion
 
-    private PeerConfig? GetPeerAtEdge(ScreenPosition edge)
+    /// <summary>The configured, enabled peer with this id, if it is connected.</summary>
+    private PeerConfig? GetConnectedPeer(string peerId)
     {
-        var peer = _settings.Peers.FirstOrDefault(p => p.Position == edge && p.Enabled);
-        if (peer == null)
-            return null;
-
-        return _registry.Contains(peer.Id) ? peer : null;
+        var peers = _settings.Peers;
+        for (var i = 0; i < peers.Count; i++)
+        {
+            var peer = peers[i];
+            if (peer.Id == peerId && peer.Enabled)
+                return _registry.Contains(peer.Id) ? peer : null;
+        }
+        return null;
     }
 
     #endregion
@@ -1577,7 +1627,10 @@ public sealed class RoboMouseService : IDisposable
     private void OnRawMouseMotion(int dx, int dy)
     {
         if (!_isControllingRemote)
+        {
+            PushTowardsPendingCrossing(dx, dy);
             return;
+        }
 
         _lastRawMotionTick = Environment.TickCount64;
         _hookMovesWithoutRaw = 0;
@@ -1600,7 +1653,7 @@ public sealed class RoboMouseService : IDisposable
             {
                 IsControlling = true,
                 PeerName = _activePeer?.Name,
-                PeerPosition = _activePeer?.Position.ToString(),
+                PeerPosition = _crossedEdge.ToString(),
                 DeltaX = dx,
                 DeltaY = dy,
                 RoundTripMs = connection.RoundTripMs
@@ -1645,6 +1698,12 @@ public sealed class RoboMouseService : IDisposable
         if (e.EventType != MouseEventType.Move)
             return;
 
+        if (IsStaleParkedMove(e.X, e.Y))
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (Environment.TickCount64 < Interlocked.Read(ref _returnCooldownUntil))
             return;
 
@@ -1652,34 +1711,40 @@ public sealed class RoboMouseService : IDisposable
         if (edges.Count == 0)
         {
             _crossingGuard.LeftEdge();
+            CancelPendingCrossing();
             return;
         }
 
         // Locked to this screen (the lock hotkey): edges are just edges.
         if (_cursorLocked)
+        {
+            CancelPendingCrossing();
             return;
+        }
 
-        // In a corner the cursor is on two edges; take the one that leads to a peer.
+        // What the layout has beyond this stretch of edge. In a corner the cursor is on two edges; take
+        // the one that leads to a peer. With wrap-around, an edge with nothing beyond leads round.
+        var desktop = _desktop;
         EdgeInfo? edge = null;
         PeerConfig? targetPeer = null;
-        foreach (var candidate in edges)
+        LayoutTarget target = default;
+        string? sleepingPeerId = null;
+        if (desktop.Find(VirtualDesktop.Local, _screenInfo.Layout.GetMonitorAt(e.X, e.Y).Id) is { } source)
         {
-            targetPeer = GetPeerAtEdge(candidate.Edge);
-            if (targetPeer != null)
+            for (var pass = 0; pass < (_settings.WrapAround ? 2 : 1) && targetPeer == null; pass++)
             {
-                edge = candidate;
-                break;
-            }
-        }
-        if (targetPeer == null && _settings.WrapAround)
-        {
-            // No peer on this edge: wrap to the peer on the opposite edge, arriving from its far side.
-            foreach (var candidate in edges)
-            {
-                targetPeer = GetPeerAtEdge(CursorManager.GetOppositeEdge(candidate.Edge));
-                if (targetPeer != null)
+                foreach (var candidate in edges)
                 {
-                    edge = candidate;
+                    var along = candidate.Edge is ScreenPosition.Left or ScreenPosition.Right ? e.Y : e.X;
+                    if (desktop.Resolve(source, candidate.Edge, along, wrap: pass == 1) is not { Screen.IsLocal: false } hit)
+                        continue;
+                    var peer = GetConnectedPeer(hit.Screen.Owner);
+                    if (peer == null)
+                    {
+                        sleepingPeerId ??= hit.Screen.Owner;
+                        continue;
+                    }
+                    (edge, targetPeer, target) = (candidate, peer, hit);
                     break;
                 }
             }
@@ -1687,8 +1752,8 @@ public sealed class RoboMouseService : IDisposable
         if (targetPeer == null || edge == null)
         {
             _crossingGuard.LeftEdge();
-            foreach (var candidate in edges)
-                ConsiderWakingPeerAt(candidate.Edge);
+            CancelPendingCrossing();
+            ConsiderWakingPeer(sleepingPeerId, edges);
             return;
         }
 
@@ -1703,11 +1768,78 @@ public sealed class RoboMouseService : IDisposable
             buttonHeld,
             crossing.RequiredModifier == CrossingModifier.None ? CrossingModifiers.None : HeldCrossingModifiers(),
             _fullScreen.IsFullScreen);
+        var (fx, fy) = VirtualDesktop.Normalize(target.Screen.Rect, target.X, target.Y);
+
+        // Already allowed and waiting for the push: follow the cursor along the edge. Into a corner dead
+        // zone, a button pressed, or round onto another edge, and it has to be allowed again.
+        if (_pendingCrossing is { } pending)
+        {
+            if (pending.Edge == edge.Edge && !attempt.NearCorner && !(crossing.BlockWhileButtonHeld && buttonHeld))
+            {
+                pending.Set(targetPeer, target.Screen.MonitorId, fx, fy, e.X, e.Y, edge.Edge);
+                return;
+            }
+            CancelPendingCrossing();
+            if (pending.Edge == edge.Edge)
+                return;
+        }
+
         if (_crossingGuard.Evaluate(crossing, attempt, Environment.TickCount64) != CrossingDecision.Allow)
             return;
 
-        if (StartRemoteControl(targetPeer, edge))
+        if (crossing.PushDistance > 0)
+        {
+            // Allowed, but the mouse has to push on past the edge first (measured from raw input).
+            _pendingSlot.Set(targetPeer, target.Screen.MonitorId, fx, fy, e.X, e.Y, edge.Edge);
+            _pendingCrossing = _pendingSlot;
+            _edgePush.Arm(edge.Edge);
+            _uiQueue.BeginInvoke(() =>
+            {
+                if (_pendingCrossing != null && !_isControllingRemote)
+                    _rawMouse.Start();
+            });
+            return;
+        }
+
+        if (StartRemoteControl(targetPeer, target.Screen.MonitorId, fx, fy, e.X, e.Y, edge.Edge))
             e.Handled = true;
+    }
+
+    /// <summary>Raw motion while a crossing waits for the push: crosses once it is far enough.</summary>
+    private void PushTowardsPendingCrossing(int dx, int dy)
+    {
+        if (_pendingCrossing is not { } pending)
+            return;
+        if (!_enabled || _cursorLocked || _controlled.IsActive)
+        {
+            CancelPendingCrossing();
+            return;
+        }
+        if (!_edgePush.Add(dx, dy, _settings.Crossing.PushDistance))
+            return;
+
+        _pendingCrossing = null;
+        if (!StartRemoteControl(pending.Peer, pending.MonitorId, pending.Fx, pending.Fy, pending.ExitX, pending.ExitY, pending.Edge))
+            CancelPendingCrossing();
+        else
+        {
+            var (edge, distance) = (pending.Edge, _settings.Crossing.PushDistance);
+            _uiQueue.BeginInvoke(() => SimpleLogger.Log("Control", $"Pushed {distance} past the {edge} edge"));
+        }
+    }
+
+    /// <summary>The cursor left the edge (or may not cross any more): forget the push, and stop raw input unless controlling.</summary>
+    private void CancelPendingCrossing()
+    {
+        if (!_edgePush.IsArmed && _pendingCrossing == null)
+            return;
+        _edgePush.Cancel();
+        _pendingCrossing = null;
+        _uiQueue.BeginInvoke(() =>
+        {
+            if (_pendingCrossing == null && !_isControllingRemote)
+                _rawMouse.Stop();
+        });
     }
 
     /// <summary>
@@ -2024,9 +2156,12 @@ public sealed class RoboMouseService : IDisposable
         if (_isControllingRemote)
             EndRemoteControl(notifyPeer: true);
 
-        var (x, y) = _cursorManager.GetEdgePoint(peer.Position, 0.5f);
+        // The middle of its main display. The cursor goes back where it is now if the peer drops.
+        var monitors = GetPeerMonitors(peerId);
+        var main = monitors?.FirstOrDefault(m => m.Primary).Id ?? string.Empty;
+        var (x, y) = InputSimulator.GetCursorPosition();
         _crossingGuard.Reset();
-        StartRemoteControl(peer, new EdgeInfo(peer.Position, x, y, 0.5f));
+        StartRemoteControl(peer, main, 0.5f, 0.5f, x, y, peer.Position);
     }
 
     /// <summary>
@@ -2047,8 +2182,8 @@ public sealed class RoboMouseService : IDisposable
     {
         if (_isControllingRemote)
         {
+            PutCursorBackAtExit();
             EndRemoteControl(notifyPeer: true);
-            PutCursorBackAtExitEdge();
         }
         if (!NativeMethods.LockWorkStation())
             SimpleLogger.Log("Session", "LockWorkStation failed");
@@ -2126,7 +2261,14 @@ public sealed class RoboMouseService : IDisposable
     /// and the enter message happen here; logging, raw input, hiding and parking the cursor are posted
     /// to run right after the hook returns. Returns false when the peer's connection just went away.
     /// </summary>
-    private bool StartRemoteControl(PeerConfig peer, EdgeInfo edge)
+    /// <param name="peer">The peer to control.</param>
+    /// <param name="monitorId">Its monitor the cursor enters (empty: its main display).</param>
+    /// <param name="fx">Where on that monitor, as a fraction of its width.</param>
+    /// <param name="fy">Where on that monitor, as a fraction of its height.</param>
+    /// <param name="exitX">Where the cursor left this screen, to put it back if the peer drops.</param>
+    /// <param name="exitY">Where the cursor left this screen.</param>
+    /// <param name="crossed">The edge of this screen it crossed.</param>
+    private bool StartRemoteControl(PeerConfig peer, string monitorId, float fx, float fy, int exitX, int exitY, ScreenPosition crossed)
     {
         // Becomes the active connection only if it is still registered and connected, under the same
         // lock that removing or replacing it takes, so a connection dropping at this moment is never
@@ -2136,8 +2278,9 @@ public sealed class RoboMouseService : IDisposable
             return false;
 
         _activePeer = peer;
-        _exitEdge = edge.Edge;
-        _exitPosition = edge.NormalizedPosition;
+        _exitX = exitX;
+        _exitY = exitY;
+        _crossedEdge = crossed;
         _isControllingRemote = true;
         _remoteBlockReason = InputBlockReason.None;
         _forwarded.Clear();
@@ -2149,15 +2292,13 @@ public sealed class RoboMouseService : IDisposable
         _hookMovesWithoutRaw = 0;
         _hookMotionFallback = false;
 
-        // The cursor appears on the peer's edge opposite the one it left here (its left edge when we
-        // left through our right). With wrap-around that is not necessarily the edge facing this screen.
-        var entryEdge = CursorManager.GetOppositeEdge(edge.Edge);
         connection.Post(new CursorEnterMessage
         {
-            EntryEdge = entryEdge,
-            EntryX = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? 0f : edge.NormalizedPosition,
-            EntryY = entryEdge is ScreenPosition.Left or ScreenPosition.Right ? edge.NormalizedPosition : 0f,
-            WrapAround = _settings.WrapAround
+            MonitorId = monitorId,
+            EntryX = fx,
+            EntryY = fy,
+            WrapAround = _settings.WrapAround,
+            HandBackPush = (ushort)Math.Clamp(_settings.Crossing.PushDistance, 0, ushort.MaxValue)
         });
         if (_cursorLocked)
             connection.Post(new CursorLockMessage { Locked = true });
@@ -2180,7 +2321,7 @@ public sealed class RoboMouseService : IDisposable
         var parkedY = _parkedY;
         _uiQueue.BeginInvoke(() =>
         {
-            SimpleLogger.Log("Control", $"Entering {peer.Name} via {edge.Edge} edge at {edge.NormalizedPosition:F3}");
+            SimpleLogger.Log("Control", $"Entering {peer.Name} monitor {monitorId} at ({fx:F3}, {fy:F3}), crossing the {crossed} edge");
             if (!_isControllingRemote || !ReferenceEquals(_registry.Active, connection))
                 return; // Already over: the end was queued behind this and cleans up.
 
@@ -2204,7 +2345,9 @@ public sealed class RoboMouseService : IDisposable
                 return;
             }
 
-            InputSimulator.HideSystemCursor();
+            // Still hidden when control moved straight from one peer to another.
+            if (!_cursorHidden)
+                InputSimulator.HideSystemCursor();
             _cursorHidden = true;
 
             // Park the (now hidden and frozen) cursor away from the edge so nothing local reacts to it.
@@ -2247,21 +2390,15 @@ public sealed class RoboMouseService : IDisposable
         });
 
         if (notifyPeer && connection != null && peer != null)
-        {
-            connection.Post(new CursorLeaveMessage
-            {
-                ExitEdge = CursorManager.GetOppositeEdge(peer.Position),
-                ExitX = 0.5f,
-                ExitY = 0.5f
-            });
-        }
+            connection.Post(new CursorLeaveMessage());
 
         ControlStateChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
-    /// The controlled machine pushed the cursor back through its entry edge: place our cursor on the
-    /// matching local edge and resume local control.
+    /// The controlled machine handed the cursor back: to a point on this PC's layout, which is one of
+    /// this PC's monitors (resume local control there) or another peer's (control moves straight on to
+    /// it), or released with no point (put the cursor back where it left).
     /// </summary>
     private void HandleReturnFromRemote(CursorLeaveMessage msg)
     {
@@ -2269,45 +2406,74 @@ public sealed class RoboMouseService : IDisposable
         if (peer == null)
             return;
 
-        var normalized = msg.ExitEdge is ScreenPosition.Left or ScreenPosition.Right ? msg.ExitY : msg.ExitX;
+        var hit = msg.Released ? null : _desktop.ScreenAt(msg.TargetX, msg.TargetY);
+        if (hit is { IsLocal: false } next && next.Owner != peer.Id && GetConnectedPeer(next.Owner) is { } nextPeer)
+        {
+            SimpleLogger.Log("Control", $"{peer.Name} hands over to {nextPeer.Name}");
+            var (exitX, exitY, crossed) = (_exitX, _exitY, _crossedEdge);
+            EndRemoteControl(notifyPeer: false);
+            var (fx, fy) = VirtualDesktop.Normalize(next.Rect, msg.TargetX, msg.TargetY);
+            if (!StartRemoteControl(nextPeer, next.MonitorId, fx, fy, exitX, exitY, crossed))
+                PutCursorBackAtExit();
+            return;
+        }
 
-        SimpleLogger.Log("Control", $"Returned from {peer.Name} at {normalized:F3}");
-
+        // The cursor is placed before control ends, so it is already where it belongs when it is shown
+        // again rather than flashing at the parked point first.
         Interlocked.Exchange(ref _returnCooldownUntil, Environment.TickCount64 + ReturnCooldownMs);
-        EndRemoteControl(notifyPeer: false);
+        if (hit is { IsLocal: true } local && _screenInfo.Layout.FindMonitor(local.MonitorId) is { } monitor)
+        {
+            var (x, y) = VirtualDesktop.Map(local.Rect, monitor.Bounds, msg.TargetX, msg.TargetY);
+            PlaceCursorInside(monitor.Bounds, x, y);
+            EndRemoteControl(notifyPeer: false);
+            SimpleLogger.Log("Control", $"Returned from {peer.Name} to monitor {monitor.Id} at {x},{y}");
+            return;
+        }
 
-        // Land one pixel inside the local edge facing the one the cursor left through: the peer's
-        // entry edge on a normal return, or the far edge when it wrapped around.
-        PlaceCursorInsideEdge(CursorManager.GetOppositeEdge(msg.ExitEdge), normalized);
+        PutCursorBackAtExit();
+        EndRemoteControl(notifyPeer: false);
+        SimpleLogger.Log("Control", $"Returned from {peer.Name}");
     }
 
     /// <summary>
-    /// The peer went away while we controlled it: put the cursor back where it left this screen rather
-    /// than leaving it at the parked point in the middle.
+    /// The peer went away (or gave no place) while we controlled it: put the cursor back where it left
+    /// this screen rather than leaving it at the parked point in the middle.
     /// </summary>
-    private void PutCursorBackAtExitEdge()
+    private void PutCursorBackAtExit()
     {
         Interlocked.Exchange(ref _returnCooldownUntil, Environment.TickCount64 + ReturnCooldownMs);
-        PlaceCursorInsideEdge(_exitEdge, _exitPosition);
+        PlaceCursorInside(_screenInfo.Layout.GetScreenAt(_exitX, _exitY), _exitX, _exitY);
     }
 
-    /// <summary>Moves the cursor one pixel inside a local outer edge, queued behind any pending cursor work.</summary>
-    private void PlaceCursorInsideEdge(ScreenPosition edge, float normalized)
+    /// <summary>
+    /// Moves the cursor to a point on a local monitor straight away, one pixel in from any edge it is on
+    /// so the hook does not see it lean there. Call it before <see cref="EndRemoteControl"/>: the hidden
+    /// cursor then reappears where it belongs. Moves the physical mouse made just before, which Windows
+    /// already measured from the parked point, are dropped for a moment (<see cref="IsStaleParkedMove"/>)
+    /// so they cannot drag it back to the middle of the screen.
+    /// </summary>
+    private void PlaceCursorInside(System.Drawing.Rectangle monitor, int x, int y)
     {
-        var (x, y) = _cursorManager.GetEdgePoint(edge, normalized);
-        var (nudgeX, nudgeY) = edge switch
-        {
-            ScreenPosition.Left => (1, 0),
-            ScreenPosition.Right => (-1, 0),
-            ScreenPosition.Top => (0, 1),
-            ScreenPosition.Bottom => (0, -1),
-            _ => (0, 0)
-        };
-        _uiQueue.BeginInvoke(() =>
-        {
-            if (!_isControllingRemote)
-                InputSimulator.MoveTo(x + nudgeX, y + nudgeY);
-        });
+        x = Math.Clamp(x, monitor.Left + 1, Math.Max(monitor.Left + 1, monitor.Right - 2));
+        y = Math.Clamp(y, monitor.Top + 1, Math.Max(monitor.Top + 1, monitor.Bottom - 2));
+        var (fx, fy) = VirtualDesktop.Normalize(monitor, x, y);
+        _crossedEdge = ControlledCrossing.NearestEdge(fx, fy);
+        _placedX = x;
+        _placedY = y;
+        Interlocked.Exchange(ref _placedUntil, Environment.TickCount64 + StaleMoveWindowMs);
+        InputSimulator.MoveTo(x, y);
+    }
+
+    /// <summary>
+    /// Right after the cursor was placed on return: a move that is nearer the parked point than the
+    /// placed one was worked out by Windows before the placement, from the parked cursor.
+    /// </summary>
+    private bool IsStaleParkedMove(int x, int y)
+    {
+        if (Environment.TickCount64 >= Interlocked.Read(ref _placedUntil))
+            return false;
+        long px = x - _parkedX, py = y - _parkedY, tx = x - _placedX, ty = y - _placedY;
+        return px * px + py * py < tx * tx + ty * ty;
     }
 
     #endregion
@@ -2357,7 +2523,7 @@ public sealed class RoboMouseService : IDisposable
                     if (_controlled.IsControlledBy(connection))
                     {
                         _returnLocked = lockMsg.Locked;
-                        _edgeOvershoot = 0;
+                        _crossing.ResetPush();
                     }
                     break;
 
@@ -2367,6 +2533,14 @@ public sealed class RoboMouseService : IDisposable
 
                 case LockRequestMessage:
                     HandleLockRequest(connection);
+                    break;
+
+                case ScreenInfoMessage screensMsg:
+                    HandlePeerScreens(screensMsg, connection);
+                    break;
+
+                case VirtualLayoutMessage layoutMsg:
+                    HandleControllerLayout(layoutMsg, connection);
                     break;
 
                 case CursorLeaveMessage leaveMsg:
@@ -2407,13 +2581,17 @@ public sealed class RoboMouseService : IDisposable
     {
         // Sharing switched off here, or this machine is driving another screen right now: say no, and
         // hand the cursor straight back so the controller does not sit with a hidden, parked pointer.
-        var previousEdge = _controlled.EntryEdge;
-        var outcome = _controlled.Enter(connection, msg.EntryEdge, msg.WrapAround, _enabled, _isControllingRemote, out var replaced);
+        // The monitor it names, or the main display if that one is gone (unplugged, or a jump that did
+        // not know our monitors yet).
+        var layout = _screenInfo.Layout;
+        var monitor = layout.FindMonitor(msg.MonitorId) ?? layout.PrimaryMonitor;
+        var entryEdge = ControlledCrossing.NearestEdge(msg.EntryX, msg.EntryY);
+        var outcome = _controlled.Enter(connection, entryEdge, msg.WrapAround, _enabled, _isControllingRemote, out var replaced);
 
         if (outcome == EnterOutcome.Refused)
         {
             SimpleLogger.Log("Control", $"Refusing control from {connection.PeerName}: {(_enabled ? "controlling another machine" : "sharing is off")}");
-            connection.Post(new CursorLeaveMessage { ExitEdge = msg.EntryEdge, ExitX = msg.EntryX, ExitY = msg.EntryY });
+            connection.Post(new CursorLeaveMessage());
             return;
         }
 
@@ -2421,12 +2599,14 @@ public sealed class RoboMouseService : IDisposable
         {
             // A second machine took over; the first one's held input was released. Give it its cursor back.
             SimpleLogger.Log("Control", $"{connection.PeerName} takes over from {replaced.PeerName}");
-            replaced.Post(new CursorLeaveMessage { ExitEdge = previousEdge, ExitX = 0.5f, ExitY = 0.5f });
+            replaced.Post(new CursorLeaveMessage());
         }
 
-        SimpleLogger.Log("Control", $"Controlled by {connection.PeerName} via {msg.EntryEdge} edge");
+        SimpleLogger.Log("Control", $"Controlled by {connection.PeerName}, entering monitor {monitor.Id} at ({msg.EntryX:F3}, {msg.EntryY:F3})");
 
-        _edgeOvershoot = 0;
+        _crossing.Reset(monitor.Id);
+        _lagMonitor.Reset();
+        _handBackPush = Math.Max(ReturnOvershootCounts, (int)msg.HandBackPush);
         _returnLocked = false;
         _injectionBlocked = false;
         _localBlockReason = InputBlockReason.None;
@@ -2434,8 +2614,7 @@ public sealed class RoboMouseService : IDisposable
         _desktopPollTimer?.Dispose();
         _desktopPollTimer = new System.Threading.Timer(_ => ReportInputStatus(), null, 250, 250);
 
-        var normalized = msg.EntryEdge is ScreenPosition.Left or ScreenPosition.Right ? msg.EntryY : msg.EntryX;
-        var (entryX, entryY) = _cursorManager.GetEdgePoint(msg.EntryEdge, normalized);
+        var (entryX, entryY) = VirtualDesktop.Denormalize(monitor.Bounds, msg.EntryX, msg.EntryY);
         _injector.MoveTo(entryX, entryY);
 
         ControlStateChanged?.Invoke(this, EventArgs.Empty);
@@ -2447,8 +2626,15 @@ public sealed class RoboMouseService : IDisposable
         {
             if (!_controlled.IsControlledBy(connection))
                 return;
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
             MoveRemoteCursor(msg.DeltaX, msg.DeltaY);
-            CheckForReturnEdge(msg.DeltaX, msg.DeltaY);
+            CheckCrossing(connection, msg.DeltaX, msg.DeltaY);
+            var applyMs = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            if (_lagMonitor.Record(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), msg.Timestamp, applyMs) is { } lag)
+            {
+                var via = _injector.ReachesSecureDesktop ? "desktop service" : "in-process";
+                SimpleLogger.Log("Lag", $"{lag}; round trip {connection.RoundTripMs} ms; injecting {via}");
+            }
             return;
         }
 
@@ -2491,68 +2677,30 @@ public sealed class RoboMouseService : IDisposable
     }
 
     /// <summary>
-    /// Hands control back once the cursor is pinned against the entry edge and the controller keeps
-    /// pushing into it. Motion away from the edge resets the count so leaning on it briefly is harmless.
+    /// After each delta: moves the cursor on to another of this machine's monitors where the controller's
+    /// layout has one beyond the edge it is pushed against, or hands control back once it keeps pushing
+    /// into someone else's screen (<see cref="ControlledCrossing"/>).
     /// </summary>
-    private void CheckForReturnEdge(int dx, int dy)
+    private void CheckCrossing(PeerConnection controller, int dx, int dy)
     {
         // The controller locked the cursor to this screen: edges are just edges until it unlocks.
         if (_returnLocked)
             return;
 
         var (x, y) = _injector.GetCursorPosition();
-        var layout = _screenInfo.Layout;
-        var entryEdge = _controlled.EntryEdge;
-
-        // Which edge the cursor is pinned against while being pushed further into it. Normally only the
-        // entry edge hands control back; with wrap-around any edge does.
-        static (bool pinned, int push) Probe(ScreenPosition edge, int x, int y, int dx, int dy, MonitorLayout layout) => edge switch
+        var step = _crossing.Step(_screenInfo.Layout, GetControllerLayout(controller), _controlled.WrapsAround, x, y, dx, dy, _handBackPush);
+        switch (step.Action)
         {
-            ScreenPosition.Left => (layout.IsAtOuterEdge(edge, x, y), -dx),
-            ScreenPosition.Right => (layout.IsAtOuterEdge(edge, x, y), dx),
-            ScreenPosition.Top => (layout.IsAtOuterEdge(edge, x, y), -dy),
-            ScreenPosition.Bottom => (layout.IsAtOuterEdge(edge, x, y), dy),
-            _ => (false, 0)
-        };
+            case CrossingAction.MoveTo:
+                _injector.MoveTo(step.X, step.Y);
+                break;
 
-        var exitEdge = entryEdge;
-        var (pinned, push) = Probe(entryEdge, x, y, dx, dy, layout);
-        if (_controlled.WrapsAround && (!pinned || push <= 0))
-        {
-            foreach (var edge in new[] { ScreenPosition.Left, ScreenPosition.Right, ScreenPosition.Top, ScreenPosition.Bottom })
-            {
-                if (edge == entryEdge)
-                    continue;
-                var probe = Probe(edge, x, y, dx, dy, layout);
-                if (probe.pinned && probe.push > 0)
-                {
-                    (exitEdge, pinned, push) = (edge, true, probe.push);
-                    break;
-                }
-            }
+            case CrossingAction.HandBack:
+                var connection = _controlled.Controller;
+                EndBeingControlled(notifyPeer: false);
+                connection?.Post(step.Released ? new CursorLeaveMessage() : CursorLeaveMessage.To(step.X, step.Y));
+                break;
         }
-
-        if (!pinned || push <= 0)
-        {
-            _edgeOvershoot = 0;
-            return;
-        }
-
-        _edgeOvershoot += push;
-        if (_edgeOvershoot < ReturnOvershootCounts)
-            return;
-
-        var normalized = _cursorManager.GetNormalizedPositionOnEdge(exitEdge, x, y);
-        var leave = new CursorLeaveMessage
-        {
-            ExitEdge = exitEdge,
-            ExitX = exitEdge is ScreenPosition.Left or ScreenPosition.Right ? 0f : normalized,
-            ExitY = exitEdge is ScreenPosition.Left or ScreenPosition.Right ? normalized : 0f
-        };
-
-        var connection = _controlled.Controller;
-        EndBeingControlled(notifyPeer: false);
-        connection?.Post(leave);
     }
 
     /// <summary>
@@ -2561,24 +2709,16 @@ public sealed class RoboMouseService : IDisposable
     /// </summary>
     private void EndBeingControlled(bool notifyPeer, IPeerLink? onlyIf = null)
     {
-        var entryEdge = _controlled.EntryEdge;
         if (!_controlled.TryEnd(onlyIf, out var connection))
             return;
 
-        _edgeOvershoot = 0;
+        _crossing.Reset(null);
         _desktopPollTimer?.Dispose();
         _desktopPollTimer = null;
         _localBlockReason = InputBlockReason.None;
 
         if (notifyPeer && connection != null)
-        {
-            connection.Post(new CursorLeaveMessage
-            {
-                ExitEdge = entryEdge,
-                ExitX = 0.5f,
-                ExitY = 0.5f
-            });
-        }
+            connection.Post(new CursorLeaveMessage());
 
         ControlStateChanged?.Invoke(this, EventArgs.Empty);
     }

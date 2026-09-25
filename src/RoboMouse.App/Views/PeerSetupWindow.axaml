@@ -49,22 +49,11 @@
                    MaxWidth="400" VerticalAlignment="Center" />
       </StackPanel>
 
-      <StackPanel Spacing="6">
+      <StackPanel Spacing="6" IsVisible="{Binding ShowPosition}">
         <TextBlock Text="Position" />
         <ComboBox ItemsSource="{Binding Positions}" SelectedItem="{Binding SelectedPosition}" Width="220" AutomationProperties.Name="Position" />
-      </StackPanel>
-
-      <StackPanel Spacing="6">
-        <TextBlock Text="Offset along the shared edge" />
-        <StackPanel Orientation="Horizontal" Spacing="8">
-          <TextBlock Text="X" VerticalAlignment="Center" Classes="muted" />
-          <NumericUpDown Value="{Binding OffsetX}" Minimum="-10000" Maximum="10000" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="130"
-                         AutomationProperties.Name="Horizontal offset" AutomationProperties.HelpText="Pixels to shift the other screen along a top or bottom edge" />
-          <TextBlock Text="Y" VerticalAlignment="Center" Classes="muted" Margin="8,0,0,0" />
-          <NumericUpDown Value="{Binding OffsetY}" Minimum="-10000" Maximum="10000" Increment="1" FormatString="0" ShowButtonSpinner="False" Width="130"
-                         AutomationProperties.Name="Vertical offset" AutomationProperties.HelpText="Pixels to shift the other screen along a left or right edge" />
-        </StackPanel>
-        <TextBlock Classes="caption" Text="Pixels to shift the other screen. Easier to set by dragging on the Layout page." />
+        <TextBlock Classes="caption" TextWrapping="Wrap"
+                   Text="Where its screens start out. Once it connects, drag each of its screens where you want on the Layout page." />
       </StackPanel>
 
       <StackPanel Spacing="6">

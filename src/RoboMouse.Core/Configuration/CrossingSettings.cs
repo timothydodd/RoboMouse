@@ -40,6 +40,13 @@ public class CrossingSettings
     /// </summary>
     public int DelayMs { get; set; } = 0;
 
+    /// <summary>
+    /// How far (raw mouse counts, about pixels at the default pointer speed) the mouse has to keep moving
+    /// past the edge before the cursor crosses, both into another PC and back. Working close to an edge
+    /// then never switches by accident. 0 crosses as soon as the cursor touches the edge.
+    /// </summary>
+    public int PushDistance { get; set; } = 0;
+
     /// <summary>A modifier that must be held to cross, or <see cref="CrossingModifier.None"/>.</summary>
     public CrossingModifier RequiredModifier { get; set; } = CrossingModifier.None;
 

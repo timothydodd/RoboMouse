@@ -304,6 +304,14 @@ internal static unsafe partial class NativeMethods
         public uint dwFlags;
     }
 
+    /// <summary>MONITORINFOEXW: <see cref="MONITORINFO"/> plus the device name (<c>\\.\DISPLAY1</c>).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFOEXW
+    {
+        public MONITORINFO Info;
+        public fixed char szDevice[32];
+    }
+
     public const uint MONITORINFOF_PRIMARY = 1;
     public const uint MONITOR_DEFAULTTONEAREST = 2;
 
@@ -318,6 +326,16 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport("user32.dll")]
     public static partial nint MonitorFromPoint(POINT pt, uint dwFlags);
+
+    [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetMonitorInfoExW(nint hMonitor, MONITORINFOEXW* lpmi);
+
+    public const int MDT_EFFECTIVE_DPI = 0;
+
+    /// <summary>The monitor's scaling as DPI (96 = 100 %). Needs a per-monitor DPI aware process to be exact.</summary>
+    [LibraryImport("shcore.dll")]
+    public static partial int GetDpiForMonitor(nint hmonitor, int dpiType, uint* dpiX, uint* dpiY);
 
     #endregion
 

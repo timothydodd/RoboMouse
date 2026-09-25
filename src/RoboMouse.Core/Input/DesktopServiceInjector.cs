@@ -65,6 +65,14 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
     /// Returns null when the connected pipe's server is the real service, else why not. Only tests pass
     /// null (no check): their stand-in server is not a Windows service.
     /// </param>
+    /// <summary>
+    /// Reads the cursor from this process; false while the secure desktop is up. Tests make it fail to
+    /// exercise the helper's answer.
+    /// </summary>
+    internal TryGetCursor TryLocalCursor { get; init; } = InputSimulator.TryGetCursorPosition;
+
+    internal delegate bool TryGetCursor(out int x, out int y);
+
     internal DesktopServiceInjector(string pipeName, IInputInjector local, Func<NamedPipeClientStream, string?>? verifyServer)
     {
         _pipeName = pipeName;
@@ -269,14 +277,21 @@ public sealed class DesktopServiceInjector : IInputInjector, IDisposable
         TrySend(PipeMessage.Key((int)keyCode, scanCode, (int)eventType, isExtended)) || _local.SimulateKeyboardEvent(keyCode, scanCode, eventType, isExtended);
 
     /// <summary>
-    /// GetCursorPos fails from this process while the secure desktop is up, so the helper answers. The
-    /// query travels the same ordered path as the moves before it, and carries a sequence id so a reply
-    /// that arrives after its query gave up is ignored rather than taken as the answer to the next.
+    /// Asked after every motion delta, so it must be cheap: GetCursorPos from this process answers at
+    /// once whenever it can. Asking the helper blocks this thread for a pipe round trip behind every
+    /// move still queued, which at hundreds of deltas a second backed up the receive thread and made
+    /// the cursor lag and then catch up. The local answer can trail the helper's newest moves by a
+    /// delta or two, which the crossing checks tolerate. GetCursorPos fails from this process while the
+    /// secure desktop is up; only then does the helper answer. That query travels the same ordered path
+    /// as the moves before it, and carries a sequence id so a reply that arrives after its query gave up
+    /// is ignored rather than taken as the answer to the next.
     /// </summary>
     public (int X, int Y) GetCursorPosition()
     {
         if (!_active)
             return _local.GetCursorPosition();
+        if (TryLocalCursor(out var x, out var y))
+            return (x, y);
 
         lock (_queryLock)
         {

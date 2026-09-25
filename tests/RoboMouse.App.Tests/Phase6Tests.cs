@@ -18,14 +18,15 @@ public class Phase6Tests
         var closed = false;
         vm.CloseRequested += (_, _) => closed = true;
 
-        vm.General.BlockWhileButtonHeld = false;
-        vm.General.CornerDeadZone = 40;
-        vm.General.DoubleTap = true;
-        vm.General.CrossingDelayMs = 250;
-        vm.General.SelectedCrossingModifier = vm.General.ModifierChoices.Single(c => c.Modifier == CrossingModifier.Shift);
-        vm.General.BlockWhileFullScreen = true;
-        vm.General.LockCursorHotkey = "Pause";
-        vm.General.LockAllHotkey = "Ctrl+Win+L";
+        vm.Advanced.BlockWhileButtonHeld = false;
+        vm.Advanced.CornerDeadZone = 40;
+        vm.Advanced.PushDistance = 30;
+        vm.Advanced.DoubleTap = true;
+        vm.Advanced.CrossingDelayMs = 250;
+        vm.Advanced.SelectedCrossingModifier = vm.Advanced.ModifierChoices.Single(c => c.Modifier == CrossingModifier.Shift);
+        vm.Advanced.BlockWhileFullScreen = true;
+        vm.Advanced.LockCursorHotkey = "Pause";
+        vm.Advanced.LockAllHotkey = "Ctrl+Win+L";
         vm.General.LockWithHost = true;
         vm.General.ScreensaverWithHost = true;
 
@@ -35,6 +36,7 @@ public class Phase6Tests
         var crossing = settings.Crossing;
         Assert.False(crossing.BlockWhileButtonHeld);
         Assert.Equal(40, crossing.CornerDeadZone);
+        Assert.Equal(30, crossing.PushDistance);
         Assert.True(crossing.DoubleTap);
         Assert.Equal(250, crossing.DelayMs);
         Assert.Equal(CrossingModifier.Shift, crossing.RequiredModifier);
@@ -56,17 +58,18 @@ public class Phase6Tests
         var vm = new SettingsViewModel(settings, new FakeBackend(), dialogs, "1.0.0");
 
         // Laptop is the first peer, so it jumps with Ctrl+Alt+F1 by default.
-        vm.General.LockAllHotkey = "Ctrl+Alt+F1";
+        vm.Advanced.LockAllHotkey = "Ctrl+Alt+F1";
         await vm.SaveCommand.ExecuteAsync(null);
 
         Assert.Null(settings.LockAllHotkey);
         Assert.Contains(dialogs.Messages, m => m.Contains("Jump to Laptop") && m.Contains("Lock all PCs"));
+        Assert.Same(vm.Advanced, vm.SelectedPage!.Page); // where the Lock all PCs box is
     }
 
     [Fact]
     public void ClearedCrossingNumber_IsFlagged()
     {
-        var page = new GeneralPageViewModel(Samples.Settings());
+        var page = new AdvancedPageViewModel(Samples.Settings());
         page.CornerDeadZone = null;
         Assert.True(page.HasErrors);
     }

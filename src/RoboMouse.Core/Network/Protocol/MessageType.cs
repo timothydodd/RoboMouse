@@ -38,6 +38,12 @@ public enum MessageType : byte
     /// <summary>"Lock all PCs": the sender asks the receiver to lock its session.</summary>
     LockRequest = 0x26,
 
+    /// <summary>The sender's monitors: id, rectangle and scaling of each (protocol 6).</summary>
+    ScreenInfo = 0x27,
+
+    /// <summary>The controller's layout as seen by the receiver: its own monitors and everyone else's screens (protocol 6).</summary>
+    VirtualLayout = 0x28,
+
     /// <summary>Clipboard data.</summary>
     Clipboard = 0x30,
 

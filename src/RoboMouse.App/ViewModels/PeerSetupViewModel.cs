@@ -36,12 +36,16 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
         new PositionChoice(ScreenPosition.Bottom, "Below my screen")
     };
 
+    /// <summary>
+    /// The side only decides where the peer's screens start out, so it is offered until they have been
+    /// placed; after that they are arranged on the Layout page.
+    /// </summary>
+    public bool ShowPosition { get; }
+
     [ObservableProperty] private string _name = string.Empty;
     [ObservableProperty] private string _address = string.Empty;
     [ObservableProperty] private decimal? _port = 24800;
     [ObservableProperty] private PositionChoice _selectedPosition;
-    [ObservableProperty] private decimal? _offsetX = 0;
-    [ObservableProperty] private decimal? _offsetY = 0;
     [ObservableProperty] private bool _isEnabled = true;
     [ObservableProperty] private bool _shareClipboard = true;
 
@@ -56,8 +60,6 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
 
     // A cleared number box is flagged on the field rather than silently keeping the old number.
     partial void OnPortChanged(decimal? value) => RequireValue(value, nameof(Port), "Enter a port number.");
-    partial void OnOffsetXChanged(decimal? value) => RequireValue(value, nameof(OffsetX), "Enter an offset (0 for none).");
-    partial void OnOffsetYChanged(decimal? value) => RequireValue(value, nameof(OffsetY), "Enter an offset (0 for none).");
 
 
     [ObservableProperty] private string _testResult;
@@ -88,12 +90,11 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
             _name = peer.Name;
             _address = peer.Address;
             _port = peer.Port;
-            _offsetX = peer.OffsetX;
-            _offsetY = peer.OffsetY;
             _isEnabled = peer.Enabled;
             _shareClipboard = peer.ShareClipboard;
             _selectedPosition = Positions.FirstOrDefault(p => p.Position == peer.Position) ?? Positions[1];
         }
+        ShowPosition = peer == null || peer.Monitors.Count == 0;
 
         _jumpHotkey = _initialJumpHotkey = settings != null
             ? HotkeySet.EffectiveJumpHotkey(settings, peer ?? new PeerConfig()) ?? string.Empty
@@ -166,7 +167,7 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
             await _dialogs.WarnAsync("Please enter an address.");
             return;
         }
-        if (Port is not { } port || OffsetX is not { } offsetX || OffsetY is not { } offsetY)
+        if (Port is not { } port)
         {
             await _dialogs.WarnAsync("Some number fields are empty. Fill in the highlighted fields.");
             return;
@@ -188,43 +189,18 @@ public sealed partial class PeerSetupViewModel : ValidatingObservableObject
 
         var position = SelectedPosition.Position;
 
-        // Another configured peer on the same edge would never be reachable; offer a swap. A new
-        // peer has no edge of its own to swap with, so the other one moves to a free edge.
-        var occupant = _settings?.Peers.FirstOrDefault(p => p != _existing && p.Position == position);
-        if (occupant != null)
-        {
-            var current = _isNew || _existing!.Position == position ? PeerActions.FirstFreeEdge(_settings!) : _existing.Position;
-            DialogResult answer;
-            if (current is { } target && target != position)
-            {
-                answer = await _dialogs.ShowMessageAsync(
-                    $"{occupant.Name} is already {PeerPositions.Describe(position).ToLower()} of this screen.\n\n" +
-                    $"Swap them so {occupant.Name} moves {PeerPositions.Describe(target).ToLower()}?",
-                    "Edge already in use", DialogButtons.YesNoCancel, DialogIcon.Question);
-                if (answer == DialogResult.Yes)
-                    occupant.Position = target;
-            }
-            else
-            {
-                answer = await _dialogs.ShowMessageAsync(
-                    $"{occupant.Name} is already {PeerPositions.Describe(position).ToLower()} of this screen and there is no free edge to move it to, " +
-                    "so only one of them can be reached there.\n\nKeep both on this edge?",
-                    "Edge already in use", DialogButtons.YesNo, DialogIcon.Question);
-                if (answer == DialogResult.No)
-                    answer = DialogResult.Cancel;
-            }
-            if (answer == DialogResult.Cancel)
-                return;
-        }
-
         // A new entry is added by address: recognised by that address until it has connected once.
         var config = _existing ?? new PeerConfig { HasConnected = false };
         config.Name = Name.Trim();
         config.Address = address;
         config.Port = (int)port;
-        config.Position = position;
-        config.OffsetX = (int)offsetX;
-        config.OffsetY = (int)offsetY;
+        if (config.Position != position)
+        {
+            // A new side starts the first placement from scratch.
+            config.Position = position;
+            config.OffsetX = 0;
+            config.OffsetY = 0;
+        }
         config.Enabled = IsEnabled;
         config.ShareClipboard = ShareClipboard;
         // Untouched, a peer on its default keeps following its place in the list.

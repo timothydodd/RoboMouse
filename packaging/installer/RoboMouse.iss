@@ -4,7 +4,7 @@
 ;   full          RoboMouse-Setup-<ver>.exe          app + desktop service + helper
 ;   /DServiceOnly RoboMouse-Service-Setup-<ver>.exe  service + helper, for people using the Store app
 ;
-; Either way the service is registered LocalSystem, manual start and stopped; the app's General page
+; Either way the service is registered LocalSystem, manual start and stopped; the app's Advanced page
 ; toggle turns it on (one UAC prompt). See plans/uac-service.md.
 ;
 ; Both products can be installed at once and share the one service registration. Each records itself

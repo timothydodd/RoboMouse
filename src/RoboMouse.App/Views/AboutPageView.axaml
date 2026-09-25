@@ -19,6 +19,30 @@
         </StackPanel>
       </Border>
 
+      <TextBlock Classes="section" Text="Tray icon" />
+      <Border Classes="card">
+        <StackPanel Spacing="6">
+          <TextBlock Classes="caption" Text="The border colour of the tray icon shows what RoboMouse is doing:" Margin="0,0,0,4" />
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Ellipse Classes="dot" Fill="{StaticResource AppStatusIdleBrush}" />
+            <TextBlock Text="No peers connected" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Ellipse Classes="dot" Fill="{StaticResource AppStatusOkBrush}" />
+            <TextBlock Text="Connected" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Ellipse Classes="dot" Fill="{DynamicResource SystemControlHighlightAccentBrush}" />
+            <TextBlock Text="Controlling another screen" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Ellipse Classes="dot" Fill="{StaticResource AppStatusWarnBrush}" />
+            <TextBlock Text="Being controlled" />
+          </StackPanel>
+          <TextBlock Classes="caption" Text="A faded icon means sharing is switched off." Margin="0,4,0,0" />
+        </StackPanel>
+      </Border>
+
       <TextBlock Classes="section" Text="Updates" />
       <views:SettingCard Header="Check for updates" Description="Looks for a new release on GitHub once a day and tells you about it. Nothing is downloaded or installed by itself."
                          IsVisible="{Binding CanCheckForUpdates}">

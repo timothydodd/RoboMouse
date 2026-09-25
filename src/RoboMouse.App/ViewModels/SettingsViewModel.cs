@@ -17,7 +17,7 @@ public abstract partial class PageViewModel : ValidatingObservableObject
 }
 
 /// <summary>The settings pages, for opening the window on a particular one.</summary>
-public enum SettingsPage { General, Network, Peers, Layout, About }
+public enum SettingsPage { General, Peers, Layout, Network, Advanced, About }
 
 /// <summary>
 /// The settings window: live status, navigation between pages, and Save/Cancel. Each page owns its
@@ -35,6 +35,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     public NetworkPageViewModel Network { get; }
     public PeersPageViewModel Peers { get; }
     public LayoutPageViewModel Layout { get; }
+    public AdvancedPageViewModel Advanced { get; }
     public AboutPageViewModel About { get; }
 
     public IReadOnlyList<NavigationItem> Pages { get; }
@@ -66,19 +67,23 @@ public sealed partial class SettingsViewModel : ObservableObject
         _appState = appState ?? new AppState();
         Version = version;
 
-        General = new GeneralPageViewModel(settings, backend.DesktopServiceInstalled, backend.DesktopServiceState);
+        General = new GeneralPageViewModel(settings);
+        Advanced = new AdvancedPageViewModel(settings, backend.DesktopServiceInstalled, backend.DesktopServiceState);
         Network = new NetworkPageViewModel(settings, dialogs, backend);
         Peers = new PeersPageViewModel(settings, backend, dialogs);
-        Layout = new LayoutPageViewModel(settings);
+        Layout = new LayoutPageViewModel(settings, backend);
+        _screensVersion = backend.ScreensVersion;
         About = new AboutPageViewModel(dialogs, _appState, updates, diagnostics ?? (() => DefaultDiagnostics(null)),
             System.Version.TryParse(version, out var v) ? v : UpdateChecker.CurrentVersion);
 
+        // Everyday pages first; the tuning that most people never touch is kept on Advanced.
         Pages = new[]
         {
             new NavigationItem("General", Symbol.Settings, General),
-            new NavigationItem("Network", Symbol.Globe, Network),
             new NavigationItem("Peers", Symbol.People, Peers),
             new NavigationItem("Layout", Symbol.Board, Layout),
+            new NavigationItem("Network", Symbol.Globe, Network),
+            new NavigationItem("Advanced", Symbol.WrenchSettings, Advanced),
             new NavigationItem("About", Symbol.Info, About)
         };
         _selectedPage = Pages[0];
@@ -112,6 +117,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             SettingsPage.Network => Network,
             SettingsPage.Peers => Peers,
             SettingsPage.Layout => Layout,
+            SettingsPage.Advanced => Advanced,
             SettingsPage.About => About,
             _ => General
         };
@@ -144,7 +150,17 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         Peers.Refresh();
         Network.Refresh();
+
+        // A peer's monitors or this PC's changed: redraw the layout, keeping unsaved moves.
+        var screens = _backend.ScreensVersion;
+        if (screens != _screensVersion)
+        {
+            _screensVersion = screens;
+            Layout.Reload();
+        }
     }
+
+    private int _screensVersion;
 
     partial void OnSelectedPageChanged(NavigationItem? value)
     {
@@ -158,8 +174,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     private IEnumerable<(string Name, string? Hotkey)> HotkeysInUse(string toggleHotkey)
     {
         yield return ("The toggle hotkey", toggleHotkey);
-        yield return ("Lock the cursor", General.LockCursorHotkey);
-        yield return ("Lock all PCs", General.LockAllHotkey);
+        yield return ("Lock the cursor", Advanced.LockCursorHotkey);
+        yield return ("Lock all PCs", Advanced.LockAllHotkey);
         var peers = _settings.Peers.ToList();
         for (var i = 0; i < peers.Count; i++)
             yield return ($"Jump to {peers[i].Name}", HotkeySet.EffectiveJumpHotkey(peers[i], i));
@@ -179,11 +195,13 @@ public sealed partial class SettingsViewModel : ObservableObject
             return;
         }
 
-        // Two actions on one chord: only the first would ever run.
+        // Two actions on one chord: only the first would ever run. The lock hotkeys are on Advanced,
+        // the toggle hotkey on General (jump hotkeys are edited per peer).
         var conflict = HotkeySet.FindConflict(HotkeysInUse(hotkey));
         if (conflict != null)
         {
-            ShowPage(SettingsPage.General);
+            var onAdvanced = conflict.Contains("Lock the cursor", StringComparison.Ordinal) || conflict.Contains("Lock all PCs", StringComparison.Ordinal);
+            ShowPage(onAdvanced ? SettingsPage.Advanced : SettingsPage.General);
             await _dialogs.WarnAsync(conflict);
             return;
         }
@@ -192,6 +210,13 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             ShowPage(SettingsPage.General);
             await _dialogs.WarnAsync("Some fields on the General page are empty or out of range. Fix the highlighted fields, then save again.");
+            return;
+        }
+
+        if (Advanced.HasErrors)
+        {
+            ShowPage(SettingsPage.Advanced);
+            await _dialogs.WarnAsync("Some fields on the Advanced page are empty or out of range. Fix the highlighted fields, then save again.");
             return;
         }
 
@@ -209,19 +234,20 @@ public sealed partial class SettingsViewModel : ObservableObject
         _settings.StartWithWindows = General.StartWithWindows;
         _settings.StartMinimized = General.StartMinimized;
         _settings.ToggleHotkey = hotkey;
-        _settings.LockCursorHotkey = General.LockCursorHotkey.Trim();
-        _settings.LockAllHotkey = General.LockAllHotkey.Trim();
-        General.SaveCrossing(_settings.Crossing);
+        _settings.LockCursorHotkey = Advanced.LockCursorHotkey.Trim();
+        _settings.LockAllHotkey = Advanced.LockAllHotkey.Trim();
+        Advanced.SaveCrossing(_settings.Crossing);
         General.SaveClipboard(_settings.Clipboard);
-        _settings.EdgeHighlight = General.SelectedHighlight.Style;
+        Advanced.SaveClipboard(_settings.Clipboard);
+        _settings.EdgeHighlight = Advanced.SelectedHighlight.Style;
         _settings.WrapAround = General.WrapAround;
-        _settings.WakeOnEdge = General.WakeOnEdge;
+        _settings.WakeOnEdge = Advanced.WakeOnEdge;
         _settings.FollowHostPower = General.FollowHostPower;
         _settings.LockWithHost = General.LockWithHost;
         _settings.ScreensaverWithHost = General.ScreensaverWithHost;
-        _settings.DebugPanelEnabled = General.ShowDebugPanel;
-        var desktopServiceChanged = _settings.UseDesktopService != General.UseDesktopService;
-        _settings.UseDesktopService = General.UseDesktopService;
+        _settings.DebugPanelEnabled = Advanced.ShowDebugPanel;
+        var desktopServiceChanged = _settings.UseDesktopService != Advanced.UseDesktopService;
+        _settings.UseDesktopService = Advanced.UseDesktopService;
         _settings.LocalPort = (int)Network.LocalPort!.Value;
         _settings.DiscoveryPort = (int)Network.DiscoveryPort!.Value;
         Layout.Save();
@@ -236,6 +262,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _backend.ApplyCrossingSettings();
         _backend.ApplyPowerSetting();
         _backend.ApplyNetworkSettings();
+        _backend.ApplyLayout();
         if (pairingChanged)
             _backend.ApplyPairingCode();
 
@@ -253,7 +280,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             _settings.UseDesktopService = false;
             _backend.SaveSettings();
-            General.UseDesktopService = false;
+            Advanced.UseDesktopService = false;
             await _dialogs.WarnAsync("The RoboMouse desktop service could not be started, so UAC prompts and the lock screen stay out of reach. Approve the Windows prompt when turning this on.");
             return;
         }

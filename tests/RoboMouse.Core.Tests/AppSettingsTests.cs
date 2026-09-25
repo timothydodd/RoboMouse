@@ -43,6 +43,26 @@ public sealed class AppSettingsTests : IDisposable
     }
 
     [Fact]
+    public void MonitorPlacements_RoundTrip_AndAnOlderFileHasNone()
+    {
+        var saved = Sample();
+        saved.Peers[0].Monitors.Add(new MonitorPlacement { Id = "\\\\.\\DISPLAY2", X = -1920, Y = 40, Width = 1920, Height = 1080, RemoteX = 2560, RemoteWidth = 3840, RemoteHeight = 2160, Scale = 200 });
+        saved.Save(ConfigPath);
+        Assert.DoesNotContain("\"Rect\"", File.ReadAllText(ConfigPath)); // helpers are not stored
+
+        var placement = Assert.Single(AppSettings.Load(ConfigPath).Peers[0].Monitors);
+        Assert.Equal("\\\\.\\DISPLAY2", placement.Id);
+        Assert.Equal(new System.Drawing.Rectangle(-1920, 40, 1920, 1080), placement.Rect);
+        Assert.Equal(new System.Drawing.Rectangle(2560, 0, 3840, 2160), placement.RemoteRect);
+        Assert.Equal(200, placement.Scale);
+
+        // A file written before 1.3, and one with a null list, load with no placements.
+        File.WriteAllText(ConfigPath, """{ "Peers": [ { "Name": "A", "Position": "Left" }, { "Name": "B", "Monitors": null } ] }""");
+        var old = AppSettings.Load(ConfigPath);
+        Assert.All(old.Peers, p => Assert.Empty(p.Monitors));
+    }
+
+    [Fact]
     public void FirstLoad_GeneratesPairingCodeAndWritesFile()
     {
         var loaded = AppSettings.Load(ConfigPath);
