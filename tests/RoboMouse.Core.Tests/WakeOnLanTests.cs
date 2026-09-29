@@ -56,6 +56,27 @@ public class WakeOnLanTests
     }
 
     [Fact]
+    public void RoutedTargets_PeerOnAnotherSubnet_GetsItsAddressAndSubnetBroadcast()
+    {
+        var local = new[] { (IPAddress.Parse("192.168.2.49"), (IPAddress?)IPAddress.Parse("255.255.255.0")) };
+        Assert.Equal([IPAddress.Parse("192.168.4.4"), IPAddress.Parse("192.168.4.255")],
+            WakeOnLan.GetRoutedTargets(IPAddress.Parse("192.168.4.4"), local));
+    }
+
+    [Fact]
+    public void RoutedTargets_PeerOnALocalSubnet_IsLeftToTheBroadcasts()
+    {
+        var local = new[]
+        {
+            (IPAddress.Parse("172.17.192.1"), (IPAddress?)IPAddress.Parse("255.255.240.0")),
+            (IPAddress.Parse("10.0.0.5"), (IPAddress?)IPAddress.Parse("255.255.0.0")),
+        };
+        Assert.Empty(WakeOnLan.GetRoutedTargets(IPAddress.Parse("10.0.9.9"), local));
+        Assert.Empty(WakeOnLan.GetRoutedTargets(IPAddress.Loopback, local));
+        Assert.Empty(WakeOnLan.GetRoutedTargets(IPAddress.IPv6Loopback, local));
+    }
+
+    [Fact]
     public void Handshake_CarriesTheMacAddress()
     {
         var sent = new HandshakeMessage { MachineId = "id", MachineName = "PC", ListenPort = 24800, MacAddress = "AABBCCDDEEFF" };

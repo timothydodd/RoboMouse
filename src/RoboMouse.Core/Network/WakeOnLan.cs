@@ -76,40 +76,102 @@ public static class WakeOnLan
 
     /// <summary>
     /// Broadcasts the magic packet out of every active IPv4 adapter (limited and subnet-directed
-    /// broadcast, ports 9 and 7). Returns the number of datagrams sent; zero means it could not be sent.
+    /// broadcast, ports 9 and 7). When the peer's last address is on another subnet, which broadcasts
+    /// never leave, the packet is also sent through the router to that address and to its subnet's
+    /// broadcast address (see <see cref="GetRoutedTargets"/>). Returns the number of datagrams sent;
+    /// zero means it could not be sent.
     /// </summary>
-    public static int Send(string mac)
+    public static int Send(string mac, string? peerAddress = null)
     {
         var packet = BuildMagicPacket(mac);
         var sent = 0;
+        var local = GetBroadcastTargets();
 
-        foreach (var (local, broadcast) in GetBroadcastTargets())
+        foreach (var (address, broadcast, _) in local)
         {
             try
             {
-                using var udp = new UdpClient(new IPEndPoint(local, 0)) { EnableBroadcast = true };
+                using var udp = new UdpClient(new IPEndPoint(address, 0)) { EnableBroadcast = true };
                 foreach (var target in new[] { IPAddress.Broadcast, broadcast }.Distinct())
+                    sent += SendToPorts(udp, packet, target);
+            }
+            catch (Exception ex)
+            {
+                SimpleLogger.Log("Wake", $"Could not send from {address}: {ex.Message}");
+            }
+        }
+
+        var peer = ResolveIPv4(peerAddress);
+        var routed = peer == null ? [] : GetRoutedTargets(peer, local.Select(t => (t.Local, t.Mask)));
+        if (routed.Count > 0)
+        {
+            try
+            {
+                // Not bound to an adapter: the routing table picks the one that leads to the peer.
+                using var udp = new UdpClient(AddressFamily.InterNetwork) { EnableBroadcast = true };
+                foreach (var target in routed)
                 {
-                    foreach (var port in new[] { 9, 7 })
-                    {
-                        udp.Send(packet, packet.Length, new IPEndPoint(target, port));
-                        sent++;
-                    }
+                    try { sent += SendToPorts(udp, packet, target); }
+                    catch (Exception ex) { SimpleLogger.Log("Wake", $"Could not send to {target}: {ex.Message}"); }
                 }
             }
             catch (Exception ex)
             {
-                SimpleLogger.Log("Wake", $"Could not send from {local}: {ex.Message}");
+                SimpleLogger.Log("Wake", $"Could not send to {peer}: {ex.Message}");
             }
         }
 
-        SimpleLogger.Log("Wake", $"Sent wake packet for {Format(mac)} ({sent} datagrams)");
+        var via = routed.Count > 0 ? $", also routed to {string.Join(" and ", routed)}" : string.Empty;
+        SimpleLogger.Log("Wake", $"Sent wake packet for {Format(mac)} ({sent} datagrams{via})");
         return sent;
     }
 
-    private static List<(IPAddress Local, IPAddress Broadcast)> GetBroadcastTargets()
+    /// <summary>
+    /// Where to send the packet besides the local broadcasts when <paramref name="peer"/> is not on any
+    /// of the <paramref name="local"/> subnets: the peer itself (reaches it while the router still
+    /// remembers its MAC, or always when the router has a static entry) and its subnet's broadcast,
+    /// assuming a /24 since its mask is unknown (reaches it when the router forwards directed
+    /// broadcasts). Empty when a local broadcast already covers the peer.
+    /// </summary>
+    public static List<IPAddress> GetRoutedTargets(IPAddress peer, IEnumerable<(IPAddress Address, IPAddress? Mask)> local)
     {
-        var targets = new List<(IPAddress, IPAddress)>();
+        if (peer.AddressFamily != AddressFamily.InterNetwork || IPAddress.IsLoopback(peer))
+            return [];
+        if (local.Any(l => l.Mask != null && GetDirectedBroadcast(l.Address, l.Mask).Equals(GetDirectedBroadcast(peer, l.Mask))))
+            return [];
+
+        var subnet = GetDirectedBroadcast(peer, IPAddress.Parse("255.255.255.0"));
+        return subnet.Equals(peer) ? [peer] : [peer, subnet];
+    }
+
+    private static int SendToPorts(UdpClient udp, byte[] packet, IPAddress target)
+    {
+        foreach (var port in new[] { 9, 7 })
+            udp.Send(packet, packet.Length, new IPEndPoint(target, port));
+        return 2;
+    }
+
+    /// <summary>The peer's IPv4 address from its configured address or host name, or null.</summary>
+    private static IPAddress? ResolveIPv4(string? address)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+            return null;
+        if (IPAddress.TryParse(address, out var ip))
+            return ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip.AddressFamily == AddressFamily.InterNetwork ? ip : null;
+        try
+        {
+            return Dns.GetHostAddresses(address).FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+        }
+        catch (Exception ex)
+        {
+            SimpleLogger.Log("Wake", $"Could not resolve {address}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static List<(IPAddress Local, IPAddress Broadcast, IPAddress? Mask)> GetBroadcastTargets()
+    {
+        var targets = new List<(IPAddress, IPAddress, IPAddress?)>();
         try
         {
             foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
@@ -120,7 +182,7 @@ public static class WakeOnLan
                 {
                     if (unicast.Address.AddressFamily != AddressFamily.InterNetwork)
                         continue;
-                    targets.Add((unicast.Address, GetDirectedBroadcast(unicast.Address, unicast.IPv4Mask)));
+                    targets.Add((unicast.Address, GetDirectedBroadcast(unicast.Address, unicast.IPv4Mask), unicast.IPv4Mask));
                 }
             }
         }

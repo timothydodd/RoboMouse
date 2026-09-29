@@ -1561,7 +1561,7 @@ public sealed partial class RoboMouseService : IDisposable
         if (!CanWake(peer))
             return false;
         SimpleLogger.Log("Wake", $"Waking {peer.Name}");
-        var sent = WakeOnLan.Send(peer.MacAddress) > 0;
+        var sent = WakeOnLan.Send(peer.MacAddress, peer.Address) > 0;
         if (sent)
             PeerWakeSent?.Invoke(this, peer);
         return sent;
