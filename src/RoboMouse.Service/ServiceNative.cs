@@ -98,8 +98,10 @@ internal static unsafe partial class ServiceNative
     [LibraryImport("kernel32.dll")]
     public static partial int GetPackageFullName(nint process, uint* packageFullNameLength, char* packageFullName);
 
+    // Unlike GetPackagePathByFullName this does not need the package registered for the caller: the
+    // Store app is registered for the signed-in user, never for SYSTEM.
     [LibraryImport("kernel32.dll")]
-    public static partial int GetPackagePathByFullName(char* packageFullName, uint* pathLength, char* path);
+    public static partial int GetStagedPackagePathByFullName(char* packageFullName, uint* pathLength, char* path);
 
     // --- Authenticode ----------------------------------------------------------------------------
 

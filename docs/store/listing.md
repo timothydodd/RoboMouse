@@ -27,8 +27,8 @@ the other machines on your network and connects to them directly.
 - **Shared clipboard.** Copy text or an image on one PC and paste it on another.
 - **Copy files, too.** Copy files on one machine and paste them in Explorer on the other. They
   transfer directly between the two, and only when you paste.
-- **Private by design.** Every connection is authenticated with a pairing code you choose and
-  encrypted end to end. Nothing is sent to the internet and there is no account.
+- **Private by design.** PCs pair with a generated code, then recognise each other by their identity
+  keys; every connection is encrypted end to end. Nothing is sent to the internet and there is no account.
 - **Stays out of the way.** Runs from the tray. The icon's colour shows what it is doing, and a hotkey
   turns sharing on or off or brings the mouse back if you get stuck on another screen.
 - **A brief glow marks the edge the mouse came in on**, so you always know which screen you are on.
@@ -59,11 +59,12 @@ Each is a 1920x1080 marketing frame: a gradient backdrop, a headline and the rea
 Upload in this order:
 
 1. `01-general.png` – settings, General page
-2. `02-network.png` – pairing code and ports
+2. `02-network.png` – pairing code, identity fingerprint and ports
 3. `03-peers.png` – configured and discovered peers
-4. `04-layout.png` – drag-to-arrange screen layout
+4. `04-layout.png` – drag-to-arrange layout, one screen per monitor
 5. `05-peer-setup.png` – add/edit peer dialog
-6. `06-layout-dark.png` – dark theme
+6. `06-advanced.png` – crossing guards (push past the edge, corner dead zone, hotkeys)
+7. `07-layout-dark.png` – dark theme
 
 ### Super hero art (16:9)
 

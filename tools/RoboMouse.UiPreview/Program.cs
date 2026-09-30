@@ -29,6 +29,7 @@ internal static class Program
             args = args.Skip(1).ToArray();
         var outDir = args.Length > 0 ? args[0] : "ui-preview";
         Directory.CreateDirectory(outDir);
+        RoboMouse.App.Services.LocalAddresses.Override = () => new[] { "192.168.1.10  ·  Ethernet" };
 
         AppBuilder.Configure<RoboMouse.App.App>()
             .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })

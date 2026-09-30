@@ -6,9 +6,14 @@ namespace RoboMouse.App.Services;
 /// <summary>This computer's IPv4 addresses, for typing into another machine.</summary>
 public static class LocalAddresses
 {
+    /// <summary>Replaces the real adapters, so previews and screenshots never show this machine's addresses.</summary>
+    public static Func<IReadOnlyList<string>>? Override { get; set; }
+
     /// <summary>One entry per address on a connected adapter, as "address  ·  adapter name".</summary>
     public static IReadOnlyList<string> Describe()
     {
+        if (Override is not null)
+            return Override();
         try
         {
             return NetworkInterface.GetAllNetworkInterfaces()

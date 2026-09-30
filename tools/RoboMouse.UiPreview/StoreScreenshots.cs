@@ -31,11 +31,12 @@ internal static class StoreScreenshots
     private static readonly Slide[] Slides =
     {
         new("01-general", "One mouse. Every PC.", "Move to the edge of the screen and keep going. Keyboard included.", Color.Parse("#1E64E6"), Color.Parse("#6A3FE0")),
-        new("02-network", "Private by design", "A pairing code you choose. Encrypted end to end. No account, no cloud.", Color.Parse("#0F766E"), Color.Parse("#1D4ED8")),
+        new("02-network", "Private by design", "Pair with a generated code. Every PC is verified, everything encrypted. No account, no cloud.", Color.Parse("#0F766E"), Color.Parse("#1D4ED8")),
         new("03-peers", "Finds your other PCs for you", "Machines running RoboMouse on your network show up automatically.", Color.Parse("#7C3AED"), Color.Parse("#DB2777")),
-        new("04-layout", "Arrange screens by dragging", "Put each PC where it sits on your desk. Offsets are kept too.", Color.Parse("#0EA5E9"), Color.Parse("#2563EB")),
-        new("05-peer-setup", "Set up in seconds", "Name it, pick a side, test the link.", Color.Parse("#F59E0B"), Color.Parse("#DC2626")),
-        new("06-layout-dark", "Light or dark, your choice", "Follows your Windows theme, including the accent colour.", Color.Parse("#1F2937"), Color.Parse("#111827"), Dark: true)
+        new("04-layout", "Arrange every monitor by dragging", "Each screen of each PC goes where it sits on your desk.", Color.Parse("#0EA5E9"), Color.Parse("#2563EB")),
+        new("05-peer-setup", "Set up in seconds", "Name it, test the link, choose what it shares.", Color.Parse("#F59E0B"), Color.Parse("#DC2626")),
+        new("06-advanced", "No accidental crossings", "Push past the edge, corner dead zones, hotkeys to jump or lock the cursor.", Color.Parse("#059669"), Color.Parse("#0E7490")),
+        new("07-layout-dark", "Light or dark, your choice", "Follows your Windows theme, including the accent colour.", Color.Parse("#1F2937"), Color.Parse("#111827"), Dark: true)
     };
 
     public static void Render(string outDir)
@@ -69,7 +70,8 @@ internal static class StoreScreenshots
             {
                 "02-network" => SettingsPage.Network,
                 "03-peers" => SettingsPage.Peers,
-                "04-layout" or "06-layout-dark" => SettingsPage.Layout,
+                "04-layout" or "07-layout-dark" => SettingsPage.Layout,
+                "06-advanced" => SettingsPage.Advanced,
                 _ => SettingsPage.General
             };
             var settingsWindow = new SettingsWindow(settings, backend) { Width = WindowWidth, Height = WindowHeight };

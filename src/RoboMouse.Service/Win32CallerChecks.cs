@@ -62,12 +62,23 @@ internal sealed unsafe class Win32ClientProcess : IClientProcess
         {
             var fullName = stackalloc char[256];
             uint nameLength = 256;
-            if (GetPackageFullName(_handle, &nameLength, fullName) != 0)
+            var error = GetPackageFullName(_handle, &nameLength, fullName);
+            if (error != 0)
+            {
+                Log.WriteLimited("package-full-name", $"GetPackageFullName failed for pid {_pid} (error {error})");
                 return null;
+            }
 
+            // The staged path: the service runs as SYSTEM, for which the Store package is not registered.
             var path = stackalloc char[1024];
             uint pathLength = 1024;
-            return GetPackagePathByFullName(fullName, &pathLength, path) == 0 ? new string(path) : null;
+            error = GetStagedPackagePathByFullName(fullName, &pathLength, path);
+            if (error != 0)
+            {
+                Log.WriteLimited("package-path", $"GetStagedPackagePathByFullName failed for '{new string(fullName)}' (error {error})");
+                return null;
+            }
+            return new string(path);
         }
     }
 
